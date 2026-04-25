@@ -48,3 +48,70 @@ The skill covers reusable operational guidance for:
 - upstream `ydb-platform/ydb` source lookup through `gh api`
 
 The skill intentionally avoids private hostnames, IPs, user-specific paths, passwords, tokens, backup paths, and app-specific deployment details. Public examples use placeholders such as `/local/<tenant>`, `/path/to/root.password`, `<host>`, and `<public-domain>`.
+
+## Node.js MCP Server
+
+This repository also contains a local stdio MCP server for operating `local-ydb` targets. The MCP server itself runs locally; tools operate either on the local Docker host or over SSH to a named remote profile.
+
+Install and build:
+
+```bash
+npm install
+npm run build
+```
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "local-ydb": {
+      "command": "node",
+      "args": ["/path/to/local-ydb-toolkit/packages/mcp-server/dist/index.js"],
+      "env": {
+        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
+      }
+    }
+  }
+}
+```
+
+Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH keys, password files, and backup paths outside committed config.
+
+### Target Profiles
+
+Profiles are selected by tool argument:
+
+```json
+{
+  "profile": "remote-demo"
+}
+```
+
+If omitted, the server uses `defaultProfile`. A profile can use:
+
+- `mode: "local"` for commands on the local Docker host;
+- `mode: "ssh"` for commands executed through `ssh -o BatchMode=yes -o ConnectTimeout=10`.
+
+SSH profiles use existing SSH agent/key/known_hosts configuration. The toolkit does not store SSH passwords.
+
+### Operations
+
+Read-only tools collect inventory, tenant state, node state, GraphShard state, auth posture, storage placement, and leftover storage candidates.
+
+Mutating tools include bootstrap, tenant creation, dynamic-node startup, restart, dump, restore, auth config application, and explicit storage cleanup. They are plan-only unless called with:
+
+```json
+{
+  "confirm": true
+}
+```
+
+Without `confirm: true`, mutating tools return planned commands, risk, rollback notes, and verification steps.
+
+`local_ydb_bootstrap` creates a GraphShard-ready Docker topology:
+
+- Docker network and volume or bind mount;
+- static `ydb-local` node with `YDB_FEATURE_FLAGS=enable_graph_shard`;
+- CMS-created tenant with `ydbd admin database /local/<tenant> create hdd:1`;
+- one dynamic tenant node.

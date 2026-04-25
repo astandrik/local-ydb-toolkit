@@ -1,5 +1,19 @@
 {
   "name": "@local-ydb-toolkit/mcp-server",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "bin": {
+    "local-ydb-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@local-ydb-toolkit/core": "file:../core",
+    "@modelcontextprotocol/sdk": "^1.18.2",
+    "zod": "^3.25.76"
+  }
 }

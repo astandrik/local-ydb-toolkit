@@ -1,0 +1,32 @@
+{
+  "defaultProfile": "local",
+  "profiles": {
+    "local": {
+      "mode": "local",
+      "tenantPath": "/local/example",
+      "volume": "ydb-local-data",
+      "network": "ydb-net",
+      "ports": {
+        "monitoring": 8765,
+        "staticGrpc": 2136,
+        "dynamicGrpc": 2137,
+        "dynamicMonitoring": 8766,
+        "dynamicIc": 19002
+      },
+      "dumpHostPath": "/tmp/local-ydb-dump"
+    },
+    "remote-demo": {
+      "mode": "ssh",
+      "ssh": {
+        "host": "example-host",
+        "user": "ops",
+        "port": 22,
+        "identityFile": "/path/to/private-key"
+      },
+      "tenantPath": "/local/example",
+      "volume": "ydb-local-data",
+      "network": "ydb-net",
+      "dumpHostPath": "/tmp/local-ydb-dump"
+    }
+  }
+}
