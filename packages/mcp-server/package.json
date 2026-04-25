@@ -1,0 +1,5 @@
+{
+  "name": "@local-ydb-toolkit/mcp-server",
+  "private": true,
+  "type": "module"
+}

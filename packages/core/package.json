@@ -1,0 +1,5 @@
+{
+  "name": "@local-ydb-toolkit/core",
+  "private": true,
+  "type": "module"
+}

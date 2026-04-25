@@ -1,0 +1,9 @@
+{
+  "name": "local-ydb-toolkit",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {}
+}
