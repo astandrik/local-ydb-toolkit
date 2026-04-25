@@ -7,7 +7,7 @@ Storage changes are high risk when they touch live tenants, PDisks, storage pool
 Prefer this order:
 
 1. Inspect current containers, mounts, image tags, tenant names, and ports.
-2. Capture YDB config and BSC placement.
+2. Capture YDB config and BSC placement with `ReadStoragePool` and `QueryBaseConfig`.
 3. Verify tenant metadata and small table reads before any move.
 4. Dump data to a separate path.
 5. Rebuild or restore on a copied volume when possible.
@@ -43,10 +43,17 @@ sudo cat /path/to/root.password | docker exec -i ydb-local bash -lc '
   /ydbd --server localhost:2136 \
     --user root \
     --password-file /tmp/root.password \
-    admin bs config invoke --proto "<QueryBaseConfig/>"
+    admin blobstorage config invoke --proto "Command { ReadStoragePool { BoxId: 1 } }"
+  /ydbd --server localhost:2136 \
+    --user root \
+    --password-file /tmp/root.password \
+    admin blobstorage config invoke \
+      --proto "Command { QueryBaseConfig { RetrieveDevices: true SuppressNodes: true } }"
   rm -f /tmp/root.password
 '
 ```
+
+Treat monitoring/UI `StorageGroups` as advisory only. Use `ReadStoragePool` for pool config and `NumGroups`; use `QueryBaseConfig { RetrieveDevices: true SuppressNodes: true }` for actual `Group -> PDisk` placement.
 
 ## Single-Disk Rebuild Pattern
 
@@ -85,7 +92,7 @@ sudo cat /path/to/root.password | docker run --rm -i \
   '
 ```
 
-Adjust endpoint, database, and dump path to the live topology. Use table-level dumps only when whole-tenant dump is unsupported or too broad for the task.
+Adjust endpoint, database, and dump path to the live topology. Whole-tenant dump can be unreliable for some layouts; use table-level dumps when whole-tenant dump is unsupported, too broad, or fails on a rehearsed copy.
 
 ## Fresh Rebuild
 
@@ -150,7 +157,8 @@ Do not delete old storage until all checks pass:
   sql -s "SELECT COUNT(*) AS c FROM <known-table>;"
 
 /ydbd --server localhost:2136 --user root --password-file /tmp/root.password \
-  admin bs config invoke --proto '<QueryBaseConfig/>'
+  admin blobstorage config invoke \
+    --proto 'Command { QueryBaseConfig { RetrieveDevices: true SuppressNodes: true } }'
 ```
 
 Also verify:
@@ -183,6 +191,8 @@ sudo find /path/to/storage /var/lib/docker/volumes -maxdepth 4 \
 - `ReassignGroupDisk` success and `OperatingStatus: FULL` do not prove tenant metadata survived.
 - Removing an apparently unused PDisk file can break root or scheme state if it still stores shared metadata.
 - UI storage counts can disagree with BSC placement. Prefer `QueryBaseConfig` for physical placement.
+- Adding a PDisk path is a BSC runtime operation, not only a config-file edit. Capture current `HostConfig`, use the server-accepted `DefineHostConfig` shape, and verify the new PDisk appears before allocating groups to it.
+- Changes to `host_configs` or expected slot counts in generated config may not immediately change BSC runtime state for an existing static disk.
 - `DecommitGroups` is not a tenant allocation shrink operation.
 - `storage_units_to_remove` needs server-side implementation verification before live use.
 - Whole-tenant dump/restore and table-level dump/restore have different path semantics; test on a copy first.

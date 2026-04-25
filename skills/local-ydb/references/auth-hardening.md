@@ -116,7 +116,7 @@ Important findings to verify on the deployed version:
 - `security_config.default_users` is bootstrap-oriented; existing volumes need explicit user verification or creation.
 - Empty viewer, monitoring, or admin SID lists can be too permissive depending on YDB config semantics. Fill them deliberately.
 - Dynamic-node registration can break if `register_dynamic_node_allowed_sids` does not include the SID used by the node registration path.
-- In an auth-enabled deployment, a new dynamic node can register successfully and still fail its later config/bootstrap fetch.
+- In an auth-enabled deployment, a new dynamic node can register successfully and still fail its later config/bootstrap fetch. `Access denied without user token` means no suitable token reached the config fetch path. `Cannot get node config. Access denied. Node is not authorized` means a token reached the path but its SID is not allowed.
 - Do not assume `--user root --password-file ...` or a global `--token-file` on `ydbd server` authorizes dynamic config fetch. Validate the current server behavior.
 - Do not write `StaffApiUserToken` unquoted or as a raw token file. Generate text protobuf with quoted string values and inspect a redacted copy if parsing fails.
 - Do not treat a registered node ID as proof that the node is usable; verify logs, `nodelist`, tenant metadata, and client health.

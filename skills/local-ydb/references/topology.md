@@ -109,10 +109,15 @@ Start one new node first, verify it reaches `nodelist`, then start the next. Pre
 Storage-pool changes should be verified through BSC, not only UI or `admin database ... status`:
 
 ```bash
-/ydbd --server localhost:2136 --no-password admin bs config invoke --proto '<QueryBaseConfig/>'
+/ydbd --server localhost:2136 --no-password \
+  admin blobstorage config invoke --proto 'Command { ReadStoragePool { BoxId: 1 } }'
+
+/ydbd --server localhost:2136 --no-password \
+  admin blobstorage config invoke \
+    --proto 'Command { QueryBaseConfig { RetrieveDevices: true SuppressNodes: true } }'
 ```
 
-Confirm actual `Group -> PDisk` placement before deleting old disk files or volumes.
+Use `ReadStoragePool` for pool config and `NumGroups`; use `QueryBaseConfig` for actual `Group -> PDisk` placement. Confirm placement before deleting old disk files or volumes.
 
 ## Upstream YDB Lookup
 
@@ -122,6 +127,15 @@ Examples:
 
 ```bash
 gh api 'search/code?q="CreateDatabaseRequest"+repo:ydb-platform/ydb' \
+  --jq '.items[] | [.path, .html_url] | @tsv'
+
+gh api 'search/code?q=GraphShard+repo:ydb-platform/ydb' \
+  --jq '.items[] | [.path, .html_url] | @tsv'
+
+gh api 'search/code?q="register_dynamic_node_allowed_sids"+repo:ydb-platform/ydb' \
+  --jq '.items[] | [.path, .html_url] | @tsv'
+
+gh api 'search/code?q="GraphShard is not enabled on the database"+repo:ydb-platform/ydb' \
   --jq '.items[] | [.path, .html_url] | @tsv'
 
 gh api repos/ydb-platform/ydb/contents/ydb/public/api/protos/ydb_cms.proto \
