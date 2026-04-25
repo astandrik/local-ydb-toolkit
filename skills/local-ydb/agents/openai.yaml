@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local YDB"
+  short_description: "Operate local-ydb deployments and runbooks"
+  default_prompt: "Use $local-ydb to inspect, migrate, rebuild, harden, or troubleshoot a local-ydb deployment."
