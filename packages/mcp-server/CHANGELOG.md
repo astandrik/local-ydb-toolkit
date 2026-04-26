@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.3.1...mcp-server-v0.3.2) (2026-04-26)
+
+
+### Bug Fixes
+
+* retry transient tenant status errors ([15c471d](https://github.com/astandrik/local-ydb-toolkit/commit/15c471d4dfbe4096617faaf3b174f1d81296b29d))
+* retry transient tenant status errors ([19545ad](https://github.com/astandrik/local-ydb-toolkit/commit/19545ad1e2702620da54c90d19d543cea601df0c))
+
 ## [0.3.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.3.0...mcp-server-v0.3.1) (2026-04-26)
 
 
