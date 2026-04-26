@@ -5,6 +5,7 @@ import {
   applyAuthHardening,
   bootstrap,
   checkPrerequisites,
+  cleanupStorage,
   commandToShell,
   createContext,
   createTenant,
@@ -146,6 +147,7 @@ describe("mutating operations", () => {
     const response = await createTenant(ctx, {});
     expect(response.executed).toBe(false);
     expect(response.plannedCommands[0]).toContain("Unknown tenant|NOT_FOUND");
+    expect(response.plannedCommands[0]).toContain("State:[[:space:]]*(RUNNING|PENDING_RESOURCES)");
     expect(response.plannedCommands[0]).toContain("sleep 2");
   });
 
@@ -812,6 +814,7 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.plannedCommands.some((command) => command.includes("docker cp /tmp/local-ydb/config.yaml"))).toBe(true);
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(2);
+    expect(response.plannedCommands.join("\n")).toContain("State:[[:space:]]*(RUNNING|PENDING_RESOURCES)");
     const firstRestartIndex = response.plannedCommands.findIndex((command) => command.includes("docker restart ydb-local"));
     const recopyIndex = response.plannedCommands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml /ydb_data/cluster/kikimr_configs/config.yaml"));
     expect(recopyIndex).toBeGreaterThan(firstRestartIndex);
@@ -848,6 +851,15 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.some((command) => command.includes("ALTER USER root PASSWORD"))).toBe(true);
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(0);
     expect(response.plannedCommands.some((command) => command.includes("viewer/json/whoami"))).toBe(true);
+  });
+
+  it("falls back to sudo when removing root-owned cleanup paths", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await cleanupStorage(ctx, { paths: ["/tmp/local-ydb-dump/mcp-smoke"] });
+    expect(response.executed).toBe(false);
+    expect(response.plannedCommands[0]).toContain("rm -rf -- /tmp/local-ydb-dump/mcp-smoke");
+    expect(response.plannedCommands[0]).toContain("sudo -n rm -rf -- /tmp/local-ydb-dump/mcp-smoke");
   });
 
   it("prepares a hardened auth config and root password file from the running static config", async () => {

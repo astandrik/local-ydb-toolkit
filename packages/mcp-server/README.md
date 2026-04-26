@@ -11,7 +11,7 @@ Use `npx` so clients can run the server without a manual checkout:
   "mcpServers": {
     "local-ydb": {
       "command": "npx",
-      "args": ["-y", "@astandrik/local-ydb-mcp"],
+      "args": ["-y", "--prefer-online", "@astandrik/local-ydb-mcp@latest"],
       "env": {
         "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
       }
@@ -19,6 +19,8 @@ Use `npx` so clients can run the server without a manual checkout:
   }
 }
 ```
+
+This form checks the npm registry when the MCP server starts, so clients pick up newly published versions after restarting the MCP client.
 
 The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. If that file is missing, it uses a default local profile.
 

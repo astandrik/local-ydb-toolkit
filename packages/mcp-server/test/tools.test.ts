@@ -1,9 +1,19 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ConfigSchema } from "@local-ydb-toolkit/core";
-import { callLocalYdbToolForTest, createLocalYdbMcpServer, localYdbInstructions, localYdbTools } from "../src/index.js";
+import {
+  callLocalYdbToolForTest,
+  createLocalYdbMcpServer,
+  localYdbInstructions,
+  localYdbMcpServerVersion,
+  localYdbTools
+} from "../src/index.js";
+
+const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  version: string;
+}).version;
 
 describe("mcp tools", () => {
   it("registers all public local-ydb tools", () => {
@@ -93,7 +103,14 @@ describe("mcp tools", () => {
   it("exposes server instructions during initialization", () => {
     const server = createLocalYdbMcpServer() as unknown as { _instructions?: string };
     expect(server._instructions).toBe(localYdbInstructions);
+    expect(server._instructions).toContain("local_ydb_check_prerequisites");
     expect(server._instructions).toContain("local_ydb_status_report");
     expect(server._instructions).toContain("PENDING_RESOURCES");
+  });
+
+  it("uses the package version in server metadata", () => {
+    const server = createLocalYdbMcpServer() as unknown as { _serverInfo?: { version?: string } };
+    expect(localYdbMcpServerVersion).toBe(packageVersion);
+    expect(server._serverInfo?.version).toBe(packageVersion);
   });
 });
