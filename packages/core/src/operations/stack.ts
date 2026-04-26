@@ -7,7 +7,7 @@ import {
   removeTenantIfPresentSpec,
   ydbCli
 } from "./commands.js";
-import { runMutating } from "./execution.js";
+import { normalizeExpectedYdbResult, runMutating } from "./execution.js";
 import { findExtraDynamicContainers } from "./helpers.js";
 import type { DestroyStackOptions, DestroyStackResponse, MutatingOptions, OperationResponse, ToolkitContext } from "./types.js";
 
@@ -134,7 +134,7 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
   const results: CommandResult[] = [];
   let tenantRemoveSkippedDueToAuthFailure = false;
   for (const [index, spec] of specs.entries()) {
-    const result = await ctx.client.run(spec);
+    const result = normalizeExpectedYdbResult(spec, await ctx.client.run(spec));
     results.push(result);
     if (!result.ok) {
       if (index === 0 && canContinueAfterTenantRemoveFailure(ctx, options, result)) {

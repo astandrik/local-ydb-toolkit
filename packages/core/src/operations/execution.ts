@@ -19,7 +19,7 @@ export async function runMutating(
   }
   const results: CommandResult[] = [];
   for (const spec of plan.specs) {
-    const result = await ctx.client.run(spec);
+    const result = normalizeExpectedYdbResult(spec, await ctx.client.run(spec));
     results.push(result);
     if (!result.ok) {
       break;
@@ -34,6 +34,33 @@ export async function runMutating(
     verification: plan.verification,
     results
   };
+}
+
+export function normalizeExpectedYdbResult(spec: CommandSpec, result: CommandResult): CommandResult {
+  if (result.ok || result.timedOut) {
+    return result;
+  }
+
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (spec.description === "Create CMS tenant if missing" && tenantStatusWasRead(output)) {
+    return { ...result, ok: true };
+  }
+  if (spec.description?.startsWith("Wait for authenticated tenant status") && tenantStatusWasRead(output)) {
+    return { ...result, ok: true };
+  }
+  if (spec.description?.startsWith("Remove tenant ") && tenantRemoveReachedTerminalState(output)) {
+    return { ...result, ok: true };
+  }
+
+  return result;
+}
+
+function tenantStatusWasRead(output: string): boolean {
+  return /State:\s*(RUNNING|PENDING_RESOURCES)/.test(output);
+}
+
+function tenantRemoveReachedTerminalState(output: string): boolean {
+  return /^\s*OK\s*$/m.test(output) || /Unknown tenant|NOT_FOUND|not found|Path does not exist/i.test(output);
 }
 
 export function planOnly(

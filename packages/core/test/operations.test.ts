@@ -151,6 +151,29 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[0]).toContain("sleep 2");
   });
 
+  it("treats readable tenant status as success when ydbd returns non-zero", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 1,
+        stdout: "Database /local/example status:\n  State: PENDING_RESOURCES\n",
+        stderr: "",
+        ok: false,
+        timedOut: false
+      };
+    };
+
+    const response = await createTenant(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.summary).toContain("Executed 1/1 commands");
+    expect(response.results?.[0]?.ok).toBe(true);
+    expect(response.results?.[0]?.exitCode).toBe(1);
+  });
+
   it("ensures the tenant exists before restarting the dynamic node", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -780,6 +803,64 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(true);
     expect(response.summary).toContain("continuing past tenant removal auth failure");
     expect(response.results?.[0]?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
+  });
+
+  it("continues docker teardown when tenant removal is already complete", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example",
+          staticContainer: "ydb-local",
+          network: "ydb-net",
+          volume: "ydb-local-data"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker volume ls")) {
+        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+      }
+      if (command.includes("admin database /local/example remove --force")) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "ERROR: NOT_FOUND\nDatabase '/local/example' doesn't exist\n",
+          stderr: "",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await destroyStack(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.results?.[0]?.ok).toBe(true);
+    expect(response.results?.[0]?.exitCode).toBe(1);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
