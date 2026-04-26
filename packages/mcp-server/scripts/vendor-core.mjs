@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +17,7 @@ await cp(coreDist, vendoredCore, { recursive: true });
 
 await rewriteCoreImport(resolve(serverDist, "index.js"));
 await rewriteCoreImport(resolve(serverDist, "index.d.ts"));
+await chmod(resolve(serverDist, "index.js"), 0o755);
 
 async function assertFile(filePath, message) {
   const exists = await stat(filePath).then((info) => info.isFile(), () => false);

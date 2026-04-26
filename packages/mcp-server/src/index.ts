@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   addStorageGroups,
   addDynamicNodes,
@@ -549,9 +551,21 @@ function errorResult(message: string) {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntryPoint()) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.stack ?? error.message : String(error));
     process.exit(1);
   });
+}
+
+function isCliEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (!entry) {
+    return false;
+  }
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entry);
+  } catch {
+    return fileURLToPath(import.meta.url) === entry;
+  }
 }
