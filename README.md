@@ -180,8 +180,8 @@ Configure the npm package trusted publisher with:
 
 Normal release flow:
 
-1. Merge conventional commits into `main`, for example `feat: add ...` or `fix: repair ...`.
-2. release-please opens or updates a release PR that bumps `packages/mcp-server/package.json`, updates the release manifest, and writes `packages/mcp-server/CHANGELOG.md`.
+1. Merge conventional commits that touch `packages/core` or `packages/mcp-server` into `main`, for example `feat: add ...` or `fix: repair ...`.
+2. release-please opens or updates a release PR that bumps `packages/mcp-server/package.json`, updates `packages/mcp-server/.release-please-version`, updates the release manifest, and writes `packages/mcp-server/CHANGELOG.md`.
 3. Review and merge the release PR.
 4. The same workflow creates the GitHub release and publishes `@astandrik/local-ydb-mcp` to npm.
 

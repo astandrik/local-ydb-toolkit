@@ -28,9 +28,9 @@ jobs:
       issues: write
       pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs['packages/mcp-server--release_created'] }}
-      tag_name: ${{ steps.release.outputs['packages/mcp-server--tag_name'] }}
-      version: ${{ steps.release.outputs['packages/mcp-server--version'] }}
+      release_created: ${{ steps.release.outputs['packages--release_created'] }}
+      tag_name: ${{ steps.release.outputs['packages--tag_name'] }}
+      version: ${{ steps.release.outputs['packages--version'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
