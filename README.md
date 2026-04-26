@@ -165,7 +165,7 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 
 ## Publishing
 
-The MCP npm package is published by `.github/workflows/publish-mcp-server.yml`. It uses npm trusted publishing through GitHub Actions OIDC, so the repository does not need a long-lived `NPM_TOKEN` secret.
+The MCP npm package is released by release-please and published by `.github/workflows/publish-mcp-server.yml`. It uses npm trusted publishing through GitHub Actions OIDC, so the repository does not need a long-lived `NPM_TOKEN` secret.
 
 Configure the npm package trusted publisher with:
 
@@ -173,11 +173,22 @@ Configure the npm package trusted publisher with:
 - repository: `local-ydb-toolkit`
 - workflow filename: `publish-mcp-server.yml`
 
-To run a non-publishing check from GitHub Actions, start the workflow manually with `dry_run: true`.
+Normal release flow:
 
-To publish a release, update `packages/mcp-server/package.json` to the target version, merge the change, and push a matching tag:
+1. Merge conventional commits into `main`, for example `feat: add ...` or `fix: repair ...`.
+2. release-please opens or updates a release PR that bumps `packages/mcp-server/package.json`, updates the release manifest, and writes `packages/mcp-server/CHANGELOG.md`.
+3. Review and merge the release PR.
+4. The same workflow creates the GitHub release and publishes `@local-ydb-toolkit/mcp-server` to npm.
 
-```bash
-git tag mcp-server-v0.1.0
-git push origin mcp-server-v0.1.0
-```
+To run a non-publishing package check from GitHub Actions, start the workflow manually with `dry_run: true`.
+
+The release-please workflow can use the default `GITHUB_TOKEN`. If release PRs must trigger CI checks immediately when release-please updates them, create a fine-grained `RELEASE_PLEASE_TOKEN` secret with repository contents and pull request write access.
+
+Branch protection is configured outside the repository files. The intended `main` rule is:
+
+- require a pull request before merging;
+- require one approving review;
+- require approval from code owners, with `.github/CODEOWNERS` assigning all paths to `@astandrik`;
+- require stale approvals to be refreshed after new commits.
+
+For this solo-maintainer repository, admin bypass is left enabled. GitHub does not count a pull request author's own approval toward required reviews, so enforcing the same rule on admins would require a second maintainer to merge PRs authored by `@astandrik`. If a second maintainer is added, enable "Do not allow bypassing the above settings" to make the PR-only rule strict for admins too.
