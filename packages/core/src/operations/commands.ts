@@ -131,6 +131,7 @@ export function createTenantSpec(profile: ResolvedLocalYdbProfile): CommandSpec 
   const createArgs = ["admin", "database", profile.tenantPath, "create", `${profile.storagePoolKind}:${profile.storagePoolCount}`];
   const statusCommand = dockerExecYdbd(profile, statusArgs);
   const createCommand = dockerExecYdbd(profile, createArgs);
+  const retryableStatusErrors = "SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE";
   return bash([
     "set -euo pipefail",
     "tmp=$(mktemp)",
@@ -144,6 +145,8 @@ export function createTenantSpec(profile: ResolvedLocalYdbProfile): CommandSpec 
     "    exit 0",
     "  elif grep -Eq 'Unknown tenant|NOT_FOUND' \"$tmp\"; then",
     `    ${createCommand} >/dev/null 2>&1 || exit $?`,
+    `  elif grep -Eq '${retryableStatusErrors}' "$tmp"; then`,
+    "    :",
     "  else",
     "    cat \"$tmp\" >&2",
     "    exit 1",
