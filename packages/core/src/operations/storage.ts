@@ -293,7 +293,7 @@ export async function cleanupStorage(ctx: ToolkitContext, options: MutatingOptio
   }
   const specs = [
     ...volumes.map((volume) => bash(`docker volume rm ${shellQuote(volume)}`)),
-    ...paths.map((path) => bash(`rm -rf ${shellQuote(path)}`))
+    ...paths.map((path) => bash(`rm -rf -- ${shellQuote(path)} || sudo -n rm -rf -- ${shellQuote(path)}`))
   ];
   return runMutating(ctx, {
     summary: `Clean ${paths.length} storage paths and ${volumes.length} Docker volumes.`,

@@ -60,7 +60,7 @@ Use the npm package directly from an MCP client:
   "mcpServers": {
     "local-ydb": {
       "command": "npx",
-      "args": ["-y", "@astandrik/local-ydb-mcp"],
+      "args": ["-y", "--prefer-online", "@astandrik/local-ydb-mcp@latest"],
       "env": {
         "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
       }
@@ -68,6 +68,8 @@ Use the npm package directly from an MCP client:
   }
 }
 ```
+
+This form checks the npm registry when the MCP server starts, so clients pick up newly published versions after restarting the MCP client.
 
 Or install the command globally:
 
@@ -133,6 +135,8 @@ SSH profiles use existing SSH agent/key/known_hosts configuration. The toolkit d
 ### Operations
 
 Read-only tools collect inventory, tenant state, node state, GraphShard state, auth posture, storage placement, and leftover storage candidates.
+
+`local_ydb_check_prerequisites` is the expected first step on a new host or profile. It checks `docker`, `curl`, `ruby`, and auth-file prerequisites. With `confirm: true`, it can auto-install supported host helpers such as `curl` and `ruby` through `apt-get`; Docker is reported but must still be installed manually.
 
 Mutating tools include bootstrap, tenant creation, dynamic-node startup, restart, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, and explicit storage cleanup. They are plan-only unless called with:
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   addStorageGroups,
@@ -39,6 +39,14 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+
+const PackageMetadata = z.object({
+  version: z.string()
+});
+
+export const localYdbMcpServerVersion = PackageMetadata.parse(
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+).version;
 
 const ProfileArgs = z.object({
   profile: z.string().optional(),
@@ -129,6 +137,8 @@ function handlerConfig(configPath: string | undefined, options: HandlerOptions):
 }
 
 export const localYdbInstructions = [
+  "Use local_ydb_check_prerequisites first on a new local or remote target to verify Docker, host helpers, and auth-file prerequisites before deeper checks.",
+  "If local_ydb_check_prerequisites reports installable missing packages, review the plan first and then run it with confirm=true to install supported host helpers such as curl or ruby; Docker still requires manual installation.",
   "Use local_ydb_status_report or local_ydb_inventory first to establish the current stack state before mutating anything.",
   "For bootstrap or restart issues, inspect local_ydb_database_status and local_ydb_container_logs before retrying.",
   "Prefer exact image tags for local-ydb stacks and avoid mixing static and dynamic image versions in one stack.",
@@ -284,7 +294,7 @@ const handlers: Record<string, ToolHandler> = {
 
 export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
   const server = new Server(
-    { name: "local-ydb-toolkit", version: "0.1.0" },
+    { name: "local-ydb-toolkit", version: localYdbMcpServerVersion },
     { capabilities: { tools: {} }, instructions: localYdbInstructions }
   );
 

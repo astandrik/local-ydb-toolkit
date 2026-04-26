@@ -47,11 +47,44 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 
 ## Global Rules
 
+- Run `local_ydb_check_prerequisites` first on a new host or profile.
+- If `local_ydb_check_prerequisites` reports installable packages, review its plan-only output and then use `confirm: true` to install supported host helpers before trying deeper checks.
 - Run read-only tools first.
 - For mutating tools, call plan-only once before `confirm: true` unless you are deliberately smoke-testing an idempotent path.
 - Do not test `cleanup_storage` against active volumes or paths.
 - Do not mix static and dynamic image tags inside one profile.
 - For stable GHCR tests, use the exact patch tag `ghcr.io/ydb-platform/local-ydb:26.1.1.6`.
+
+## Scenario 0: Prerequisites
+
+Goal: verify the target host has the required base tools before any Docker or YDB checks.
+
+Profile:
+`ghcr261-clean`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_check_prerequisites", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
+```
+
+Optional install path on supported apt-based hosts:
+
+```json
+{ "tool": "local_ydb_check_prerequisites", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+```
+
+Expected:
+
+- the check reports whether `docker`, `curl`, and `ruby` are available
+- auth-enabled profiles also report whether `rootPasswordFile` exists
+- plan-only output includes `apt-get` install commands only for supported auto-install packages
+- `docker` may appear in `missing`, but it remains a manual prerequisite
+
+Avoid:
+
+- treating `inventory = 0 containers` as proof that Docker is installed on a remote host
+- using `confirm: true` blindly on a host where `apt-get` should not be touched
 
 ## Scenario 1: Preflight Read-Only Coverage
 
