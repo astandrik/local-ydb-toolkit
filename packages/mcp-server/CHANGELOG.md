@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.2.0...mcp-server-v0.2.1) (2026-04-26)
+
+
+### Bug Fixes
+
+* make npm MCP bin executable ([7c8cf83](https://github.com/astandrik/local-ydb-toolkit/commit/7c8cf8356ecbbfdba850be880a164debae59caef))
+* make npm MCP bin executable ([7c8cf83](https://github.com/astandrik/local-ydb-toolkit/commit/7c8cf8356ecbbfdba850be880a164debae59caef))
+* make npm MCP bin executable ([c202ce2](https://github.com/astandrik/local-ydb-toolkit/commit/c202ce287bf4055f4a714b909b52fff4bad994d9))
+
 ## [0.2.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.1.0...mcp-server-v0.2.0) (2026-04-26)
 
 
