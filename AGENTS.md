@@ -2,9 +2,9 @@
 
 ## Build & Run
 - `npm install` - Install workspace dependencies from `package-lock.json`.
-- `npm run build` - Build `@local-ydb-toolkit/core` and then `@local-ydb-toolkit/mcp-server`.
+- `npm run build` - Build `@local-ydb-toolkit/core` and then `@astandrik/local-ydb-mcp`.
 - `npm run build -w @local-ydb-toolkit/core` - Build only the core package.
-- `npm run build -w @local-ydb-toolkit/mcp-server` - Build only the MCP server package.
+- `npm run build -w @astandrik/local-ydb-mcp` - Build only the MCP server package.
 - `npm run typecheck` - Type-check all workspaces with package-specific `tsconfig.typecheck.json` files.
 - `node packages/mcp-server/dist/index.js` - Start the stdio MCP server after a successful build.
 

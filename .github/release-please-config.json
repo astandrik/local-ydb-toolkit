@@ -4,7 +4,7 @@
   "packages": {
     "packages/mcp-server": {
       "release-type": "node",
-      "package-name": "@local-ydb-toolkit/mcp-server",
+      "package-name": "@astandrik/local-ydb-mcp",
       "component": "mcp-server"
     }
   }

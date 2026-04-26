@@ -1,7 +1,7 @@
 {
-  "name": "@local-ydb-toolkit/mcp-server",
+  "name": "@astandrik/local-ydb-mcp",
   "version": "0.1.0",
-  "description": "Stdio MCP server for operating local-ydb deployments.",
+  "description": "Unofficial stdio MCP server for operating local-ydb deployments.",
   "type": "module",
   "bin": {
     "local-ydb-mcp": "./dist/index.js"

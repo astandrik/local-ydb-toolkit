@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @local-ydb-toolkit/core && npm run build -w @local-ydb-toolkit/mcp-server",
+    "build": "npm run build -w @local-ydb-toolkit/core && npm run build -w @astandrik/local-ydb-mcp",
     "test": "vitest run",
     "typecheck": "npm run typecheck --workspaces"
   },

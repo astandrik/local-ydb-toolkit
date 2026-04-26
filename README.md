@@ -51,7 +51,7 @@ The skill intentionally avoids private hostnames, IPs, user-specific paths, pass
 
 ## Node.js MCP Server
 
-This repository also contains a local stdio MCP server for operating `local-ydb` targets. The MCP server itself runs locally; tools operate either on the local Docker host or over SSH to a named remote profile.
+This repository also contains an unofficial local stdio MCP server for operating `local-ydb` targets. The MCP server itself runs locally; tools operate either on the local Docker host or over SSH to a named remote profile.
 
 Use the npm package directly from an MCP client:
 
@@ -60,7 +60,7 @@ Use the npm package directly from an MCP client:
   "mcpServers": {
     "local-ydb": {
       "command": "npx",
-      "args": ["-y", "@local-ydb-toolkit/mcp-server"],
+      "args": ["-y", "@astandrik/local-ydb-mcp"],
       "env": {
         "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
       }
@@ -72,7 +72,7 @@ Use the npm package directly from an MCP client:
 Or install the command globally:
 
 ```bash
-npm install -g @local-ydb-toolkit/mcp-server
+npm install -g @astandrik/local-ydb-mcp
 ```
 
 ```json
@@ -165,10 +165,11 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 
 ## Publishing
 
-The MCP npm package is released by release-please and published by `.github/workflows/publish-mcp-server.yml`. It uses npm trusted publishing through GitHub Actions OIDC, so the repository does not need a long-lived `NPM_TOKEN` secret.
+The unofficial MCP npm package `@astandrik/local-ydb-mcp` is released by release-please and published by `.github/workflows/publish-mcp-server.yml`. It uses npm trusted publishing through GitHub Actions OIDC, so the repository does not need a long-lived `NPM_TOKEN` secret.
 
 Configure the npm package trusted publisher with:
 
+- package: `@astandrik/local-ydb-mcp`
 - organization or user: `astandrik`
 - repository: `local-ydb-toolkit`
 - workflow filename: `publish-mcp-server.yml`
@@ -178,7 +179,7 @@ Normal release flow:
 1. Merge conventional commits into `main`, for example `feat: add ...` or `fix: repair ...`.
 2. release-please opens or updates a release PR that bumps `packages/mcp-server/package.json`, updates the release manifest, and writes `packages/mcp-server/CHANGELOG.md`.
 3. Review and merge the release PR.
-4. The same workflow creates the GitHub release and publishes `@local-ydb-toolkit/mcp-server` to npm.
+4. The same workflow creates the GitHub release and publishes `@astandrik/local-ydb-mcp` to npm.
 
 To run a non-publishing package check from GitHub Actions, start the workflow manually with `dry_run: true`.
 
