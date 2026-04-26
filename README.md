@@ -53,14 +53,49 @@ The skill intentionally avoids private hostnames, IPs, user-specific paths, pass
 
 This repository also contains a local stdio MCP server for operating `local-ydb` targets. The MCP server itself runs locally; tools operate either on the local Docker host or over SSH to a named remote profile.
 
-Install and build:
+Use the npm package directly from an MCP client:
+
+```json
+{
+  "mcpServers": {
+    "local-ydb": {
+      "command": "npx",
+      "args": ["-y", "@local-ydb-toolkit/mcp-server"],
+      "env": {
+        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
+      }
+    }
+  }
+}
+```
+
+Or install the command globally:
+
+```bash
+npm install -g @local-ydb-toolkit/mcp-server
+```
+
+```json
+{
+  "mcpServers": {
+    "local-ydb": {
+      "command": "local-ydb-mcp",
+      "env": {
+        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
+      }
+    }
+  }
+}
+```
+
+For development from a checkout:
 
 ```bash
 npm install
 npm run build
 ```
 
-Example MCP client config:
+Example MCP client config for a local checkout:
 
 ```json
 {
@@ -127,3 +162,22 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 `local_ydb_set_root_password` rotates the runtime `root` password with `ALTER USER`, then updates the configured host-side `config.auth.yaml` and `root.password` files to match. The password value is redacted from the planned command text.
 
 `local_ydb_destroy_stack` tears down a profile end to end: it removes tenant metadata when the static node is reachable, removes extra and primary dynamic nodes, removes the static node, removes the Docker network, and removes the Docker volume for volume-backed profiles. Deleting bind-mounted data, auth artifacts, and dump directories is opt-in through explicit flags because those host paths may be shared.
+
+## Publishing
+
+The MCP npm package is published by `.github/workflows/publish-mcp-server.yml`. It uses npm trusted publishing through GitHub Actions OIDC, so the repository does not need a long-lived `NPM_TOKEN` secret.
+
+Configure the npm package trusted publisher with:
+
+- organization or user: `astandrik`
+- repository: `local-ydb-toolkit`
+- workflow filename: `publish-mcp-server.yml`
+
+To run a non-publishing check from GitHub Actions, start the workflow manually with `dry_run: true`.
+
+To publish a release, update `packages/mcp-server/package.json` to the target version, merge the change, and push a matching tag:
+
+```bash
+git tag mcp-server-v0.1.0
+git push origin mcp-server-v0.1.0
+```

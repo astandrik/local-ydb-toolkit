@@ -1,0 +1,57 @@
+name: Publish MCP server
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run checks and package dry-run without publishing.
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "mcp-server-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-mcp-server-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: npm test
+
+      - run: npm run typecheck
+
+      - name: Check release tag
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          version=$(node -p "require('./packages/mcp-server/package.json').version")
+          expected="mcp-server-v${version}"
+          if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
+            echo "Expected tag ${expected}, got ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+      - run: npm pack -w @local-ydb-toolkit/mcp-server --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
+        run: npm publish -w @local-ydb-toolkit/mcp-server

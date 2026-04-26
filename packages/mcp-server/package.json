@@ -1,19 +1,50 @@
 {
   "name": "@local-ydb-toolkit/mcp-server",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Stdio MCP server for operating local-ydb deployments.",
   "type": "module",
   "bin": {
     "local-ydb-mcp": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astandrik/local-ydb-toolkit.git",
+    "directory": "packages/mcp-server"
+  },
+  "bugs": {
+    "url": "https://github.com/astandrik/local-ydb-toolkit/issues"
+  },
+  "homepage": "https://github.com/astandrik/local-ydb-toolkit#readme",
+  "keywords": [
+    "local-ydb",
+    "ydb",
+    "mcp",
+    "model-context-protocol",
+    "codex"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build -w @local-ydb-toolkit/core && tsc -p tsconfig.json && node ./scripts/vendor-core.mjs",
+    "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "dependencies": {
-    "@local-ydb-toolkit/core": "file:../core",
     "@modelcontextprotocol/sdk": "^1.18.2",
     "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@local-ydb-toolkit/core": "file:../core"
   }
 }
