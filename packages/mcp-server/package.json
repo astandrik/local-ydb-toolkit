@@ -1,6 +1,6 @@
 {
   "name": "@astandrik/local-ydb-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Unofficial stdio MCP server for operating local-ydb deployments.",
   "type": "module",
   "bin": {
