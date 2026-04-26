@@ -59,6 +59,7 @@ function waitForAuthenticatedTenantStatusSpec(ctx: ToolkitContext) {
   const createCommand = withPassword(
     `/ydbd --server localhost:${ctx.profile.ports.staticGrpc} --user ${shellQuote(ctx.profile.rootUser)} --password-file /tmp/root.password admin database ${shellQuote(ctx.profile.tenantPath)} create ${shellQuote(`${ctx.profile.storagePoolKind}:${ctx.profile.storagePoolCount}`)}`
   );
+  const retryableStatusErrors = "UNAUTHORIZED|Invalid password|Access denied|CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE";
 
   return bash([
     "set -euo pipefail",
@@ -73,7 +74,7 @@ function waitForAuthenticatedTenantStatusSpec(ctx: ToolkitContext) {
     "    exit 0",
     "  elif grep -Eq 'Unknown tenant|NOT_FOUND' \"$tmp\"; then",
     `    ${createCommand} >/dev/null 2>&1 || exit $?`,
-    "  elif grep -Eq 'UNAUTHORIZED|Invalid password|Access denied|CLIENT_UNAUTHENTICATED|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE' \"$tmp\"; then",
+    `  elif grep -Eq '${retryableStatusErrors}' "$tmp"; then`,
     "    sleep 2",
     "  else",
     "    cat \"$tmp\" >&2",

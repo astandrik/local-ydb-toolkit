@@ -148,6 +148,7 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.plannedCommands[0]).toContain("Unknown tenant|NOT_FOUND");
     expect(response.plannedCommands[0]).toContain("State:[[:space:]]*(RUNNING|PENDING_RESOURCES)");
+    expect(response.plannedCommands[0]).toContain("SCHEME_ERROR|No database found");
     expect(response.plannedCommands[0]).toContain("sleep 2");
   });
 
@@ -183,6 +184,7 @@ describe("mutating operations", () => {
     const dynamicCommandIndex = response.plannedCommands.findIndex((command) => command.includes("docker rm -f <redacted>") || command.includes("YDB_GRPC_ENABLE_TLS=0"));
     expect(tenantCommandIndex).toBeGreaterThan(-1);
     expect(dynamicCommandIndex).toBeGreaterThan(tenantCommandIndex);
+    expect(response.plannedCommands[tenantCommandIndex]).toContain("SCHEME_ERROR|No database found");
   });
 
   it("adds an auth-token mount when the dynamic node auth file is configured", async () => {
@@ -901,6 +903,7 @@ describe("mutating operations", () => {
     expect(recopyIndex).toBeGreaterThan(firstRestartIndex);
     expect(response.plannedCommands.some((command) => command.includes("docker rm -f ydb-dyn-example"))).toBe(true);
     expect(response.plannedCommands.some((command) => command.includes("--auth-token-file /run/local-ydb/dynamic-node-auth.pb"))).toBe(true);
+    expect(response.plannedCommands.join("\n")).toContain("SCHEME_ERROR|No database found");
   });
 
   it("plans root password rotation without exposing the password", async () => {
