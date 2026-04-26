@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 
 import {
+  addStorageGroups,
+  addDynamicNodes,
   applyAuthHardening,
   authCheck,
+  databaseStatus,
   bootstrap,
+  containerLogs,
   cleanupStorage,
   createContext,
   createTenant,
@@ -11,6 +15,9 @@ import {
   graphshardCheck,
   inventory,
   nodesCheck,
+  prepareAuthConfig,
+  destroyStack,
+  removeDynamicNodes,
   restartStack,
   restoreTenant,
   startDynamicNode,
@@ -18,6 +25,7 @@ import {
   storageLeftovers,
   storagePlacement,
   tenantCheck,
+  writeDynamicNodeAuthConfig,
   type CommandExecutor,
   type LocalYdbConfig
 } from "@local-ydb-toolkit/core";
@@ -30,8 +38,38 @@ const ProfileArgs = z.object({
   profile: z.string().optional()
 });
 
+const LogsArgs = ProfileArgs.extend({
+  target: z.enum(["static", "dynamic"]),
+  lines: z.number().int().positive().optional()
+});
+
 const MutatingArgs = ProfileArgs.extend({
   confirm: z.boolean().optional()
+});
+
+const AddDynamicNodesArgs = MutatingArgs.extend({
+  count: z.number().int().positive().max(10).optional(),
+  startIndex: z.number().int().min(2).optional(),
+  grpcPortStart: z.number().int().positive().max(65535).optional(),
+  monitoringPortStart: z.number().int().positive().max(65535).optional(),
+  icPortStart: z.number().int().positive().max(65535).optional()
+});
+
+const RemoveDynamicNodesArgs = MutatingArgs.extend({
+  count: z.number().int().positive().max(10).optional(),
+  startIndex: z.number().int().min(2).optional(),
+  containers: z.array(z.string()).optional()
+});
+
+const AddStorageGroupsArgs = MutatingArgs.extend({
+  count: z.number().int().positive().max(10).optional(),
+  poolName: z.string().optional()
+});
+
+const DestroyStackArgs = MutatingArgs.extend({
+  removeBindMountPath: z.boolean().optional(),
+  removeAuthArtifacts: z.boolean().optional(),
+  removeDumpHostPath: z.boolean().optional()
 });
 
 const DumpArgs = MutatingArgs.extend({
@@ -46,6 +84,16 @@ const AuthHardeningArgs = MutatingArgs.extend({
   configHostPath: z.string().optional()
 });
 
+const PrepareAuthConfigArgs = MutatingArgs.extend({
+  configHostPath: z.string().optional(),
+  sid: z.string().optional()
+});
+
+const DynamicAuthConfigArgs = MutatingArgs.extend({
+  sid: z.string().optional(),
+  tokenHostPath: z.string().optional()
+});
+
 const CleanupArgs = MutatingArgs.extend({
   paths: z.array(z.string()).optional(),
   volumes: z.array(z.string()).optional()
@@ -58,21 +106,41 @@ type HandlerOptions = {
 
 type ToolHandler = (args: unknown, options: HandlerOptions) => Promise<unknown>;
 
+export const localYdbInstructions = [
+  "Use local_ydb_status_report or local_ydb_inventory first to establish the current stack state before mutating anything.",
+  "For bootstrap or restart issues, inspect local_ydb_database_status and local_ydb_container_logs before retrying.",
+  "Prefer exact image tags for local-ydb stacks and avoid mixing static and dynamic image versions in one stack.",
+  "On a fresh /local/<tenant> database, admin database status can be PENDING_RESOURCES before the first dynamic node registers; treat status success as the readiness gate for the first dynamic-node start.",
+  "For storage-pool expansion, reread the current pool definition first and increase NumGroups on that exact pool instead of guessing a partial DefineStoragePool shape.",
+  "For full teardown, remove tenant metadata first when the static node is reachable, then remove containers, network, and storage; keep shared host paths opt-in.",
+  "When adding extra dynamic nodes, start and verify one node at a time before adding the next.",
+  "When removing extra dynamic nodes, remove one node at a time and confirm its IC port disappears from nodelist before removing another.",
+  "For auth rollout, prepare the config and dynamic auth token first, then apply auth hardening; after auth, anonymous viewer checks should return 401 while authenticated tenant checks should still pass."
+].join(" ");
+
 export const localYdbTools: Tool[] = [
   tool("local_ydb_inventory", "Collect Docker inventory for a local-ydb target profile.", profileSchema()),
+  tool("local_ydb_database_status", "Read database status via the YDB admin API.", profileSchema()),
+  tool("local_ydb_container_logs", "Read recent logs from the static or dynamic local-ydb container.", logsSchema()),
   tool("local_ydb_status_report", "Aggregate local-ydb inventory, auth, tenant, and node checks.", profileSchema()),
   tool("local_ydb_tenant_check", "Check tenant metadata reachability with the YDB CLI.", profileSchema()),
   tool("local_ydb_nodes_check", "Check dynamic nodes through viewer/json nodelist.", profileSchema()),
   tool("local_ydb_graphshard_check", "Check GraphShard capability and tablet visibility.", profileSchema()),
   tool("local_ydb_auth_check", "Check anonymous viewer and CLI auth posture.", profileSchema()),
   tool("local_ydb_storage_placement", "Read storage pool and BSC physical placement.", profileSchema()),
+  tool("local_ydb_add_storage_groups", "Increase NumGroups for a tenant storage pool using the current ReadStoragePool definition.", addStorageGroupsSchema()),
   tool("local_ydb_storage_leftovers", "Find leftover local-ydb volumes, dumps, and PDisk paths.", profileSchema()),
+  tool("local_ydb_destroy_stack", "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup.", destroyStackSchema()),
   tool("local_ydb_bootstrap", "Bootstrap a GraphShard-ready local-ydb topology.", mutatingSchema()),
   tool("local_ydb_create_tenant", "Create the configured CMS tenant if missing.", mutatingSchema()),
   tool("local_ydb_start_dynamic_node", "Start the configured dynamic tenant node.", mutatingSchema()),
+  tool("local_ydb_add_dynamic_nodes", "Add extra dynamic tenant nodes one at a time and verify each reaches nodelist.", addDynamicNodesSchema()),
+  tool("local_ydb_remove_dynamic_nodes", "Remove extra dynamic tenant nodes one at a time and verify each disappears from nodelist.", removeDynamicNodesSchema()),
   tool("local_ydb_restart_stack", "Restart static and dynamic local-ydb containers.", mutatingSchema()),
   tool("local_ydb_dump_tenant", "Dump the configured tenant using a local-ydb helper container.", dumpSchema()),
   tool("local_ydb_restore_tenant", "Restore the configured tenant from a named dump.", restoreSchema()),
+  tool("local_ydb_prepare_auth_config", "Prepare a hardened YDB config file from the current static-node config.", prepareAuthConfigSchema()),
+  tool("local_ydb_write_dynamic_auth_config", "Write a text-proto auth token file for mandatory-auth dynamic node startup.", dynamicAuthConfigSchema()),
   tool("local_ydb_apply_auth_hardening", "Apply a reviewed YDB config file and restart local-ydb.", authHardeningSchema()),
   tool("local_ydb_cleanup_storage", "Remove explicitly supplied local-ydb storage paths or volumes.", cleanupSchema())
 ];
@@ -81,6 +149,14 @@ const handlers: Record<string, ToolHandler> = {
   local_ydb_inventory: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
     return inventory(createContext(parsed.profile, options.executor, options.config));
+  },
+  local_ydb_database_status: async (args, options) => {
+    const parsed = ProfileArgs.parse(args ?? {});
+    return databaseStatus(createContext(parsed.profile, options.executor, options.config));
+  },
+  local_ydb_container_logs: async (args, options) => {
+    const parsed = LogsArgs.parse(args ?? {});
+    return containerLogs(createContext(parsed.profile, options.executor, options.config), parsed);
   },
   local_ydb_status_report: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
@@ -106,9 +182,17 @@ const handlers: Record<string, ToolHandler> = {
     const parsed = ProfileArgs.parse(args ?? {});
     return storagePlacement(createContext(parsed.profile, options.executor, options.config));
   },
+  local_ydb_add_storage_groups: async (args, options) => {
+    const parsed = AddStorageGroupsArgs.parse(args ?? {});
+    return addStorageGroups(createContext(parsed.profile, options.executor, options.config), parsed);
+  },
   local_ydb_storage_leftovers: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
     return storageLeftovers(createContext(parsed.profile, options.executor, options.config));
+  },
+  local_ydb_destroy_stack: async (args, options) => {
+    const parsed = DestroyStackArgs.parse(args ?? {});
+    return destroyStack(createContext(parsed.profile, options.executor, options.config), parsed);
   },
   local_ydb_bootstrap: async (args, options) => {
     const parsed = MutatingArgs.parse(args ?? {});
@@ -122,6 +206,14 @@ const handlers: Record<string, ToolHandler> = {
     const parsed = MutatingArgs.parse(args ?? {});
     return startDynamicNode(createContext(parsed.profile, options.executor, options.config), parsed);
   },
+  local_ydb_add_dynamic_nodes: async (args, options) => {
+    const parsed = AddDynamicNodesArgs.parse(args ?? {});
+    return addDynamicNodes(createContext(parsed.profile, options.executor, options.config), parsed);
+  },
+  local_ydb_remove_dynamic_nodes: async (args, options) => {
+    const parsed = RemoveDynamicNodesArgs.parse(args ?? {});
+    return removeDynamicNodes(createContext(parsed.profile, options.executor, options.config), parsed);
+  },
   local_ydb_restart_stack: async (args, options) => {
     const parsed = MutatingArgs.parse(args ?? {});
     return restartStack(createContext(parsed.profile, options.executor, options.config), parsed);
@@ -133,6 +225,14 @@ const handlers: Record<string, ToolHandler> = {
   local_ydb_restore_tenant: async (args, options) => {
     const parsed = RestoreArgs.parse(args ?? {});
     return restoreTenant(createContext(parsed.profile, options.executor, options.config), parsed);
+  },
+  local_ydb_prepare_auth_config: async (args, options) => {
+    const parsed = PrepareAuthConfigArgs.parse(args ?? {});
+    return prepareAuthConfig(createContext(parsed.profile, options.executor, options.config), parsed);
+  },
+  local_ydb_write_dynamic_auth_config: async (args, options) => {
+    const parsed = DynamicAuthConfigArgs.parse(args ?? {});
+    return writeDynamicNodeAuthConfig(createContext(parsed.profile, options.executor, options.config), parsed);
   },
   local_ydb_apply_auth_hardening: async (args, options) => {
     const parsed = AuthHardeningArgs.parse(args ?? {});
@@ -147,7 +247,7 @@ const handlers: Record<string, ToolHandler> = {
 export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
   const server = new Server(
     { name: "local-ydb-toolkit", version: "0.1.0" },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} }, instructions: localYdbInstructions }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: localYdbTools }));
@@ -194,12 +294,82 @@ function profileSchema(): Tool["inputSchema"] {
   };
 }
 
+function logsSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    required: ["target"],
+    properties: {
+      profile: { type: "string" },
+      target: { type: "string", enum: ["static", "dynamic"] },
+      lines: { type: "integer", minimum: 1, description: "Number of recent log lines to read. Defaults to 200." }
+    },
+    additionalProperties: false
+  };
+}
+
 function mutatingSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
       profile: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." }
+    },
+    additionalProperties: false
+  };
+}
+
+function addDynamicNodesSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: { type: "string" },
+      confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
+      count: { type: "integer", minimum: 1, maximum: 10, description: "Number of additional dynamic nodes to add. Defaults to 1." },
+      startIndex: { type: "integer", minimum: 2, description: "Suffix for the first added container. Defaults to 2, producing <dynamicContainer>-2." },
+      grpcPortStart: { type: "integer", minimum: 1, maximum: 65535, description: "gRPC port for the first added node. Defaults to profile.dynamicGrpc + startIndex - 1." },
+      monitoringPortStart: { type: "integer", minimum: 1, maximum: 65535, description: "Monitoring port for the first added node. Defaults to profile.dynamicMonitoring + startIndex - 1." },
+      icPortStart: { type: "integer", minimum: 1, maximum: 65535, description: "Interconnect port for the first added node. Defaults to profile.dynamicIc + startIndex - 1." }
+    },
+    additionalProperties: false
+  };
+}
+
+function addStorageGroupsSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: { type: "string" },
+      confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
+      count: { type: "integer", minimum: 1, maximum: 10, description: "Number of storage groups to add. Defaults to 1." },
+      poolName: { type: "string", description: "Explicit storage pool name. Defaults to <tenantPath>:<storagePoolKind>." }
+    },
+    additionalProperties: false
+  };
+}
+
+function destroyStackSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: { type: "string" },
+      confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
+      removeBindMountPath: { type: "boolean", description: "Delete profile.bindMountPath when the profile uses a bind mount. Defaults to false." },
+      removeAuthArtifacts: { type: "boolean", description: "Delete explicit authConfigPath, dynamicNodeAuthTokenFile, and rootPasswordFile when configured. Defaults to false." },
+      removeDumpHostPath: { type: "boolean", description: "Delete profile.dumpHostPath. Defaults to false because it may be shared." }
+    },
+    additionalProperties: false
+  };
+}
+
+function removeDynamicNodesSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: { type: "string" },
+      confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
+      count: { type: "integer", minimum: 1, maximum: 10, description: "Number of extra dynamic nodes to remove. Defaults to 1." },
+      startIndex: { type: "integer", minimum: 2, description: "Minimum suffix to consider removable. Defaults to 2." },
+      containers: { type: "array", items: { type: "string" }, description: "Explicit extra dynamic-node container names to remove." }
     },
     additionalProperties: false
   };
@@ -236,7 +406,33 @@ function authHardeningSchema(): Tool["inputSchema"] {
     properties: {
       profile: { type: "string" },
       confirm: { type: "boolean" },
-      configHostPath: { type: "string", description: "Reviewed config.yaml path on the selected target host." }
+      configHostPath: { type: "string", description: "Reviewed config.yaml path on the selected target host. Defaults to profile.authConfigPath when present." }
+    },
+    additionalProperties: false
+  };
+}
+
+function prepareAuthConfigSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: { type: "string" },
+      confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
+      configHostPath: { type: "string", description: "Host path for the generated hardened config. Defaults to profile.authConfigPath when present." },
+      sid: { type: "string", description: "SID to place into viewer, monitoring, administration, and register_dynamic_node_allowed_sids. Defaults to profile.dynamicNodeAuthSid or root@builtin." }
+    },
+    additionalProperties: false
+  };
+}
+
+function dynamicAuthConfigSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: { type: "string" },
+      confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
+      sid: { type: "string", description: "SID to store in both StaffApiUserToken and NodeRegistrationToken." },
+      tokenHostPath: { type: "string", description: "Host path for the generated text-proto auth token file. Defaults to profile.dynamicNodeAuthTokenFile when present." }
     },
     additionalProperties: false
   };

@@ -162,6 +162,16 @@ export interface BscPlacement {
   paths: string[];
 }
 
+export interface StoragePoolSummary {
+  rawBlock: string;
+  boxId?: number;
+  storagePoolId?: number;
+  name?: string;
+  kind?: string;
+  numGroups?: number;
+  itemConfigGeneration?: number;
+}
+
 export function parseBscPlacement(output: string): BscPlacement {
   return {
     groupIds: uniqueNumbers(output.matchAll(/\bGroupId:\s*(\d+)/g)),
@@ -170,8 +180,57 @@ export function parseBscPlacement(output: string): BscPlacement {
   };
 }
 
+export function parseReadStoragePools(output: string): StoragePoolSummary[] {
+  const pools: StoragePoolSummary[] = [];
+  const marker = "StoragePool {";
+  let offset = 0;
+
+  while ((offset = output.indexOf(marker, offset)) !== -1) {
+    let depth = 0;
+    let end = -1;
+    for (let index = offset; index < output.length; index += 1) {
+      const char = output[index];
+      if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          end = index + 1;
+          break;
+        }
+      }
+    }
+    if (end === -1) {
+      break;
+    }
+    const rawBlock = output.slice(offset, end);
+    pools.push({
+      rawBlock,
+      boxId: matchNumber(rawBlock, /\bBoxId:\s*(\d+)/),
+      storagePoolId: matchNumber(rawBlock, /\bStoragePoolId:\s*(\d+)/),
+      name: matchString(rawBlock, /\bName:\s*"([^"]+)"/),
+      kind: matchString(rawBlock, /\bKind:\s*"([^"]+)"/),
+      numGroups: matchNumber(rawBlock, /\bNumGroups:\s*(\d+)/),
+      itemConfigGeneration: matchNumber(rawBlock, /\bItemConfigGeneration:\s*(\d+)/)
+    });
+    offset = end;
+  }
+
+  return pools;
+}
+
 function uniqueNumbers(matches: IterableIterator<RegExpMatchArray>): number[] {
   return Array.from(new Set(Array.from(matches, (match) => Number(match[1])))).sort((a, b) => a - b);
+}
+
+function matchNumber(text: string, pattern: RegExp): number | undefined {
+  const match = pattern.exec(text);
+  return match ? Number(match[1]) : undefined;
+}
+
+function matchString(text: string, pattern: RegExp): string | undefined {
+  const match = pattern.exec(text);
+  return match?.[1];
 }
 
 export class LocalYdbApiClient {
@@ -229,7 +288,7 @@ export class LocalYdbApiClient {
   async viewerGet(pathAndQuery: string, authenticated = false): Promise<{ status: "ok" | "error"; data?: unknown; error?: string }> {
     const url = `${this.profile.monitoringBaseUrl}${pathAndQuery}`;
     const result = await this.run(authenticated && this.profile.rootPasswordFile
-      ? authenticatedCurlJson(url, this.profile.rootUser, this.profile.rootPasswordFile)
+      ? authenticatedCurlJson(url, this.profile.monitoringBaseUrl, this.profile.rootUser, this.profile.rootPasswordFile)
       : bash(`curl -fsSL -L ${shellQuote(url)}`, { allowFailure: true, description: "Fetch YDB viewer JSON" }));
     if (!result.ok) {
       return { status: "error", error: result.stderr || result.stdout };
@@ -252,7 +311,8 @@ export class LocalYdbApiClient {
   }
 }
 
-function authenticatedCurlJson(url: string, user: string, passwordFile: string): CommandSpec {
+function authenticatedCurlJson(url: string, monitoringBaseUrl: string, user: string, passwordFile: string): CommandSpec {
+  const loginUrl = new URL("/login", monitoringBaseUrl).toString();
   return bash([
     "set -euo pipefail",
     "cookie=$(mktemp)",
@@ -260,7 +320,7 @@ function authenticatedCurlJson(url: string, user: string, passwordFile: string):
     `pass=$(cat ${shellQuote(passwordFile)})`,
     `user=${shellQuote(user)}`,
     "data=$(printf '{\"user\":\"%s\",\"password\":\"%s\"}' \"$user\" \"$pass\")",
-    `curl -fsS -c "$cookie" -H 'Content-Type: application/json' -X POST --data "$data" ${shellQuote("http://127.0.0.1:8765/login")} >/dev/null`,
+    `curl -fsS -c "$cookie" -H 'Content-Type: application/json' -X POST --data "$data" ${shellQuote(loginUrl)} >/dev/null`,
     `curl -fsSL -b "$cookie" -L ${shellQuote(url)}`
   ].join("\n"), {
     allowFailure: true,

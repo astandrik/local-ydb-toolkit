@@ -115,3 +115,11 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 - static `ydb-local` node with `YDB_FEATURE_FLAGS=enable_graph_shard`;
 - CMS-created tenant with `ydbd admin database /local/<tenant> create hdd:1`;
 - one dynamic tenant node.
+
+`local_ydb_add_dynamic_nodes` adds extra dynamic tenant nodes from the selected profile without requiring separate profile entries. It derives container names and ports from the base dynamic node by default, starts nodes one at a time, and verifies each new IC port through `viewer/json/nodelist` before continuing.
+
+`local_ydb_remove_dynamic_nodes` removes extra dynamic tenant nodes from the selected profile. By default it removes the highest-index extra node first, verifies the removed node's IC port disappears from `viewer/json/nodelist`, and leaves the base dynamic node untouched.
+
+`local_ydb_add_storage_groups` rereads the current tenant storage pool definition with `ReadStoragePool`, resubmits that exact pool through `DefineStoragePool`, and increases `NumGroups` by the requested count. It is intended for live pool expansion on the current PDisk layout, not for adding new physical disks.
+
+`local_ydb_destroy_stack` tears down a profile end to end: it removes tenant metadata when the static node is reachable, removes extra and primary dynamic nodes, removes the static node, removes the Docker network, and removes the Docker volume for volume-backed profiles. Deleting bind-mounted data, auth artifacts, and dump directories is opt-in through explicit flags because those host paths may be shared.

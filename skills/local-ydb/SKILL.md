@@ -23,17 +23,24 @@ Use this skill to inspect, document, run, harden, or troubleshoot `local-ydb` de
 - Read `references/storage-migration.md` when adding PDisks, changing storage placement, moving storage onto one physical disk, creating replacement tenants, migrating data, decommissioning groups, reclaiming space, cleaning old Docker volumes/PDisks/dumps, or debugging why UI and BSC disagree about storage.
 - Read `references/verification.md` when checking health, tenant state, GraphShard, graph data, storage, or auth behavior.
 - Read `references/history-and-non-goals.md` when cleaning docs, deciding what is reusable versus artifact noise, or reconciling stale hardening plans with final topology.
+- For exact-GHCR `26.1.1.6` local runs, combine `topology.md`, `auth-hardening.md`, and `verification.md`; they contain field-proven steps for fresh bootstrap, restore, auth rollout, and the nightly-vs-stable pitfalls we hit in practice.
+- Prefer the MCP read-only tools `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, and `local_ydb_storage_placement` over ad hoc shell diagnostics when they are available.
 
 ## Core Rules
 
 - Do not assume `/local` has GraphShard. `YDB_FEATURE_FLAGS=enable_graph_shard` is necessary but not sufficient; use a CMS-created tenant such as `/local/<tenant>`.
 - Do not create GraphShard tenants with SQL. Use the public CMS gRPC API.
+- Prefer exact GHCR patch tags such as `ghcr.io/ydb-platform/local-ydb:26.1.1.6`. Do not assume floating aliases like `:26.1` exist or are pullable.
 - When `local-ydb` behavior is unclear, search upstream `ydb-platform/ydb` source with `gh api search/code` and read matching files through `gh api repos/ydb-platform/ydb/contents/...`; use pinned commits from project docs when matching documented proto shapes.
 - Do not hardcode dynamic node IDs. Discover them through monitoring/node-list APIs.
 - Do not treat `POSTGRES_USER` or `POSTGRES_PASSWORD` as native YDB gRPC protection. They are for PostgreSQL compatibility.
 - Do not publish YDB gRPC publicly unless the user explicitly requests that topology and accepts the risk. The hardened default is YDB gRPC internal-only, with monitoring exposed only through a protected HTTPS reverse proxy when needed.
 - Do not claim anonymous `viewer/json` commands work after mandatory auth. In a hardened topology anonymous `viewer/json` should return `401`; commands need an authenticated UI/session path or must be marked as pre-auth/local-dev examples.
+- Do not mix static and dynamic image tags or registries in one live stack. A static node on one build and a dynamic node on another can fail interconnect compatibility or auth/bootstrap in ways that look like tenant breakage.
+- On GHCR `26.1.1.6`, treat `admin database ... status` success with `State: PENDING_RESOURCES` as the expected pre-dynamic state. Wait for `status` to succeed before first dynamic-node start; do not wait for `RUNNING` before starting the first dynamic node.
+- On GHCR `26.1.1.6`, the generated static-node `config.yaml` can contain `grpc_config.{ca,cert,key}=/ydb_certs/...`. A dynamic node that reuses that file verbatim can crash on missing cert files. For non-TLS local runs, sanitize those three lines out for the dynamic-node copy of the config.
 - When adding dynamic nodes to a mandatory-auth deployment, start one new node first, verify it reaches `nodelist`, then add the next. If a new node registers but cannot fetch dynamic config, preserve evidence and stop the broken container; do not delete working or recently registered containers before a replacement is healthy.
+- If a dynamic-node container already exists but was started with stale flags, stale image tag, or stale config, do not rely on `docker start`. Remove and recreate it so the new launch command actually takes effect.
 - Do not reuse an old data volume for an in-place version upgrade unless the upgrade has been rehearsed on a copy.
 - Do not assume `admin database ... status` or UI `StorageGroups` means groups are physically placed where you want them. Use BSC `QueryBaseConfig` to confirm actual `Group -> PDisk` placement.
 - Do not assume `DecommitGroups` reduces tenant storage allocation. It changes physical/virtual group state; it does not shrink `hdd:N/N`.
@@ -43,6 +50,8 @@ Use this skill to inspect, document, run, harden, or troubleshoot `local-ydb` de
 - For "put all storage on disk X" requests, prefer dump + fresh single-disk rebuild + restore over live `ReassignGroupDisk` for non-empty tenant groups. Delete old disks only after restored counts, metadata reads, auth, and BSC placement all pass.
 - Before declaring old storage deleted, check both bind-mounted paths and Docker volumes. Old local-ydb volumes can use more than one historical name.
 - When using `ghcr.io/ydb-platform/local-ydb` as a helper container for `ydb tools restore`, override the image entrypoint to `/bin/bash`. The default `local_ydb` entrypoint does not execute arbitrary shell restore scripts.
+- For auth-hardened viewer access, do not assume the authenticated SID is always `root@builtin`. A stock `root` username/password token can resolve to SID `root`; viewer/monitoring/admin ACLs should include both `root` and `root@builtin` unless you have stronger evidence for the deployed build.
+- For authenticated viewer JSON checks, do not hardcode `http://127.0.0.1:8765/login`. Use the selected profile's monitoring base URL and post to `<monitoringBaseUrl>/login`.
 - Do not commit secret material, live password-file paths, private backup paths, or one-off remote-host cutover logs into reusable docs.
 
 ## Output Style

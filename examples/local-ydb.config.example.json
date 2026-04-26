@@ -3,6 +3,11 @@
   "profiles": {
     "local": {
       "mode": "local",
+      "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+      "authConfigPath": "/tmp/local-ydb-auth/config.auth.yaml",
+      "dynamicNodeAuthTokenFile": "/tmp/local-ydb-auth/dynamic-node-auth.pb",
+      "dynamicNodeAuthSid": "root@builtin",
+      "rootPasswordFile": "/tmp/local-ydb-auth/root.password",
       "tenantPath": "/local/example",
       "volume": "ydb-local-data",
       "network": "ydb-net",
@@ -12,6 +17,82 @@
         "dynamicGrpc": 2137,
         "dynamicMonitoring": 8766,
         "dynamicIc": 19002
+      },
+      "dumpHostPath": "/tmp/local-ydb-dump"
+    },
+    "ghcr-rebuild-clean": {
+      "mode": "local",
+      "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+      "staticContainer": "ydb-local-ghcr-clean",
+      "dynamicContainer": "ydb-dyn-example-ghcr-clean",
+      "tenantPath": "/local/example",
+      "volume": "ydb-local-data-ghcr-clean",
+      "network": "ydb-net-ghcr-clean",
+      "ports": {
+        "monitoring": 8965,
+        "staticGrpc": 2246,
+        "dynamicGrpc": 2247,
+        "dynamicMonitoring": 8966,
+        "dynamicIc": 19202
+      },
+      "dumpHostPath": "/tmp/local-ydb-dump"
+    },
+    "ghcr-rebuild-auth": {
+      "mode": "local",
+      "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+      "staticContainer": "ydb-local-ghcr-clean",
+      "dynamicContainer": "ydb-dyn-example-ghcr-clean",
+      "authConfigPath": "/tmp/local-ydb-auth/config.auth.yaml",
+      "dynamicNodeAuthTokenFile": "/tmp/local-ydb-auth/dynamic-node-auth.pb",
+      "dynamicNodeAuthSid": "root@builtin",
+      "rootPasswordFile": "/tmp/local-ydb-auth/root.password",
+      "tenantPath": "/local/example",
+      "volume": "ydb-local-data-ghcr-clean",
+      "network": "ydb-net-ghcr-clean",
+      "ports": {
+        "monitoring": 8965,
+        "staticGrpc": 2246,
+        "dynamicGrpc": 2247,
+        "dynamicMonitoring": 8966,
+        "dynamicIc": 19202
+      },
+      "dumpHostPath": "/tmp/local-ydb-dump"
+    },
+    "ghcr261-clean": {
+      "mode": "local",
+      "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+      "staticContainer": "ydb-local-ghcr261",
+      "dynamicContainer": "ydb-dyn-example-ghcr261",
+      "tenantPath": "/local/example",
+      "volume": "ydb-local-data-ghcr261",
+      "network": "ydb-net-ghcr261",
+      "ports": {
+        "monitoring": 9065,
+        "staticGrpc": 2256,
+        "dynamicGrpc": 2257,
+        "dynamicMonitoring": 9066,
+        "dynamicIc": 19302
+      },
+      "dumpHostPath": "/tmp/local-ydb-dump"
+    },
+    "ghcr261-auth": {
+      "mode": "local",
+      "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+      "staticContainer": "ydb-local-ghcr261",
+      "dynamicContainer": "ydb-dyn-example-ghcr261",
+      "authConfigPath": "/tmp/local-ydb-auth/config.auth.yaml",
+      "dynamicNodeAuthTokenFile": "/tmp/local-ydb-auth/dynamic-node-auth.pb",
+      "dynamicNodeAuthSid": "root@builtin",
+      "rootPasswordFile": "/tmp/local-ydb-auth/root.password",
+      "tenantPath": "/local/example",
+      "volume": "ydb-local-data-ghcr261",
+      "network": "ydb-net-ghcr261",
+      "ports": {
+        "monitoring": 9065,
+        "staticGrpc": 2256,
+        "dynamicGrpc": 2257,
+        "dynamicMonitoring": 9066,
+        "dynamicIc": 19302
       },
       "dumpHostPath": "/tmp/local-ydb-dump"
     },

@@ -6,12 +6,16 @@ Keep these facts in reusable docs:
 
 - `/local` does not automatically get GraphShard.
 - `/local/<tenant>` should be CMS-created when GraphShard-backed charts are required.
+- On `ghcr.io/ydb-platform/local-ydb`, prefer an exact patch tag such as `26.1.1.6`; do not assume `:26.1` exists.
 - Dynamic nodes may need `--network container:ydb-local` in generated-config topologies.
+- On `ghcr.io/ydb-platform/local-ydb:26.1.1.6`, `admin database ... status` can be `PENDING_RESOURCES` before the first dynamic node registers; that is not a hard failure by itself.
+- On `ghcr.io/ydb-platform/local-ydb:26.1.1.6`, the generated static-node `config.yaml` can include `/ydb_certs/{ca,cert,key}.pem`, and a non-TLS dynamic node may need a sanitized copy of that config.
 - Graph data should be requested through `/node/<dynamic-node-id>/viewer/json/graph`.
 - `POSTGRES_USER` and `POSTGRES_PASSWORD` do not protect native YDB gRPC.
 - Do not hardcode dynamic node IDs.
 - Rehearse volume upgrades and auth hardening on a copy first.
 - Verify physical storage placement through BSC before deleting old PDisks or volumes.
+- For auth-hardened viewer ACLs, the default root password can authenticate as SID `root` while dynamic-node auth still uses `root@builtin`; reusable docs should mention both.
 
 ## Artifact Noise
 
@@ -23,6 +27,7 @@ Move these out of reusable runbooks unless writing private operational history:
 - one-off remote IP checks
 - rehearsal container names that no longer exist
 - old image tags used only during cutover
+- short-lived alias tags like `ghcr.io/ydb-platform/local-ydb:26.1` when the successful workflow depended on an exact patch tag
 - exact lockout or password drift incidents
 - shell transcripts that only prove a past investigation
 - application-specific table names, image names, and health endpoints

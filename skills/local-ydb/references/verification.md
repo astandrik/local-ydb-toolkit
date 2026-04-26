@@ -34,6 +34,7 @@ Observed details:
 - the working login field may be `user`
 - protected viewer endpoints may return `307` after login; use `curl -L`
 - cookie-based UI flow can work when generic Bearer-token testing does not
+- use the actual monitoring port from the selected profile; do not hardcode `8765` when the stack runs on a different port
 
 Authenticated node-list helper for hardened hosts:
 
@@ -111,6 +112,12 @@ Interpretation:
 - `503` from the public domain during maintenance can be just a reverse proxy hitting an upstream while YDB is restarting
 - `503` with a stable local `401` points to reverse-proxy/upstream routing rather than YDB auth itself
 
+`admin database ... status` interpretation:
+
+- `NOT_FOUND` or `Unknown tenant` means the tenant still needs to be created
+- `PENDING_RESOURCES` can be the expected pre-dynamic state on a fresh `/local/<tenant>` database
+- `RUNNING` is the steady-state target after the dynamic node has registered successfully
+
 ## Metadata Path
 
 After any storage move, tenant recovery, or replacement-tenant cutover, verify metadata explicitly:
@@ -178,6 +185,13 @@ curl -fsS "http://127.0.0.1:8765/node/${GRAPH_NODE_ID}/viewer/json/graph?databas
 ```
 
 The root `/viewer/json/graph` endpoint can return `GraphShard is not enabled on the database` even when `GraphShardExists=true` for `/local/<tenant>`.
+
+Field-proven post-auth checks on a stable `26.1.1.6` stack:
+
+- anonymous `GET /viewer/json/whoami` returns `401`
+- authenticated `scheme ls /local/<tenant>` succeeds with `root.password`
+- authenticated `nodelist` returns the dynamic node and IC port
+- authenticated `capabilities` reports `GraphShardExists=true`
 
 ## Storage
 

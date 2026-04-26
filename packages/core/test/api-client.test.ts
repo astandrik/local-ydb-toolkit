@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { parseBscPlacement, parseDockerPsJsonLines, redactCommand, ShellCommandExecutor } from "../src/index.js";
+import {
+  LocalYdbApiClient,
+  parseBscPlacement,
+  parseDockerPsJsonLines,
+  parseReadStoragePools,
+  redactCommand,
+  ShellCommandExecutor,
+  type CommandExecutor,
+  type CommandResult,
+  type CommandSpec
+} from "../src/index.js";
 import { ConfigSchema, resolveProfile } from "../src/validation.js";
 
 describe("api client helpers", () => {
@@ -17,6 +27,26 @@ describe("api client helpers", () => {
     expect(placement.groupIds).toEqual([100, 101]);
     expect(placement.pdiskIds).toEqual([1, 2]);
     expect(placement.paths).toEqual(["/ydb_data/pdisks/1"]);
+  });
+
+  it("parses storage pools from ReadStoragePool output", () => {
+    const pools = parseReadStoragePools(`
+Status {
+  StoragePool {
+    BoxId: 1
+    StoragePoolId: 2
+    Name: "/local/example:hdd"
+    Kind: "hdd"
+    NumGroups: 1
+    ItemConfigGeneration: 2
+  }
+}
+`);
+    expect(pools).toHaveLength(1);
+    expect(pools[0].name).toBe("/local/example:hdd");
+    expect(pools[0].storagePoolId).toBe(2);
+    expect(pools[0].numGroups).toBe(1);
+    expect(pools[0].itemConfigGeneration).toBe(2);
   });
 
   it("redacts sensitive command flags and profile values", () => {
@@ -40,5 +70,36 @@ describe("api client helpers", () => {
     expect(command).toContain("ssh");
     expect(command).toContain("BatchMode=yes");
     expect(command).toContain("ops@db.example");
+  });
+
+  it("uses the configured monitoring port for authenticated viewer login", async () => {
+    class RecordingExecutor implements CommandExecutor {
+      command = "";
+
+      display(_profile: ReturnType<typeof resolveProfile>, spec: CommandSpec): string {
+        this.command = [spec.command, ...(spec.args ?? [])].join(" ");
+        return this.command;
+      }
+
+      async run(profile: ReturnType<typeof resolveProfile>, spec: CommandSpec): Promise<CommandResult> {
+        const command = this.display(profile, spec);
+        return { command, exitCode: 0, stdout: "{}", stderr: "", ok: true, timedOut: false };
+      }
+    }
+
+    const profile = resolveProfile(ConfigSchema.parse({
+      profiles: {
+        default: {
+          ports: {
+            monitoring: 9065
+          },
+          rootPasswordFile: "/tmp/root.password"
+        }
+      }
+    }));
+    const executor = new RecordingExecutor();
+    const client = new LocalYdbApiClient(profile, executor);
+    await client.viewerGet("/viewer/json/nodelist", true);
+    expect(executor.command).toContain("http://127.0.0.1:9065/login");
   });
 });

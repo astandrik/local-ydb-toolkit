@@ -27,6 +27,14 @@ Use environment-variable passwords only as a fallback when a password file is no
 
 Keep password files, tokens, CA private keys, and host-specific secret paths outside git.
 
+Field-proven default-root behavior on `local-ydb` images:
+
+- generated `security_config.default_users` can contain `root` with password `1234`
+- a token minted from that username/password can identify as `User SID: root`
+- dynamic-node auth token files can still use `root@builtin`
+
+Because of that split identity, viewer/monitoring/admin/register-dynamic-node ACLs should usually include both `root` and `root@builtin` unless the deployed build proves a different SID mapping.
+
 ## Dynamic Node Auth
 
 For a mandatory-auth local-ydb dynamic node, `--auth-token-file` is a text protobuf for `NKikimrProto.TAuthConfig`, not a raw access-token file. Two fields matter during startup:
@@ -75,6 +83,16 @@ For production-like changes, use a copied volume first when possible.
 
 Before mutating live config or volumes, provide a rollback plan: previous run commands, previous image tag, volume backup, and config restore point.
 
+Field-proven MCP sequence for a fresh stable `26.1.1.6` GHCR stack:
+
+1. `local_ydb_dump_tenant(confirm=true, dumpName="pre-auth-...")`
+2. bootstrap a fresh clean stack on separate container names, network, volume, and ports with exact image `ghcr.io/ydb-platform/local-ydb:26.1.1.6`
+3. `local_ydb_restore_tenant(confirm=true, dumpName="pre-auth-...")`
+4. `local_ydb_prepare_auth_config(confirm=true)` to extract current config and root password file
+5. `local_ydb_write_dynamic_auth_config(confirm=true)` for the dynamic auth text-proto
+6. `local_ydb_apply_auth_hardening(confirm=true)` on the same stack
+7. verify: `viewer whoami = 401`, authenticated `scheme ls /local/<tenant>` works, authenticated `nodelist` works, authenticated GraphShard capability works
+
 ## Monitoring Exposure
 
 YDB itself should remain the source of truth for authorization. A reverse proxy may provide HTTPS transport and routing, but do not rely on proxy Basic Auth as the only protection for YDB monitoring data.
@@ -99,6 +117,7 @@ Observed login shape on some builds:
 - `POST /login` accepts JSON with `{"user":"root","password":"..."}`
 - cookie-based requests to protected viewer endpoints work after login
 - protected endpoints may redirect with `307`; use `curl -L` in scripts
+- use the actual monitoring port from the selected profile, not a hardcoded `8765`
 
 ## TLS Findings
 
@@ -121,5 +140,6 @@ Important findings to verify on the deployed version:
 - Do not write `StaffApiUserToken` unquoted or as a raw token file. Generate text protobuf with quoted string values and inspect a redacted copy if parsing fails.
 - Do not treat a registered node ID as proof that the node is usable; verify logs, `nodelist`, tenant metadata, and client health.
 - When a dynamic-node attempt fails in a restart loop, prefer `docker update --restart=no <name>` followed by `docker stop <name>` to preserve logs. Do not remove working or newly registered containers until the replacement node is healthy.
+- On `ghcr.io/ydb-platform/local-ydb:26.1.1.6`, a dynamic node can successfully register and still crash if it reuses a config file containing `grpc_config.ca/cert/key=/ydb_certs/...` without those files mounted. Sanitize the dynamic-node copy of the config or mount matching cert files.
 - `YDB_ANONYMOUS_CREDENTIALS=1` in the static-node environment does not override `security_config.enforce_user_token_requirement: true`, but it is still confusing in docs. Explain the interaction if it remains present.
 - Do not expose plaintext YDB gRPC publicly as a convenience shortcut.

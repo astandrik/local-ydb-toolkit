@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ConfigSchema, resolveProfile } from "../src/validation.js";
+import { ConfigSchema, DEFAULT_IMAGE, resolveProfile } from "../src/validation.js";
 
 describe("config validation", () => {
   it("builds a default local profile", () => {
     const config = ConfigSchema.parse({});
     const profile = resolveProfile(config);
     expect(profile.mode).toBe("local");
+    expect(profile.image).toBe(DEFAULT_IMAGE);
     expect(profile.staticContainer).toBe("ydb-local");
     expect(profile.tenantPath).toBe("/local/example");
     expect(profile.dynamicContainer).toBe("ydb-dyn-example");
