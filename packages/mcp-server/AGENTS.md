@@ -3,7 +3,7 @@
 ## Build & Run
 - `npm run build` - Compile `src/index.ts` to `dist/index.js`.
 - `npm run typecheck` - Type-check server source, tests, and the referenced core source without emitting files.
-- `cd ../.. && npm run build -w @local-ydb-toolkit/mcp-server` - Build this workspace from the repo root.
+- `cd ../.. && npm run build -w @astandrik/local-ydb-mcp` - Build this workspace from the repo root.
 - `node dist/index.js` - Start the stdio MCP server after building from this package directory.
 
 ## Overview
@@ -12,7 +12,7 @@
 ## Testing
 - `cd ../.. && npm test -- packages/mcp-server/test/tools.test.ts` - Run MCP tool registration and handler tests.
 - `cd ../.. && npm test -- -t "mcp tools"` - Run tests matching the MCP tools suite.
-- `cd ../.. && npm run typecheck -w @local-ydb-toolkit/mcp-server` - Type-check this workspace from the repo root.
+- `cd ../.. && npm run typecheck -w @astandrik/local-ydb-mcp` - Type-check this workspace from the repo root.
 
 ## Project Structure
 - `src/index.ts` - Server construction, tool definitions, argument schemas, handlers, result formatting, and CLI entry point.

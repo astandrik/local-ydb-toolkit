@@ -64,10 +64,10 @@ jobs:
 
       - run: npm run typecheck
 
-      - run: npm pack -w @local-ydb-toolkit/mcp-server --dry-run
+      - run: npm pack -w @astandrik/local-ydb-mcp --dry-run
 
       - name: Publish ${{ needs.release-please.outputs.tag_name }} to npm
-        run: npm publish -w @local-ydb-toolkit/mcp-server
+        run: npm publish -w @astandrik/local-ydb-mcp
 
   dry-run:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
@@ -91,4 +91,4 @@ jobs:
 
       - run: npm run typecheck
 
-      - run: npm pack -w @local-ydb-toolkit/mcp-server --dry-run
+      - run: npm pack -w @astandrik/local-ydb-mcp --dry-run

@@ -9,7 +9,7 @@ const serverDist = resolve(packageDir, "dist");
 const vendoredCore = resolve(serverDist, "vendor/core");
 
 await assertFile(resolve(coreDist, "index.js"), "Build @local-ydb-toolkit/core before vendoring it.");
-await assertFile(resolve(serverDist, "index.js"), "Build @local-ydb-toolkit/mcp-server before vendoring core.");
+await assertFile(resolve(serverDist, "index.js"), "Build @astandrik/local-ydb-mcp before vendoring core.");
 
 await rm(vendoredCore, { recursive: true, force: true });
 await mkdir(vendoredCore, { recursive: true });
