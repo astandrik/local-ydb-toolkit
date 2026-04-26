@@ -157,6 +157,12 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
   if (startIndex < 2) {
     throw new Error("startIndex must be 2 or greater to avoid the profile dynamicContainer");
   }
+  if (options.nodeIds && options.nodeIds.length > 0 && options.containers && options.containers.length > 0) {
+    throw new Error("Specify either nodeIds or containers, not both");
+  }
+  if (options.nodeIds && options.nodeIds.length > 0 && options.count !== undefined) {
+    throw new Error("count cannot be used with nodeIds");
+  }
 
   const containers = await ctx.client.dockerPs();
   const available = containers
@@ -165,7 +171,12 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
     .filter((target) => target.index >= startIndex);
 
   let targets: DynamicNodeTarget[];
-  if (options.containers && options.containers.length > 0) {
+  if (options.nodeIds && options.nodeIds.length > 0) {
+    const requestedNodeIds = validateNodeIds(options.nodeIds);
+    const inspectByContainer = await inspectDynamicNodeTargets(ctx, available.map((target) => target.container));
+    targets = await targetsForNodeIds(ctx, available, inspectByContainer, requestedNodeIds);
+    return targets.sort((left, right) => right.index - left.index);
+  } else if (options.containers && options.containers.length > 0) {
     const requested = new Set(options.containers);
     targets = available.filter((target) => requested.has(target.container));
     if (targets.length !== requested.size) {
@@ -194,6 +205,83 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
       ...target,
       icPort: inspectByContainer.get(target.container)?.icPort ?? target.icPort
     }));
+}
+
+function validateNodeIds(nodeIds: number[]): number[] {
+  if (nodeIds.length > 10) {
+    throw new Error("nodeIds must contain 10 IDs or less");
+  }
+  const unique = new Set<number>();
+  for (const nodeId of nodeIds) {
+    assertPositiveInteger("nodeIds", nodeId);
+    unique.add(nodeId);
+  }
+  if (unique.size !== nodeIds.length) {
+    throw new Error("nodeIds must be unique");
+  }
+  return nodeIds;
+}
+
+async function targetsForNodeIds(
+  ctx: ToolkitContext,
+  available: DynamicNodeTarget[],
+  inspectByContainer: Map<string, { icPort?: number }>,
+  requestedNodeIds: number[]
+): Promise<DynamicNodeTarget[]> {
+  const check = await nodesCheck(ctx);
+  if (!check.ok) {
+    throw new Error(`Could not read dynamic nodes from viewer/json/nodelist: ${check.error ?? "unknown error"}`);
+  }
+
+  const portByNodeId = new Map<number, number>();
+  for (const node of check.nodes) {
+    const parsed = readNodeIdAndPort(node);
+    if (parsed) {
+      portByNodeId.set(parsed.nodeId, parsed.icPort);
+    }
+  }
+
+  const targetsByPort = new Map<number, DynamicNodeTarget>();
+  for (const target of available) {
+    const icPort = inspectByContainer.get(target.container)?.icPort;
+    if (typeof icPort === "number") {
+      targetsByPort.set(icPort, { ...target, icPort });
+    }
+  }
+
+  const targets: DynamicNodeTarget[] = [];
+  const missing: string[] = [];
+  for (const nodeId of requestedNodeIds) {
+    const icPort = portByNodeId.get(nodeId);
+    if (typeof icPort !== "number") {
+      missing.push(`${nodeId} (not found in nodelist)`);
+      continue;
+    }
+    const target = targetsByPort.get(icPort);
+    if (!target) {
+      missing.push(`${nodeId} (port ${icPort} is not a removable extra dynamic node)`);
+      continue;
+    }
+    targets.push({ ...target, nodeId });
+  }
+
+  if (missing.length > 0) {
+    throw new Error(`Requested dynamic-node IDs were not found or were not removable extras: ${missing.join(", ")}`);
+  }
+  return targets;
+}
+
+function readNodeIdAndPort(node: unknown): { nodeId: number; icPort: number } | undefined {
+  if (!node || typeof node !== "object") {
+    return undefined;
+  }
+  const obj = node as Record<string, unknown>;
+  const nodeId = obj.Id;
+  const icPort = obj.Port;
+  if (typeof nodeId !== "number" || typeof icPort !== "number") {
+    return undefined;
+  }
+  return { nodeId, icPort };
 }
 
 async function inspectDynamicNodeTargets(ctx: ToolkitContext, containers: string[]): Promise<Map<string, { icPort?: number }>> {

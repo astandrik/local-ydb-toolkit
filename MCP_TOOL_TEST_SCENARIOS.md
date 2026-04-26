@@ -418,11 +418,13 @@ Optional explicit targeting:
 
 ```json
 { "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "containers": ["ydb-dyn-example-ghcr261-2"] } }
+{ "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "nodeIds": [50001] } }
 ```
 
 Avoid:
 
 - treating the profile's main `dynamicContainer` as removable through this tool
+- using `nodeIds` for the base dynamic node; only IDs that resolve to extra dynamic-node containers are removable
 - removing multiple extra nodes at once on a live stack without checking `nodelist` after each removal
 
 ## Scenario 12: Add Storage Groups

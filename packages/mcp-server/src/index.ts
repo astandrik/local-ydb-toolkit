@@ -7,6 +7,7 @@ import {
   authCheck,
   databaseStatus,
   bootstrap,
+  checkPrerequisites,
   containerLogs,
   cleanupStorage,
   createContext,
@@ -29,7 +30,8 @@ import {
   tenantCheck,
   writeDynamicNodeAuthConfig,
   type CommandExecutor,
-  type LocalYdbConfig
+  type LocalYdbConfig,
+  loadConfig
 } from "@local-ydb-toolkit/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -37,7 +39,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@model
 import { z } from "zod";
 
 const ProfileArgs = z.object({
-  profile: z.string().optional()
+  profile: z.string().optional(),
+  configPath: z.string().optional()
 });
 
 const LogsArgs = ProfileArgs.extend({
@@ -60,7 +63,8 @@ const AddDynamicNodesArgs = MutatingArgs.extend({
 const RemoveDynamicNodesArgs = MutatingArgs.extend({
   count: z.number().int().positive().max(10).optional(),
   startIndex: z.number().int().min(2).optional(),
-  containers: z.array(z.string()).optional()
+  containers: z.array(z.string()).optional(),
+  nodeIds: z.array(z.number().int().positive()).max(10).optional()
 });
 
 const AddStorageGroupsArgs = MutatingArgs.extend({
@@ -118,6 +122,10 @@ type HandlerOptions = {
 
 type ToolHandler = (args: unknown, options: HandlerOptions) => Promise<unknown>;
 
+function handlerConfig(configPath: string | undefined, options: HandlerOptions): LocalYdbConfig {
+  return options.config ?? loadConfig(configPath);
+}
+
 export const localYdbInstructions = [
   "Use local_ydb_status_report or local_ydb_inventory first to establish the current stack state before mutating anything.",
   "For bootstrap or restart issues, inspect local_ydb_database_status and local_ydb_container_logs before retrying.",
@@ -146,6 +154,7 @@ export const localYdbTools: Tool[] = [
   tool("local_ydb_storage_leftovers", "Find leftover local-ydb volumes, dumps, and PDisk paths.", profileSchema()),
   tool("local_ydb_destroy_stack", "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup.", destroyStackSchema()),
   tool("local_ydb_bootstrap", "Bootstrap a GraphShard-ready local-ydb topology.", mutatingSchema()),
+  tool("local_ydb_check_prerequisites", "Check target-host prerequisites and optionally install supported missing packages.", mutatingSchema()),
   tool("local_ydb_create_tenant", "Create the configured CMS tenant if missing.", mutatingSchema()),
   tool("local_ydb_start_dynamic_node", "Start the configured dynamic tenant node.", mutatingSchema()),
   tool("local_ydb_add_dynamic_nodes", "Add extra dynamic tenant nodes one at a time and verify each reaches nodelist.", addDynamicNodesSchema()),
@@ -163,107 +172,111 @@ export const localYdbTools: Tool[] = [
 const handlers: Record<string, ToolHandler> = {
   local_ydb_inventory: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return inventory(createContext(parsed.profile, options.executor, options.config));
+    return inventory(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_database_status: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return databaseStatus(createContext(parsed.profile, options.executor, options.config));
+    return databaseStatus(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_container_logs: async (args, options) => {
     const parsed = LogsArgs.parse(args ?? {});
-    return containerLogs(createContext(parsed.profile, options.executor, options.config), parsed);
+    return containerLogs(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_status_report: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return statusReport(createContext(parsed.profile, options.executor, options.config));
+    return statusReport(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_tenant_check: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return tenantCheck(createContext(parsed.profile, options.executor, options.config));
+    return tenantCheck(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_nodes_check: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return nodesCheck(createContext(parsed.profile, options.executor, options.config));
+    return nodesCheck(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_graphshard_check: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return graphshardCheck(createContext(parsed.profile, options.executor, options.config));
+    return graphshardCheck(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_auth_check: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return authCheck(createContext(parsed.profile, options.executor, options.config));
+    return authCheck(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_storage_placement: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return storagePlacement(createContext(parsed.profile, options.executor, options.config));
+    return storagePlacement(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_add_storage_groups: async (args, options) => {
     const parsed = AddStorageGroupsArgs.parse(args ?? {});
-    return addStorageGroups(createContext(parsed.profile, options.executor, options.config), parsed);
+    return addStorageGroups(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_reduce_storage_groups: async (args, options) => {
     const parsed = ReduceStorageGroupsArgs.parse(args ?? {});
-    return reduceStorageGroups(createContext(parsed.profile, options.executor, options.config), parsed);
+    return reduceStorageGroups(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_storage_leftovers: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
-    return storageLeftovers(createContext(parsed.profile, options.executor, options.config));
+    return storageLeftovers(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)));
   },
   local_ydb_destroy_stack: async (args, options) => {
     const parsed = DestroyStackArgs.parse(args ?? {});
-    return destroyStack(createContext(parsed.profile, options.executor, options.config), parsed);
+    return destroyStack(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_bootstrap: async (args, options) => {
     const parsed = MutatingArgs.parse(args ?? {});
-    return bootstrap(createContext(parsed.profile, options.executor, options.config), parsed);
+    return bootstrap(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
+  },
+  local_ydb_check_prerequisites: async (args, options) => {
+    const parsed = MutatingArgs.parse(args ?? {});
+    return checkPrerequisites(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_create_tenant: async (args, options) => {
     const parsed = MutatingArgs.parse(args ?? {});
-    return createTenant(createContext(parsed.profile, options.executor, options.config), parsed);
+    return createTenant(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_start_dynamic_node: async (args, options) => {
     const parsed = MutatingArgs.parse(args ?? {});
-    return startDynamicNode(createContext(parsed.profile, options.executor, options.config), parsed);
+    return startDynamicNode(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_add_dynamic_nodes: async (args, options) => {
     const parsed = AddDynamicNodesArgs.parse(args ?? {});
-    return addDynamicNodes(createContext(parsed.profile, options.executor, options.config), parsed);
+    return addDynamicNodes(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_remove_dynamic_nodes: async (args, options) => {
     const parsed = RemoveDynamicNodesArgs.parse(args ?? {});
-    return removeDynamicNodes(createContext(parsed.profile, options.executor, options.config), parsed);
+    return removeDynamicNodes(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_restart_stack: async (args, options) => {
     const parsed = MutatingArgs.parse(args ?? {});
-    return restartStack(createContext(parsed.profile, options.executor, options.config), parsed);
+    return restartStack(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_dump_tenant: async (args, options) => {
     const parsed = DumpArgs.parse(args ?? {});
-    return dumpTenant(createContext(parsed.profile, options.executor, options.config), parsed);
+    return dumpTenant(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_restore_tenant: async (args, options) => {
     const parsed = RestoreArgs.parse(args ?? {});
-    return restoreTenant(createContext(parsed.profile, options.executor, options.config), parsed);
+    return restoreTenant(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_prepare_auth_config: async (args, options) => {
     const parsed = PrepareAuthConfigArgs.parse(args ?? {});
-    return prepareAuthConfig(createContext(parsed.profile, options.executor, options.config), parsed);
+    return prepareAuthConfig(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_write_dynamic_auth_config: async (args, options) => {
     const parsed = DynamicAuthConfigArgs.parse(args ?? {});
-    return writeDynamicNodeAuthConfig(createContext(parsed.profile, options.executor, options.config), parsed);
+    return writeDynamicNodeAuthConfig(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_apply_auth_hardening: async (args, options) => {
     const parsed = AuthHardeningArgs.parse(args ?? {});
-    return applyAuthHardening(createContext(parsed.profile, options.executor, options.config), parsed);
+    return applyAuthHardening(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_set_root_password: async (args, options) => {
     const parsed = SetRootPasswordArgs.parse(args ?? {});
-    return setRootPassword(createContext(parsed.profile, options.executor, options.config), parsed);
+    return setRootPassword(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   },
   local_ydb_cleanup_storage: async (args, options) => {
     const parsed = CleanupArgs.parse(args ?? {});
-    return cleanupStorage(createContext(parsed.profile, options.executor, options.config), parsed);
+    return cleanupStorage(createContext(parsed.profile, options.executor, handlerConfig(parsed.configPath, options)), parsed);
   }
 };
 
@@ -311,7 +324,8 @@ function profileSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string", description: "Named profile from local-ydb.config.json. Defaults to config.defaultProfile." }
+      profile: { type: "string", description: "Named profile from local-ydb.config.json. Defaults to config.defaultProfile." },
+      configPath: { type: "string", description: "Explicit local-ydb config file path to load for this tool call. Useful when the MCP server should pick up a different config without restart." }
     },
     additionalProperties: false
   };
@@ -323,6 +337,7 @@ function logsSchema(): Tool["inputSchema"] {
     required: ["target"],
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       target: { type: "string", enum: ["static", "dynamic"] },
       lines: { type: "integer", minimum: 1, description: "Number of recent log lines to read. Defaults to 200." }
     },
@@ -335,6 +350,7 @@ function mutatingSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string", description: "Explicit local-ydb config file path to load for this tool call." },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." }
     },
     additionalProperties: false
@@ -346,6 +362,7 @@ function addDynamicNodesSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       count: { type: "integer", minimum: 1, maximum: 10, description: "Number of additional dynamic nodes to add. Defaults to 1." },
       startIndex: { type: "integer", minimum: 2, description: "Suffix for the first added container. Defaults to 2, producing <dynamicContainer>-2." },
@@ -362,6 +379,7 @@ function addStorageGroupsSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       count: { type: "integer", minimum: 1, maximum: 10, description: "Number of storage groups to add. Defaults to 1." },
       poolName: { type: "string", description: "Explicit storage pool name. Defaults to <tenantPath>:<storagePoolKind>." }
@@ -375,6 +393,7 @@ function reduceStorageGroupsSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       count: { type: "integer", minimum: 1, maximum: 10, description: "Number of storage groups to remove from the current tenant pool. Defaults to 1." },
       dumpName: { type: "string", description: "Optional dump directory name under profile.dumpHostPath to preserve before rebuild." },
@@ -389,6 +408,7 @@ function destroyStackSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       removeBindMountPath: { type: "boolean", description: "Delete profile.bindMountPath when the profile uses a bind mount. Defaults to false." },
       removeAuthArtifacts: { type: "boolean", description: "Delete explicit authConfigPath, dynamicNodeAuthTokenFile, and rootPasswordFile when configured. Defaults to false." },
@@ -403,10 +423,12 @@ function removeDynamicNodesSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       count: { type: "integer", minimum: 1, maximum: 10, description: "Number of extra dynamic nodes to remove. Defaults to 1." },
       startIndex: { type: "integer", minimum: 2, description: "Minimum suffix to consider removable. Defaults to 2." },
-      containers: { type: "array", items: { type: "string" }, description: "Explicit extra dynamic-node container names to remove." }
+      containers: { type: "array", items: { type: "string" }, description: "Explicit extra dynamic-node container names to remove." },
+      nodeIds: { type: "array", items: { type: "integer", minimum: 1 }, maxItems: 10, description: "Explicit YDB dynamic-node IDs to remove. IDs must resolve to extra dynamic-node containers; the profile's base dynamic node is not removable through this option." }
     },
     additionalProperties: false
   };
@@ -417,6 +439,7 @@ function dumpSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean" },
       dumpName: { type: "string", description: "Optional dump directory name under profile.dumpHostPath." }
     },
@@ -430,6 +453,7 @@ function restoreSchema(): Tool["inputSchema"] {
     required: ["dumpName"],
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean" },
       dumpName: { type: "string", description: "Dump directory name under profile.dumpHostPath." }
     },
@@ -442,6 +466,7 @@ function authHardeningSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean" },
       configHostPath: { type: "string", description: "Reviewed config.yaml path on the selected target host. Defaults to profile.authConfigPath when present." }
     },
@@ -454,6 +479,7 @@ function prepareAuthConfigSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       configHostPath: { type: "string", description: "Host path for the generated hardened config. Defaults to profile.authConfigPath when present." },
       sid: { type: "string", description: "SID to place into viewer, monitoring, administration, and register_dynamic_node_allowed_sids. Defaults to profile.dynamicNodeAuthSid or root@builtin." }
@@ -467,6 +493,7 @@ function dynamicAuthConfigSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       sid: { type: "string", description: "SID to store in both StaffApiUserToken and NodeRegistrationToken." },
       tokenHostPath: { type: "string", description: "Host path for the generated text-proto auth token file. Defaults to profile.dynamicNodeAuthTokenFile when present." }
@@ -481,6 +508,7 @@ function setRootPasswordSchema(): Tool["inputSchema"] {
     required: ["password"],
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       password: { type: "string", description: "New root password to apply to the runtime root user and then persist into the host auth config and root password file." }
     },
@@ -493,6 +521,7 @@ function cleanupSchema(): Tool["inputSchema"] {
     type: "object",
     properties: {
       profile: { type: "string" },
+      configPath: { type: "string" },
       confirm: { type: "boolean" },
       paths: { type: "array", items: { type: "string" } },
       volumes: { type: "array", items: { type: "string" } }

@@ -36,6 +36,7 @@ export interface RemoveDynamicNodesOptions extends MutatingOptions {
   count?: number;
   startIndex?: number;
   containers?: string[];
+  nodeIds?: number[];
 }
 
 export interface AddStorageGroupsOptions extends MutatingOptions {
@@ -71,6 +72,7 @@ export interface DynamicNodeTarget {
   container: string;
   index: number;
   icPort?: number;
+  nodeId?: number;
 }
 
 export interface DynamicNodeCheck {
@@ -125,4 +127,19 @@ export interface DestroyStackResponse extends OperationResponse {
   removesBindMountPath: boolean;
   removesAuthArtifacts: boolean;
   removesDumpHostPath: boolean;
+}
+
+export interface PrerequisiteCheck {
+  name: string;
+  kind: "command" | "file";
+  ok: boolean;
+  detail: string;
+}
+
+export interface CheckPrerequisitesResponse extends OperationResponse {
+  checks: PrerequisiteCheck[];
+  missing: string[];
+  installablePackages: string[];
+  packageManager?: string;
+  manualActions: string[];
 }

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ConfigSchema } from "@local-ydb-toolkit/core";
 import { callLocalYdbToolForTest, createLocalYdbMcpServer, localYdbInstructions, localYdbTools } from "../src/index.js";
@@ -10,6 +13,7 @@ describe("mcp tools", () => {
       "local_ydb_apply_auth_hardening",
       "local_ydb_auth_check",
       "local_ydb_bootstrap",
+      "local_ydb_check_prerequisites",
       "local_ydb_cleanup_storage",
       "local_ydb_container_logs",
       "local_ydb_create_tenant",
@@ -40,6 +44,50 @@ describe("mcp tools", () => {
     }) as { executed: boolean; plannedCommands: string[] };
     expect(result.executed).toBe(false);
     expect(result.plannedCommands.length).toBeGreaterThan(0);
+  });
+
+  it("can load a config dynamically from configPath without restarting the server", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-toolkit-"));
+    const configPath = join(dir, "remote.json");
+    writeFileSync(configPath, JSON.stringify({
+      defaultProfile: "remote",
+      profiles: {
+        remote: {
+          mode: "ssh",
+          ssh: {
+            host: "example-host",
+            user: "ops"
+          }
+        }
+      }
+    }), "utf8");
+
+    try {
+      const result = await callLocalYdbToolForTest("local_ydb_bootstrap", {
+        configPath,
+        profile: "remote"
+      }) as { executed: boolean; plannedCommands: string[] };
+      expect(result.executed).toBe(false);
+      expect(result.plannedCommands[0]).toContain("ssh");
+      expect(result.plannedCommands[0]).toContain("ops@example-host");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes nodeIds for targeted dynamic-node removal", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_remove_dynamic_nodes");
+    expect(tool?.inputSchema.properties?.nodeIds).toMatchObject({
+      type: "array",
+      maxItems: 10
+    });
+  });
+
+  it("exposes configPath on profile-based tool schemas", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_inventory");
+    expect(tool?.inputSchema.properties?.configPath).toMatchObject({
+      type: "string"
+    });
   });
 
   it("exposes server instructions during initialization", () => {

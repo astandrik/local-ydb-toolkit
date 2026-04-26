@@ -4,6 +4,7 @@ import {
   addDynamicNodes,
   applyAuthHardening,
   bootstrap,
+  checkPrerequisites,
   commandToShell,
   createContext,
   createTenant,
@@ -53,6 +54,72 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(executor.commands).toEqual([]);
     expect(response.plannedCommands.some((command) => command.includes("docker network"))).toBe(true);
+  });
+
+  it("checks prerequisites and prepares an apt install plan for missing host helpers", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          rootPasswordFile: "/tmp/local-ydb-auth/root.password"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("command -v docker")) {
+        return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+      }
+      if (command.includes("command -v curl")) {
+        return { command, exitCode: 1, stdout: "", stderr: "", ok: false, timedOut: false };
+      }
+      if (command.includes("command -v ruby")) {
+        return { command, exitCode: 1, stdout: "", stderr: "", ok: false, timedOut: false };
+      }
+      if (command.includes("[ -f /tmp/local-ydb-auth/root.password ]")) {
+        return { command, exitCode: 1, stdout: "", stderr: "", ok: false, timedOut: false };
+      }
+      if (command.includes("command -v apt-get")) {
+        return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await checkPrerequisites(ctx, {});
+    expect(response.executed).toBe(false);
+    expect(response.missing).toEqual(["curl", "ruby", "rootPasswordFile"]);
+    expect(response.installablePackages).toEqual(["curl", "ruby"]);
+    expect(response.packageManager).toBe("apt-get");
+    expect(response.manualActions.some((item) => item.includes("local_ydb_prepare_auth_config"))).toBe(true);
+    expect(response.plannedCommands.join("\n")).toContain("sudo -n apt-get install -y curl ruby");
+  });
+
+  it("installs supported prerequisite packages when confirm=true", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("command -v docker")) {
+        return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+      }
+      if (command.includes("command -v curl")) {
+        return { command, exitCode: 1, stdout: "", stderr: "", ok: false, timedOut: false };
+      }
+      if (command.includes("command -v ruby")) {
+        return { command, exitCode: 1, stdout: "", stderr: "", ok: false, timedOut: false };
+      }
+      if (command.includes("command -v apt-get")) {
+        return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await checkPrerequisites(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.plannedCommands.join("\n")).toContain("sudo -n apt-get update");
+    expect(response.plannedCommands.join("\n")).toContain("sudo -n apt-get install -y curl ruby");
   });
 
   it("executes bootstrap commands with confirm=true", async () => {
@@ -182,6 +249,122 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.nodes.map((node) => node.container)).toEqual(["ydb-dyn-example-3"]);
     expect(response.plannedCommands[0]).toContain("docker rm -f ydb-dyn-example-3");
+  });
+
+  it("plans removing an extra dynamic node by YDB node ID", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '{"Names":"ydb-dyn-example"}\n{"Names":"ydb-dyn-example-2"}\n{"Names":"ydb-dyn-example-3"}\n',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker inspect")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { Name: "/ydb-dyn-example-2", Args: ["-lc", "exec /ydbd --ic-port 19003"] },
+            { Name: "/ydb-dyn-example-3", Args: ["-lc", "exec /ydbd --ic-port 19004"] }
+          ]),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("viewer/json/nodelist")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Id":50000,"Port":19002},{"Id":50001,"Port":19003},{"Id":50002,"Port":19004}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await removeDynamicNodes(ctx, { nodeIds: [50001] });
+    expect(response.executed).toBe(false);
+    expect(response.nodes).toEqual([{ container: "ydb-dyn-example-2", index: 2, icPort: 19003, nodeId: 50001 }]);
+    expect(response.plannedCommands[0]).toContain("docker rm -f ydb-dyn-example-2");
+  });
+
+  it("rejects removing the profile base dynamic node by YDB node ID", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '{"Names":"ydb-dyn-example"}\n{"Names":"ydb-dyn-example-2"}\n',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker inspect")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Name":"/ydb-dyn-example-2","Args":["-lc","exec /ydbd --ic-port 19003"]}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("viewer/json/nodelist")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Id":50000,"Port":19002},{"Id":50001,"Port":19003}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    await expect(removeDynamicNodes(ctx, { nodeIds: [50000] })).rejects.toThrow("port 19002 is not a removable extra dynamic node");
   });
 
   it("plans increasing NumGroups for the tenant storage pool", async () => {

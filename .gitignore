@@ -3,3 +3,4 @@ dist/
 packages/*/dist/
 *.tsbuildinfo
 .DS_Store
+local-ydb.config.json

@@ -104,9 +104,23 @@
         "port": 22,
         "identityFile": "/path/to/private-key"
       },
+      "staticContainer": "ydb-local",
+      "dynamicContainer": "ydb-dyn-example",
+      "authConfigPath": "/tmp/local-ydb-auth/config.auth.yaml",
+      "dynamicNodeAuthTokenFile": "/tmp/local-ydb-auth/dynamic-node-auth.pb",
+      "dynamicNodeAuthSid": "root@builtin",
+      "rootPasswordFile": "/tmp/local-ydb-auth/root.password",
+      "bindMountPath": "/path/to/ydb-data",
       "tenantPath": "/local/example",
       "volume": "ydb-local-data",
       "network": "ydb-net",
+      "ports": {
+        "monitoring": 8765,
+        "staticGrpc": 2136,
+        "dynamicGrpc": 2137,
+        "dynamicMonitoring": 8766,
+        "dynamicIc": 19002
+      },
       "dumpHostPath": "/tmp/local-ydb-dump"
     }
   }

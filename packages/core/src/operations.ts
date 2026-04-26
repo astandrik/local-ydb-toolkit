@@ -6,3 +6,4 @@ export * from "./operations/stack.js";
 export * from "./operations/tenant.js";
 export * from "./operations/dynamic-nodes.js";
 export * from "./operations/auth-operations.js";
+export * from "./operations/prerequisites.js";

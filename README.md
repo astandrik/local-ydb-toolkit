@@ -118,7 +118,7 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 
 `local_ydb_add_dynamic_nodes` adds extra dynamic tenant nodes from the selected profile without requiring separate profile entries. It derives container names and ports from the base dynamic node by default, starts nodes one at a time, and verifies each new IC port through `viewer/json/nodelist` before continuing.
 
-`local_ydb_remove_dynamic_nodes` removes extra dynamic tenant nodes from the selected profile. By default it removes the highest-index extra node first, verifies the removed node's IC port disappears from `viewer/json/nodelist`, and leaves the base dynamic node untouched.
+`local_ydb_remove_dynamic_nodes` removes extra dynamic tenant nodes from the selected profile. By default it removes the highest-index extra node first, and it can target explicit extra containers or YDB node IDs. It verifies the removed node's IC port disappears from `viewer/json/nodelist` and leaves the base dynamic node untouched.
 
 `local_ydb_add_storage_groups` rereads the current tenant storage pool definition with `ReadStoragePool`, resubmits that exact pool through `DefineStoragePool`, and increases `NumGroups` by the requested count. It is intended for live pool expansion on the current PDisk layout, not for adding new physical disks.
 
