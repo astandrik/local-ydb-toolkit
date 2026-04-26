@@ -99,7 +99,7 @@ SSH profiles use existing SSH agent/key/known_hosts configuration. The toolkit d
 
 Read-only tools collect inventory, tenant state, node state, GraphShard state, auth posture, storage placement, and leftover storage candidates.
 
-Mutating tools include bootstrap, tenant creation, dynamic-node startup, restart, dump, restore, auth config application, and explicit storage cleanup. They are plan-only unless called with:
+Mutating tools include bootstrap, tenant creation, dynamic-node startup, restart, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, and explicit storage cleanup. They are plan-only unless called with:
 
 ```json
 {
@@ -121,5 +121,9 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 `local_ydb_remove_dynamic_nodes` removes extra dynamic tenant nodes from the selected profile. By default it removes the highest-index extra node first, verifies the removed node's IC port disappears from `viewer/json/nodelist`, and leaves the base dynamic node untouched.
 
 `local_ydb_add_storage_groups` rereads the current tenant storage pool definition with `ReadStoragePool`, resubmits that exact pool through `DefineStoragePool`, and increases `NumGroups` by the requested count. It is intended for live pool expansion on the current PDisk layout, not for adding new physical disks.
+
+`local_ydb_reduce_storage_groups` does not attempt an in-place `NumGroups` shrink. It preserves the tenant with `ydb tools dump`, tears down the profile stack, bootstraps a fresh stack with a smaller `storagePoolCount`, restores the dump, and reapplies auth when the selected profile uses auth artifacts.
+
+`local_ydb_set_root_password` rotates the runtime `root` password with `ALTER USER`, then updates the configured host-side `config.auth.yaml` and `root.password` files to match. The password value is redacted from the planned command text.
 
 `local_ydb_destroy_stack` tears down a profile end to end: it removes tenant metadata when the static node is reachable, removes extra and primary dynamic nodes, removes the static node, removes the Docker network, and removes the Docker volume for volume-backed profiles. Deleting bind-mounted data, auth artifacts, and dump directories is opt-in through explicit flags because those host paths may be shared.

@@ -43,6 +43,16 @@ export interface AddStorageGroupsOptions extends MutatingOptions {
   poolName?: string;
 }
 
+export interface ReduceStorageGroupsOptions extends MutatingOptions {
+  count?: number;
+  dumpName?: string;
+  poolName?: string;
+}
+
+export interface SetRootPasswordOptions extends MutatingOptions {
+  password?: string;
+}
+
 export interface DestroyStackOptions extends MutatingOptions {
   removeBindMountPath?: boolean;
   removeAuthArtifacts?: boolean;
@@ -91,6 +101,21 @@ export interface AddStorageGroupsResponse extends OperationResponse {
     targetNumGroups: number;
     itemConfigGeneration?: number;
   };
+  observedNumGroups?: number;
+}
+
+export interface ReduceStorageGroupsResponse extends OperationResponse {
+  pool: {
+    name: string;
+    boxId: number;
+    storagePoolId: number;
+    numGroups: number;
+    targetNumGroups: number;
+    itemConfigGeneration?: number;
+  };
+  dumpName: string;
+  authReapplyPlanned: boolean;
+  extraDynamicNodes: string[];
   observedNumGroups?: number;
 }
 

@@ -11,6 +11,7 @@ import {
   cleanupStorage,
   createContext,
   createTenant,
+  reduceStorageGroups,
   dumpTenant,
   graphshardCheck,
   inventory,
@@ -20,6 +21,7 @@ import {
   removeDynamicNodes,
   restartStack,
   restoreTenant,
+  setRootPassword,
   startDynamicNode,
   statusReport,
   storageLeftovers,
@@ -66,6 +68,12 @@ const AddStorageGroupsArgs = MutatingArgs.extend({
   poolName: z.string().optional()
 });
 
+const ReduceStorageGroupsArgs = MutatingArgs.extend({
+  count: z.number().int().positive().max(10).optional(),
+  dumpName: z.string().optional(),
+  poolName: z.string().optional()
+});
+
 const DestroyStackArgs = MutatingArgs.extend({
   removeBindMountPath: z.boolean().optional(),
   removeAuthArtifacts: z.boolean().optional(),
@@ -94,6 +102,10 @@ const DynamicAuthConfigArgs = MutatingArgs.extend({
   tokenHostPath: z.string().optional()
 });
 
+const SetRootPasswordArgs = MutatingArgs.extend({
+  password: z.string().min(1)
+});
+
 const CleanupArgs = MutatingArgs.extend({
   paths: z.array(z.string()).optional(),
   volumes: z.array(z.string()).optional()
@@ -112,6 +124,7 @@ export const localYdbInstructions = [
   "Prefer exact image tags for local-ydb stacks and avoid mixing static and dynamic image versions in one stack.",
   "On a fresh /local/<tenant> database, admin database status can be PENDING_RESOURCES before the first dynamic node registers; treat status success as the readiness gate for the first dynamic-node start.",
   "For storage-pool expansion, reread the current pool definition first and increase NumGroups on that exact pool instead of guessing a partial DefineStoragePool shape.",
+  "For storage-pool reduction, do not try to live-decrease NumGroups; dump the tenant, rebuild the stack with a smaller storagePoolCount, restore, and then reapply auth if the profile uses it.",
   "For full teardown, remove tenant metadata first when the static node is reachable, then remove containers, network, and storage; keep shared host paths opt-in.",
   "When adding extra dynamic nodes, start and verify one node at a time before adding the next.",
   "When removing extra dynamic nodes, remove one node at a time and confirm its IC port disappears from nodelist before removing another.",
@@ -129,6 +142,7 @@ export const localYdbTools: Tool[] = [
   tool("local_ydb_auth_check", "Check anonymous viewer and CLI auth posture.", profileSchema()),
   tool("local_ydb_storage_placement", "Read storage pool and BSC physical placement.", profileSchema()),
   tool("local_ydb_add_storage_groups", "Increase NumGroups for a tenant storage pool using the current ReadStoragePool definition.", addStorageGroupsSchema()),
+  tool("local_ydb_reduce_storage_groups", "Reduce NumGroups for a tenant storage pool by dumping the tenant, rebuilding the profile stack with a smaller storagePoolCount, restoring the dump, and reapplying auth when needed.", reduceStorageGroupsSchema()),
   tool("local_ydb_storage_leftovers", "Find leftover local-ydb volumes, dumps, and PDisk paths.", profileSchema()),
   tool("local_ydb_destroy_stack", "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup.", destroyStackSchema()),
   tool("local_ydb_bootstrap", "Bootstrap a GraphShard-ready local-ydb topology.", mutatingSchema()),
@@ -142,6 +156,7 @@ export const localYdbTools: Tool[] = [
   tool("local_ydb_prepare_auth_config", "Prepare a hardened YDB config file from the current static-node config.", prepareAuthConfigSchema()),
   tool("local_ydb_write_dynamic_auth_config", "Write a text-proto auth token file for mandatory-auth dynamic node startup.", dynamicAuthConfigSchema()),
   tool("local_ydb_apply_auth_hardening", "Apply a reviewed YDB config file and restart local-ydb.", authHardeningSchema()),
+  tool("local_ydb_set_root_password", "Rotate the runtime root password with ALTER USER and sync the host auth config and root password file to match.", setRootPasswordSchema()),
   tool("local_ydb_cleanup_storage", "Remove explicitly supplied local-ydb storage paths or volumes.", cleanupSchema())
 ];
 
@@ -185,6 +200,10 @@ const handlers: Record<string, ToolHandler> = {
   local_ydb_add_storage_groups: async (args, options) => {
     const parsed = AddStorageGroupsArgs.parse(args ?? {});
     return addStorageGroups(createContext(parsed.profile, options.executor, options.config), parsed);
+  },
+  local_ydb_reduce_storage_groups: async (args, options) => {
+    const parsed = ReduceStorageGroupsArgs.parse(args ?? {});
+    return reduceStorageGroups(createContext(parsed.profile, options.executor, options.config), parsed);
   },
   local_ydb_storage_leftovers: async (args, options) => {
     const parsed = ProfileArgs.parse(args ?? {});
@@ -237,6 +256,10 @@ const handlers: Record<string, ToolHandler> = {
   local_ydb_apply_auth_hardening: async (args, options) => {
     const parsed = AuthHardeningArgs.parse(args ?? {});
     return applyAuthHardening(createContext(parsed.profile, options.executor, options.config), parsed);
+  },
+  local_ydb_set_root_password: async (args, options) => {
+    const parsed = SetRootPasswordArgs.parse(args ?? {});
+    return setRootPassword(createContext(parsed.profile, options.executor, options.config), parsed);
   },
   local_ydb_cleanup_storage: async (args, options) => {
     const parsed = CleanupArgs.parse(args ?? {});
@@ -347,6 +370,20 @@ function addStorageGroupsSchema(): Tool["inputSchema"] {
   };
 }
 
+function reduceStorageGroupsSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: { type: "string" },
+      confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
+      count: { type: "integer", minimum: 1, maximum: 10, description: "Number of storage groups to remove from the current tenant pool. Defaults to 1." },
+      dumpName: { type: "string", description: "Optional dump directory name under profile.dumpHostPath to preserve before rebuild." },
+      poolName: { type: "string", description: "Explicit storage pool name. Defaults to <tenantPath>:<storagePoolKind>." }
+    },
+    additionalProperties: false
+  };
+}
+
 function destroyStackSchema(): Tool["inputSchema"] {
   return {
     type: "object",
@@ -433,6 +470,19 @@ function dynamicAuthConfigSchema(): Tool["inputSchema"] {
       confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
       sid: { type: "string", description: "SID to store in both StaffApiUserToken and NodeRegistrationToken." },
       tokenHostPath: { type: "string", description: "Host path for the generated text-proto auth token file. Defaults to profile.dynamicNodeAuthTokenFile when present." }
+    },
+    additionalProperties: false
+  };
+}
+
+function setRootPasswordSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    required: ["password"],
+    properties: {
+      profile: { type: "string" },
+      confirm: { type: "boolean", description: "Must be true to execute commands. Omit or false for plan-only output." },
+      password: { type: "string", description: "New root password to apply to the runtime root user and then persist into the host auth config and root password file." }
     },
     additionalProperties: false
   };

@@ -132,16 +132,23 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
   }
 
   const results: CommandResult[] = [];
-  for (const spec of specs) {
+  let tenantRemoveSkippedDueToAuthFailure = false;
+  for (const [index, spec] of specs.entries()) {
     const result = await ctx.client.run(spec);
     results.push(result);
     if (!result.ok) {
+      if (index === 0 && canContinueAfterTenantRemoveFailure(ctx, options, result)) {
+        tenantRemoveSkippedDueToAuthFailure = true;
+        continue;
+      }
       break;
     }
   }
 
   return {
-    summary: `Destroy local-ydb stack for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
+    summary: tenantRemoveSkippedDueToAuthFailure
+      ? `Destroy local-ydb stack for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands after continuing past tenant removal auth failure.`
+      : `Destroy local-ydb stack for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
     executed: true,
     risk: "high",
     plannedCommands,
@@ -154,6 +161,19 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
     removesAuthArtifacts: Boolean(options.removeAuthArtifacts),
     removesDumpHostPath: Boolean(options.removeDumpHostPath)
   };
+}
+
+function canContinueAfterTenantRemoveFailure(
+  ctx: ToolkitContext,
+  options: DestroyStackOptions,
+  result: CommandResult
+): boolean {
+  const tearingDownUnderlyingStorage = !ctx.profile.bindMountPath || Boolean(options.removeBindMountPath);
+  if (!tearingDownUnderlyingStorage) {
+    return false;
+  }
+  const output = `${result.stdout}\n${result.stderr}`;
+  return /UNAUTHORIZED|Invalid password|Access denied|login denied|too many failed password attempts|CLIENT_UNAUTHENTICATED/i.test(output);
 }
 
 export async function restartStack(ctx: ToolkitContext, options: MutatingOptions = {}) {

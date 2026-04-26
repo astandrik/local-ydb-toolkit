@@ -19,6 +19,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_auth_check`
 - `local_ydb_storage_placement`
 - `local_ydb_add_storage_groups`
+- `local_ydb_reduce_storage_groups`
 - `local_ydb_storage_leftovers`
 - `local_ydb_bootstrap`
 - `local_ydb_create_tenant`
@@ -31,6 +32,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_prepare_auth_config`
 - `local_ydb_write_dynamic_auth_config`
 - `local_ydb_apply_auth_hardening`
+- `local_ydb_set_root_password`
 - `local_ydb_cleanup_storage`
 
 ## Profiles
@@ -326,6 +328,32 @@ Avoid:
 
 - treating a `401` on `/viewer/json/whoami` as an error after auth; it is the expected anonymous result
 
+## Scenario 9A: Root Password Rotation
+
+Goal: change the root password through one MCP tool without exposing it in plan output.
+
+Profile:
+`ghcr261-auth`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_set_root_password", "arguments": { "profile": "ghcr261-auth", "password": "<new-password>", "confirm": false } }
+```
+
+Expected:
+
+- plan-only output does not print the raw password
+- the tool rotates the runtime password with `ALTER USER`
+- the generated host auth config and `root.password` file are updated after the runtime password change
+- post-change anonymous `viewer/json/whoami` should still return `401`
+- authenticated tenant checks should work with the new password
+
+Avoid:
+
+- storing the password directly in committed config
+- changing the password on a profile that lacks `authConfigPath` or `rootPasswordFile`
+
 ## Scenario 10: Add Extra Dynamic Nodes
 
 Goal: add multiple dynamic nodes to a healthy auth-enabled stack without creating extra profile entries.
@@ -458,7 +486,35 @@ Avoid:
 - enabling host-path deletion flags on shared paths without checking whether other profiles use them
 - using this tool with `confirm=true` on a profile you still need without first taking a dump
 
-## Scenario 14: Cleanup Candidates
+## Scenario 14: Reduce Storage Groups By Rebuild
+
+Goal: reduce a tenant pool from a larger `NumGroups` back to a smaller one without relying on an unverified live shrink path.
+
+Profile:
+`ghcr261-auth`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_reduce_storage_groups", "arguments": { "profile": "ghcr261-auth", "count": 1, "dumpName": "shrink-smoke", "confirm": false } }
+```
+
+Expected:
+
+- plan-only output starts with a tenant dump
+- the stack is rebuilt with `admin database /local/example create hdd:1`
+- auth-enabled profiles re-run:
+  `local_ydb_prepare_auth_config`
+  `local_ydb_write_dynamic_auth_config`
+  `local_ydb_apply_auth_hardening`
+- extra dynamic-node suffixes are re-added after restore/auth reapply
+
+Avoid:
+
+- treating `DefineStoragePool { NumGroups: smaller }` as a proven live shrink path
+- deleting auth artifacts during the rebuild path for an auth-enabled profile
+
+## Scenario 15: Cleanup Candidates
 
 Goal: test the dangerous cleanup tool only on disposable targets.
 
@@ -491,12 +547,14 @@ Avoid:
   `local_ydb_bootstrap`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_add_dynamic_nodes`, `local_ydb_remove_dynamic_nodes`, `local_ydb_restart_stack`
 - Storage-pool expansion:
   `local_ydb_add_storage_groups`
+- Storage-pool reduction by rebuild:
+  `local_ydb_reduce_storage_groups`
 - Full teardown:
   `local_ydb_destroy_stack`
 - Backup and restore:
   `local_ydb_dump_tenant`, `local_ydb_restore_tenant`
 - Auth rollout:
-  `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_auth_check`
+  `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_auth_check`
 - Read-only diagnostics:
   `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
 - Cleanup:

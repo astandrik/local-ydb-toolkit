@@ -10,9 +10,12 @@ import {
   destroyStack,
   dumpTenant,
   prepareAuthConfig,
+  redactCommand,
+  reduceStorageGroups,
   removeDynamicNodes,
   restartStack,
   startDynamicNode,
+  setRootPassword,
   writeDynamicNodeAuthConfig,
   type CommandExecutor,
   type CommandResult,
@@ -244,6 +247,234 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[0]).toContain("ItemConfigGeneration: 2");
   });
 
+  it("plans reducing NumGroups through dump, rebuild, restore, and auth reapply", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
+          dynamicNodeAuthSid: "root@builtin",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
+          rootPasswordFile: "/tmp/local-ydb-auth/root.password",
+          tenantPath: "/local/example",
+          storagePoolKind: "hdd"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("ReadStoragePool")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: `Status {
+  StoragePool {
+    BoxId: 1
+    StoragePoolId: 2
+    Name: "/local/example:hdd"
+    ErasureSpecies: "none"
+    VDiskKind: "Default"
+    Kind: "hdd"
+    NumGroups: 2
+    PDiskFilter {
+      Property {
+        Type: ROT
+      }
+    }
+    ScopeId {
+      X1: 72057594046678944
+      X2: 38
+    }
+    ItemConfigGeneration: 3
+  }
+}`,
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example-2" }),
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker volume ls")) {
+        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+      }
+      if (command.includes("docker inspect")) {
+        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+    const response = await reduceStorageGroups(ctx, { dumpName: "shrink-smoke" });
+    expect(response.executed).toBe(false);
+    expect(response.pool.name).toBe("/local/example:hdd");
+    expect(response.pool.numGroups).toBe(2);
+    expect(response.pool.targetNumGroups).toBe(1);
+    expect(response.dumpName).toBe("shrink-smoke");
+    expect(response.authReapplyPlanned).toBe(true);
+    expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-2"]);
+    expect(response.plannedCommands.join("\n")).toContain("/dump/shrink-smoke/tenant");
+    expect(response.plannedCommands.join("\n")).toContain("admin database /local/example create hdd:1");
+    expect(response.plannedCommands.join("\n")).toContain("/tmp/local-ydb-auth/config.auth.yaml");
+    expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
+  });
+
+  it("executes storage-group reduction rebuild and reapplies auth before re-adding extra dynamic nodes", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
+          dynamicContainer: "ydb-dyn-example",
+          dynamicNodeAuthSid: "root@builtin",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
+          rootPasswordFile: "/tmp/local-ydb-auth/root.password",
+          staticContainer: "ydb-local",
+          tenantPath: "/local/example",
+          storagePoolKind: "hdd"
+        }
+      }
+    }));
+
+    let readStoragePoolCalls = 0;
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+
+      if (command.includes("ReadStoragePool")) {
+        readStoragePoolCalls += 1;
+        const numGroups = readStoragePoolCalls === 1 ? 2 : 1;
+        const itemConfigGeneration = readStoragePoolCalls === 1 ? 3 : 2;
+        return {
+          command,
+          exitCode: 0,
+          stdout: `Status {
+  StoragePool {
+    BoxId: 1
+    StoragePoolId: 2
+    Name: "/local/example:hdd"
+    ErasureSpecies: "none"
+    VDiskKind: "Default"
+    Kind: "hdd"
+    NumGroups: ${numGroups}
+    PDiskFilter {
+      Property {
+        Type: ROT
+      }
+    }
+    ScopeId {
+      X1: 72057594046678944
+      X2: 38
+    }
+    ItemConfigGeneration: ${itemConfigGeneration}
+  }
+}`,
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example-2" }),
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+
+      if (command.includes("docker volume ls")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: "ydb-local-data\n",
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+
+      if (command.includes("docker inspect")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: "[]",
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+
+      if (command.includes("viewer/json/nodelist")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Port":19003}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await reduceStorageGroups(ctx, { confirm: true, dumpName: "shrink-smoke" });
+    expect(response.executed).toBe(true);
+    expect(response.dumpName).toBe("shrink-smoke");
+    expect(response.authReapplyPlanned).toBe(true);
+    expect(response.observedNumGroups).toBe(1);
+
+    const commands = response.results?.map((result) => result.command) ?? [];
+    expect(commands.some((command) => command.includes("/dump/shrink-smoke/tenant"))).toBe(true);
+    expect(commands.some((command) => command.includes("admin database /local/example create hdd:1"))).toBe(true);
+    expect(commands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(2);
+    expect(commands.some((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml /ydb_data/cluster/kikimr_configs/config.yaml"))).toBe(true);
+    expect(commands.some((command) => command.includes("StaffApiUserToken: \"root@builtin\""))).toBe(true);
+    expect(commands.some((command) => command.includes("--name ydb-dyn-example-2"))).toBe(true);
+
+    const firstRestartIndex = commands.findIndex((command) => command.includes("docker restart ydb-local"));
+    const recopyIndex = commands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml /ydb_data/cluster/kikimr_configs/config.yaml"));
+    const secondRestartIndex = commands.findIndex((command, index) => index > firstRestartIndex && command.includes("docker restart ydb-local"));
+    const readdExtraNodeIndex = commands.findIndex((command) => command.includes("--name ydb-dyn-example-2"));
+    expect(firstRestartIndex).toBeGreaterThan(-1);
+    expect(recopyIndex).toBeGreaterThan(firstRestartIndex);
+    expect(secondRestartIndex).toBeGreaterThan(recopyIndex);
+    expect(readdExtraNodeIndex).toBeGreaterThan(secondRestartIndex);
+  });
+
   it("plans full stack teardown and keeps shared host paths opt-in", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
@@ -305,6 +536,68 @@ describe("mutating operations", () => {
     expect(response.removesDumpHostPath).toBe(false);
   });
 
+  it("continues docker teardown when tenant removal is blocked by auth failure", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example",
+          staticContainer: "ydb-local",
+          network: "ydb-net",
+          volume: "ydb-local-data",
+          rootPasswordFile: "/tmp/local-ydb-auth/root.password"
+        }
+      }
+    }));
+    let commandIndex = 0;
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      commandIndex += 1;
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example-2" }),
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker volume ls")) {
+        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+      }
+      if (commandIndex === 4 && command.includes("admin database /local/example remove --force")) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "UNAUTHORIZED\nUser root login denied: too many failed password attempts\n",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await destroyStack(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.summary).toContain("continuing past tenant removal auth failure");
+    expect(response.results?.[0]?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
+  });
+
   it("can write a dynamic-node auth config from profile defaults", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
@@ -335,8 +628,43 @@ describe("mutating operations", () => {
     const response = await applyAuthHardening(ctx, {});
     expect(response.executed).toBe(false);
     expect(response.plannedCommands.some((command) => command.includes("docker cp /tmp/local-ydb/config.yaml"))).toBe(true);
+    expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(2);
+    const firstRestartIndex = response.plannedCommands.findIndex((command) => command.includes("docker restart ydb-local"));
+    const recopyIndex = response.plannedCommands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml /ydb_data/cluster/kikimr_configs/config.yaml"));
+    expect(recopyIndex).toBeGreaterThan(firstRestartIndex);
     expect(response.plannedCommands.some((command) => command.includes("docker rm -f ydb-dyn-example"))).toBe(true);
     expect(response.plannedCommands.some((command) => command.includes("--auth-token-file /run/local-ydb/dynamic-node-auth.pb"))).toBe(true);
+  });
+
+  it("plans root password rotation without exposing the password", async () => {
+    const executor = new RecordingExecutor();
+    executor.display = (profile, spec) => {
+      const password = "S3cr3t! rotate me";
+      const escapedPassword = password.replace(/'/g, "''");
+      return redactCommand(commandToShell(spec), [
+        password,
+        escapedPassword,
+        profile.rootPasswordFile ?? "",
+        `${profile.rootPasswordFile ?? ""}.before-local-ydb-toolkit-password-rotate`,
+        `${profile.authConfigPath ?? ""}.before-local-ydb-toolkit-password-rotate`
+      ]);
+    };
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          rootPasswordFile: "/tmp/local-ydb/root.password"
+        }
+      }
+    }));
+    const response = await setRootPassword(ctx, { password: "S3cr3t! rotate me" });
+    expect(response.executed).toBe(false);
+    expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/config.auth.yaml");
+    expect(response.plannedCommands.join("\n")).not.toContain("S3cr3t! rotate me");
+    expect(response.plannedCommands.some((command) => command.includes("ALTER USER root PASSWORD"))).toBe(true);
+    expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(0);
+    expect(response.plannedCommands.some((command) => command.includes("viewer/json/whoami"))).toBe(true);
   });
 
   it("prepares a hardened auth config and root password file from the running static config", async () => {
