@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.2.1...mcp-server-v0.2.2) (2026-04-26)
+
+
+### Bug Fixes
+
+* improve local-ydb MCP scenario handling ([1eed3f1](https://github.com/astandrik/local-ydb-toolkit/commit/1eed3f1023bd509f20db3d930cabcb86d60ce4ad))
+* improve local-ydb MCP scenario handling ([53e11a2](https://github.com/astandrik/local-ydb-toolkit/commit/53e11a2c56fe1579ca50e9a1e3839af53316ef44))
+
 ## [0.2.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.2.0...mcp-server-v0.2.1) (2026-04-26)
 
 
