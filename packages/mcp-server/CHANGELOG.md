@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.3.0...mcp-server-v0.3.1) (2026-04-26)
+
+
+### Bug Fixes
+
+* include core changes in mcp releases ([f7c7f12](https://github.com/astandrik/local-ydb-toolkit/commit/f7c7f12d07b2565a62b7212cc9233c3a737205b1))
+* include core changes in mcp releases ([98d4a8a](https://github.com/astandrik/local-ydb-toolkit/commit/98d4a8a9b4730653f66cdaa2105ae479aa4ec415))
+* tolerate ydb terminal status exits ([e99d709](https://github.com/astandrik/local-ydb-toolkit/commit/e99d709d88c79d623abedd7ee2537cdf2237249a))
+* tolerate ydb terminal status exits ([e99d709](https://github.com/astandrik/local-ydb-toolkit/commit/e99d709d88c79d623abedd7ee2537cdf2237249a))
+* tolerate ydb terminal status exits ([4162f2d](https://github.com/astandrik/local-ydb-toolkit/commit/4162f2d7a61f4a59e04f904a9c5b5901fc47faf3))
+
 ## [0.3.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.2.2...mcp-server-v0.3.0) (2026-04-26)
 
 
