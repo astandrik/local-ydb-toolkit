@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.2.2...mcp-server-v0.3.0) (2026-04-26)
+
+
+### Features
+
+* add local-ydb tool index to MCP instructions ([a6adcba](https://github.com/astandrik/local-ydb-toolkit/commit/a6adcbaf1f3635b30c9860f0c986da93c83cbc96))
+
 ## [0.2.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.2.1...mcp-server-v0.2.2) (2026-04-26)
 
 
