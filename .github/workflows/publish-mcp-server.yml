@@ -1,28 +1,52 @@
-name: Publish MCP server
+name: Release MCP server
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Run checks and package dry-run without publishing.
+        description: Run build, tests, typecheck, and npm package dry-run.
         required: false
-        default: false
+        default: true
         type: boolean
-  push:
-    tags:
-      - "mcp-server-v*"
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
-  group: publish-mcp-server-${{ github.ref }}
+  group: release-mcp-server-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  publish:
+  release-please:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs['packages/mcp-server--release_created'] }}
+      tag_name: ${{ steps.release.outputs['packages/mcp-server--tag_name'] }}
+      version: ${{ steps.release.outputs['packages/mcp-server--version'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
+
+  publish:
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    needs:
+      - release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
 
@@ -40,18 +64,31 @@ jobs:
 
       - run: npm run typecheck
 
-      - name: Check release tag
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        run: |
-          version=$(node -p "require('./packages/mcp-server/package.json').version")
-          expected="mcp-server-v${version}"
-          if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
-            echo "Expected tag ${expected}, got ${GITHUB_REF_NAME}" >&2
-            exit 1
-          fi
-
       - run: npm pack -w @local-ydb-toolkit/mcp-server --dry-run
 
-      - name: Publish to npm
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
+      - name: Publish ${{ needs.release-please.outputs.tag_name }} to npm
         run: npm publish -w @local-ydb-toolkit/mcp-server
+
+  dry-run:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: npm test
+
+      - run: npm run typecheck
+
+      - run: npm pack -w @local-ydb-toolkit/mcp-server --dry-run
