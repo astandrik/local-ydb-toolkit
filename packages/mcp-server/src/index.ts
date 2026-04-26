@@ -136,7 +136,72 @@ function handlerConfig(configPath: string | undefined, options: HandlerOptions):
   return options.config ?? loadConfig(configPath);
 }
 
+const localYdbToolIndex = [
+  [
+    "checks",
+    [
+      "local_ydb_inventory",
+      "local_ydb_database_status",
+      "local_ydb_container_logs",
+      "local_ydb_status_report",
+      "local_ydb_tenant_check",
+      "local_ydb_nodes_check",
+      "local_ydb_graphshard_check",
+      "local_ydb_auth_check",
+      "local_ydb_storage_placement",
+      "local_ydb_storage_leftovers"
+    ]
+  ],
+  [
+    "lifecycle",
+    [
+      "local_ydb_check_prerequisites",
+      "local_ydb_bootstrap",
+      "local_ydb_create_tenant",
+      "local_ydb_start_dynamic_node",
+      "local_ydb_restart_stack",
+      "local_ydb_destroy_stack"
+    ]
+  ],
+  [
+    "dynamic nodes",
+    [
+      "local_ydb_add_dynamic_nodes",
+      "local_ydb_remove_dynamic_nodes"
+    ]
+  ],
+  [
+    "storage",
+    [
+      "local_ydb_add_storage_groups",
+      "local_ydb_reduce_storage_groups",
+      "local_ydb_cleanup_storage"
+    ]
+  ],
+  [
+    "backup restore",
+    [
+      "local_ydb_dump_tenant",
+      "local_ydb_restore_tenant"
+    ]
+  ],
+  [
+    "auth",
+    [
+      "local_ydb_prepare_auth_config",
+      "local_ydb_write_dynamic_auth_config",
+      "local_ydb_apply_auth_hardening",
+      "local_ydb_set_root_password"
+    ]
+  ]
+] as const;
+
+const localYdbToolIndexInstructions = localYdbToolIndex
+  .map(([group, names]) => `${group}: ${names.join(", ")}`)
+  .join("; ");
+
 export const localYdbInstructions = [
+  `Available local-ydb tools by category: ${localYdbToolIndexInstructions}.`,
   "Use local_ydb_check_prerequisites first on a new local or remote target to verify Docker, host helpers, and auth-file prerequisites before deeper checks.",
   "If local_ydb_check_prerequisites reports installable missing packages, review the plan first and then run it with confirm=true to install supported host helpers such as curl or ruby; Docker still requires manual installation.",
   "Use local_ydb_status_report or local_ydb_inventory first to establish the current stack state before mutating anything.",

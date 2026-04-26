@@ -108,6 +108,12 @@ describe("mcp tools", () => {
     expect(server._instructions).toContain("PENDING_RESOURCES");
   });
 
+  it("mentions every public local-ydb tool in server instructions", () => {
+    for (const tool of localYdbTools) {
+      expect(localYdbInstructions).toContain(tool.name);
+    }
+  });
+
   it("uses the package version in server metadata", () => {
     const server = createLocalYdbMcpServer() as unknown as { _serverInfo?: { version?: string } };
     expect(localYdbMcpServerVersion).toBe(packageVersion);
