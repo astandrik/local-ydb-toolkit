@@ -86,8 +86,12 @@ export function normalizeProfile(name: string, profile: LocalYdbProfile): Resolv
   };
 }
 
+export function resolveConfigPath(configPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG): string {
+  return configPath ? resolve(configPath) : resolve(process.cwd(), "local-ydb.config.json");
+}
+
 export function loadConfig(configPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG): LocalYdbConfig {
-  const path = configPath ? resolve(configPath) : resolve(process.cwd(), "local-ydb.config.json");
+  const path = resolveConfigPath(configPath);
   if (!existsSync(path)) {
     return ConfigSchema.parse({});
   }

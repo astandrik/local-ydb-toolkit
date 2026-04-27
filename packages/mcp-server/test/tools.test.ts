@@ -2,7 +2,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigSchema } from "@local-ydb-toolkit/core";
+import {
+  commandToShell,
+  ConfigSchema,
+  type CommandExecutor,
+  type CommandResult,
+  type CommandSpec,
+  type ResolvedLocalYdbProfile
+} from "@local-ydb-toolkit/core";
 import {
   callLocalYdbToolForTest,
   createLocalYdbMcpServer,
@@ -14,6 +21,29 @@ import {
 const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string;
 }).version;
+
+class RecordingExecutor implements CommandExecutor {
+  readonly commands: string[] = [];
+
+  display(_profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
+    return commandToShell(spec);
+  }
+
+  async run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+    const command = this.display(profile, spec);
+    this.commands.push(command);
+    if (command.includes("docker ps -a --format")) {
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    }
+    if (command.includes("docker volume ls")) {
+      return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+    }
+    if (command.includes("docker inspect")) {
+      return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+    }
+    return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+  }
+}
 
 describe("mcp tools", () => {
   it("registers all public local-ydb tools", () => {
@@ -87,6 +117,54 @@ describe("mcp tools", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("passes configPath through to version upgrade planning", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-toolkit-"));
+    const configPath = join(dir, "upgrade.json");
+    writeFileSync(configPath, JSON.stringify({
+      profiles: {
+        default: {
+          image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6"
+        }
+      }
+    }), "utf8");
+
+    try {
+      const result = await callLocalYdbToolForTest("local_ydb_upgrade_version", {
+        configPath,
+        version: "26.1.2.0"
+      }, {
+        executor: new RecordingExecutor()
+      }) as { executed: boolean; profileImageUpdate?: { configPath: string; ok: boolean }; plannedCommands: string[] };
+
+      expect(result.executed).toBe(false);
+      expect(result.profileImageUpdate).toMatchObject({
+        configPath,
+        ok: false
+      });
+      expect(result.plannedCommands.join("\n")).toContain(`update ${configPath}: profiles.default.image`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps injected test config in-memory for version upgrades", async () => {
+    const executor = new RecordingExecutor();
+
+    await expect(callLocalYdbToolForTest("local_ydb_upgrade_version", {
+      version: "26.1.2.0"
+    }, {
+      config: ConfigSchema.parse({
+        profiles: {
+          default: {
+            image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6"
+          }
+        }
+      }),
+      executor
+    })).rejects.toThrow(/file-backed local-ydb config path/);
+    expect(executor.commands).toEqual([]);
   });
 
   it("exposes nodeIds for targeted dynamic-node removal", () => {

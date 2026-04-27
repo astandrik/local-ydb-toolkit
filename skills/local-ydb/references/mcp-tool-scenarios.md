@@ -656,11 +656,12 @@ Expected:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
-- final verification checks both tenant metadata and the recreated containers' image tags
+- final verification checks tenant metadata, the recreated containers' image tags, and persists `profiles.<name>.image` in the file-backed config
 
 Avoid:
 
 - using this tool against a profile pinned by image digest
+- using this tool against a profile with `bindMountPath`; automatic version upgrade only supports volume-backed rebuilds
 - treating it as an in-place rolling upgrade of the existing volume
 - skipping the explicit target tag check from `local_ydb_list_versions`
 

@@ -3,6 +3,7 @@ import type { LocalYdbConfig, ResolvedLocalYdbProfile } from "../validation.js";
 
 export interface ToolkitContext {
   config: LocalYdbConfig;
+  configPath?: string;
   profile: ResolvedLocalYdbProfile;
   client: LocalYdbApiClient;
 }
@@ -207,6 +208,15 @@ export interface UpgradeVersionResponse extends OperationResponse {
   dumpName: string;
   authReapplyPlanned: boolean;
   extraDynamicNodes: string[];
+  profileImageUpdate?: {
+    configPath: string;
+    profile: string;
+    sourceImage: string;
+    targetImage: string;
+    executed: boolean;
+    ok: boolean;
+    error?: string;
+  };
   imageVerification?: {
     expectedImage: string;
     missing: string[];

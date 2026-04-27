@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   commandToShell,
@@ -42,6 +45,73 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
       ...(init.headers ?? {})
     }
   });
+}
+
+function upgradeConfig(profileOverrides: Record<string, unknown> = {}) {
+  return {
+    profiles: {
+      default: {
+        image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+        authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
+        dynamicContainer: "ydb-dyn-example",
+        dynamicNodeAuthSid: "root@builtin",
+        dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
+        rootPasswordFile: "/tmp/local-ydb-auth/root.password",
+        staticContainer: "ydb-local",
+        tenantPath: "/local/example",
+        ...profileOverrides
+      }
+    }
+  };
+}
+
+function writeTempConfig(rawConfig: unknown): { configPath: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "local-ydb-upgrade-"));
+  const configPath = join(dir, "local-ydb.config.json");
+  writeFileSync(configPath, `${JSON.stringify(rawConfig, null, 2)}\n`, "utf8");
+  return {
+    configPath,
+    cleanup: () => rmSync(dir, { recursive: true, force: true })
+  };
+}
+
+function stubUpgradeExecutor(executor: RecordingExecutor, inventoryImage: string): void {
+  executor.run = async (_profile, spec) => {
+    const command = executor.display(_profile, spec);
+    executor.commands.push(command);
+
+    if (command.includes("docker ps -a --format")) {
+      return {
+        command,
+        exitCode: 0,
+        stdout: [
+          JSON.stringify({ Names: "ydb-dyn-example-2", Image: inventoryImage }),
+          JSON.stringify({ Names: "ydb-dyn-example", Image: inventoryImage }),
+          JSON.stringify({ Names: "ydb-local", Image: inventoryImage })
+        ].join("\n"),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    }
+    if (command.includes("docker volume ls")) {
+      return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+    }
+    if (command.includes("docker inspect")) {
+      return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+    }
+    if (command.includes("viewer/json/nodelist")) {
+      return {
+        command,
+        exitCode: 0,
+        stdout: "[{\"Port\":19003}]",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    }
+    return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+  };
 }
 
 describe("version operations", () => {
@@ -132,112 +202,111 @@ describe("version operations", () => {
 
   it("plans a version upgrade via pull, dump, rebuild, auth reapply, and extra-node recreation", async () => {
     const executor = new RecordingExecutor();
-    const ctx = createContext(undefined, executor, ConfigSchema.parse({
-      profiles: {
-        default: {
-          image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
-          authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
-          dynamicContainer: "ydb-dyn-example",
-          dynamicNodeAuthSid: "root@builtin",
-          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
-          rootPasswordFile: "/tmp/local-ydb-auth/root.password",
-          staticContainer: "ydb-local",
-          tenantPath: "/local/example"
-        }
-      }
-    }));
+    const rawConfig = upgradeConfig();
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.1.6");
 
-    executor.run = async (_profile, spec) => {
-      const command = executor.display(_profile, spec);
-      executor.commands.push(command);
-      if (command.includes("docker ps -a --format")) {
-        return {
-          command,
-          exitCode: 0,
-          stdout: [
-            JSON.stringify({ Names: "ydb-dyn-example-2", Image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" }),
-            JSON.stringify({ Names: "ydb-dyn-example", Image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" }),
-            JSON.stringify({ Names: "ydb-local", Image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" })
-          ].join("\n"),
-          stderr: "",
-          ok: true,
-          timedOut: false
-        };
-      }
-      if (command.includes("docker volume ls")) {
-        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
-      }
-      if (command.includes("docker inspect")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
-      }
-      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
-    };
-
-    const response = await upgradeVersion(ctx, { version: "26.1.2.0" });
-    expect(response.executed).toBe(false);
-    expect(response.targetImage).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
-    expect(response.authReapplyPlanned).toBe(true);
-    expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-2"]);
-    expect(response.plannedCommands[0]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6");
-    expect(response.plannedCommands[1]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.2.0");
-    expect(response.plannedCommands.join("\n")).toContain("/dump/");
-    expect(response.plannedCommands.join("\n")).toContain("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
-    expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
+      const response = await upgradeVersion(ctx, { version: "26.1.2.0" });
+      expect(response.executed).toBe(false);
+      expect(response.targetImage).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.authReapplyPlanned).toBe(true);
+      expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-2"]);
+      expect(response.profileImageUpdate).toMatchObject({
+        configPath,
+        profile: "default",
+        sourceImage: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+        targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        executed: false,
+        ok: false
+      });
+      expect(response.plannedCommands[0]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6");
+      expect(response.plannedCommands[1]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.plannedCommands.join("\n")).toContain("/dump/");
+      expect(response.plannedCommands.join("\n")).toContain("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
+      expect(response.plannedCommands.join("\n")).toContain(`profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0`);
+    } finally {
+      cleanup();
+    }
   });
 
   it("executes a version upgrade and verifies target image usage", async () => {
     const executor = new RecordingExecutor();
-    const ctx = createContext(undefined, executor, ConfigSchema.parse({
-      profiles: {
-        default: {
-          image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
-          authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
-          dynamicContainer: "ydb-dyn-example",
-          dynamicNodeAuthSid: "root@builtin",
-          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
-          rootPasswordFile: "/tmp/local-ydb-auth/root.password",
-          staticContainer: "ydb-local",
-          tenantPath: "/local/example"
-        }
-      }
-    }));
+    const rawConfig = upgradeConfig();
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0");
 
-    executor.run = async (_profile, spec) => {
-      const command = executor.display(_profile, spec);
-      executor.commands.push(command);
+      const response = await upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-smoke"
+      });
 
-      if (command.includes("docker ps -a --format")) {
-        return {
-          command,
-          exitCode: 0,
-          stdout: [
-            JSON.stringify({ Names: "ydb-dyn-example-2", Image: "ghcr.io/ydb-platform/local-ydb:26.1.2.0" }),
-            JSON.stringify({ Names: "ydb-dyn-example", Image: "ghcr.io/ydb-platform/local-ydb:26.1.2.0" }),
-            JSON.stringify({ Names: "ydb-local", Image: "ghcr.io/ydb-platform/local-ydb:26.1.2.0" })
-          ].join("\n"),
-          stderr: "",
-          ok: true,
-          timedOut: false
-        };
-      }
-      if (command.includes("docker volume ls")) {
-        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
-      }
-      if (command.includes("docker inspect")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
-      }
-      if (command.includes("viewer/json/nodelist")) {
-        return {
-          command,
-          exitCode: 0,
-          stdout: '[{"Port":19003}]',
-          stderr: "",
-          ok: true,
-          timedOut: false
-        };
-      }
-      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
-    };
+      expect(response.executed).toBe(true);
+      expect(response.targetImage).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.dumpName).toBe("upgrade-smoke");
+      expect(response.imageVerification).toEqual({
+        expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        missing: [],
+        mismatches: []
+      });
+      expect(response.profileImageUpdate).toMatchObject({
+        configPath,
+        profile: "default",
+        sourceImage: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+        targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        executed: true,
+        ok: true
+      });
+      const updatedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
+      expect(updatedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+
+      const commands = response.results?.map((result) => result.command) ?? [];
+      expect(commands[0]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6");
+      expect(commands[1]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(commands.some((command) => command.includes("--name ydb-local") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+      expect(commands.some((command) => command.includes("--name ydb-dyn-example-2") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+      expect(commands.some((command) => command.includes("verify profile containers use image ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+      expect(commands.some((command) => command.includes("profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects confirmed upgrades without a file-backed config path before Docker commands", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse(upgradeConfig()));
+
+    await expect(upgradeVersion(ctx, {
+      confirm: true,
+      version: "26.1.2.0"
+    })).rejects.toThrow(/file-backed local-ydb config path/);
+    expect(executor.commands).toEqual([]);
+  });
+
+  it("rejects bind-mounted profiles before Docker commands", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse(upgradeConfig({
+      bindMountPath: "/tmp/local-ydb-bind-data"
+    })), "/tmp/local-ydb.config.json");
+
+    await expect(upgradeVersion(ctx, {
+      confirm: true,
+      version: "26.1.2.0"
+    })).rejects.toThrow(/bindMountPath profiles/);
+    expect(executor.commands).toEqual([]);
+  });
+
+  it("reports a failed config image update after successful image verification", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig();
+    const configPath = join(tmpdir(), `local-ydb-missing-${Date.now()}`, "local-ydb.config.json");
+    const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+    stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0");
 
     const response = await upgradeVersion(ctx, {
       confirm: true,
@@ -245,21 +314,25 @@ describe("version operations", () => {
       dumpName: "upgrade-smoke"
     });
 
-    expect(response.executed).toBe(true);
-    expect(response.targetImage).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
-    expect(response.dumpName).toBe("upgrade-smoke");
     expect(response.imageVerification).toEqual({
       expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
       missing: [],
       mismatches: []
     });
-
-    const commands = response.results?.map((result) => result.command) ?? [];
-    expect(commands[0]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6");
-    expect(commands[1]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.2.0");
-    expect(commands.some((command) => command.includes("--name ydb-local") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
-    expect(commands.some((command) => command.includes("--name ydb-dyn-example-2") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
-    expect(commands.some((command) => command.includes("verify profile containers use image ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+    expect(response.profileImageUpdate).toMatchObject({
+      configPath,
+      profile: "default",
+      sourceImage: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+      targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+      executed: true,
+      ok: false
+    });
+    expect(response.profileImageUpdate?.error).toBeTruthy();
+    expect(response.results?.at(-1)).toMatchObject({
+      command: `update ${configPath}: profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0`,
+      ok: false,
+      exitCode: 1
+    });
   });
 
   it("rejects digest-pinned profile images for upgrade", async () => {

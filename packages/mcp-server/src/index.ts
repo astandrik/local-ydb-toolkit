@@ -38,6 +38,7 @@ import {
   type CommandExecutor,
   type LocalYdbConfig,
   loadConfig,
+  resolveConfigPath,
 } from "@local-ydb-toolkit/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -235,7 +236,7 @@ export const localYdbInstructions = [
   "Use local_ydb_pull_image with confirm=true before bootstrap or upgrade when an image is missing, then poll local_ydb_pull_status until it completes.",
   "For bootstrap or restart issues, inspect local_ydb_database_status and local_ydb_container_logs before retrying.",
   "Prefer exact image tags for local-ydb stacks and avoid mixing static and dynamic image versions in one stack.",
-  "For version upgrades, prefer local_ydb_upgrade_version, which verifies source and target images are present and then uses dump, rebuild, restore, auth reapply, and extra-node recreation instead of reusing an old volume in place.",
+  "For volume-backed version upgrades, prefer local_ydb_upgrade_version, which requires a file-backed config path, verifies source and target images are present, then uses dump, rebuild, restore, auth reapply, extra-node recreation, image verification, and profile image persistence instead of reusing an old volume in place; bindMountPath profiles are not supported.",
   "On a fresh /local/<tenant> database, admin database status can be PENDING_RESOURCES before the first dynamic node registers; treat status success as the readiness gate for the first dynamic-node start.",
   "For storage-pool expansion, reread the current pool definition first and increase NumGroups on that exact pool instead of guessing a partial DefineStoragePool shape.",
   "For storage-pool reduction, do not try to live-decrease NumGroups; dump the tenant, rebuild the stack with a smaller storagePoolCount, restore, and then reapply auth if the profile uses it.",
@@ -363,7 +364,7 @@ export const localYdbTools: Tool[] = [
   ),
   tool(
     "local_ydb_upgrade_version",
-    "Upgrade a local-ydb profile to a target image tag via image preflight, dump, rebuild, restore, auth reapply, and extra-node recreation.",
+    "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag via image preflight, dump, rebuild, restore, auth reapply, extra-node recreation, image verification, and profile image persistence.",
     upgradeVersionSchema(),
   ),
   tool(
@@ -636,11 +637,13 @@ const handlers: Record<string, ToolHandler> = {
   },
   local_ydb_upgrade_version: async (args, options) => {
     const parsed = UpgradeVersionArgs.parse(args ?? {});
+    const config = handlerConfig(parsed.configPath, options);
     return upgradeVersion(
       createContext(
         parsed.profile,
         options.executor,
-        handlerConfig(parsed.configPath, options),
+        config,
+        options.config ? undefined : resolveConfigPath(parsed.configPath),
       ),
       parsed,
     );
