@@ -2,7 +2,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigSchema } from "@local-ydb-toolkit/core";
+import {
+  commandToShell,
+  ConfigSchema,
+  type CommandExecutor,
+  type CommandResult,
+  type CommandSpec,
+  type ResolvedLocalYdbProfile
+} from "@local-ydb-toolkit/core";
 import {
   callLocalYdbToolForTest,
   createLocalYdbMcpServer,
@@ -14,6 +21,29 @@ import {
 const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string;
 }).version;
+
+class RecordingExecutor implements CommandExecutor {
+  readonly commands: string[] = [];
+
+  display(_profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
+    return commandToShell(spec);
+  }
+
+  async run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+    const command = this.display(profile, spec);
+    this.commands.push(command);
+    if (command.includes("docker ps -a --format")) {
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    }
+    if (command.includes("docker volume ls")) {
+      return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+    }
+    if (command.includes("docker inspect")) {
+      return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+    }
+    return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+  }
+}
 
 describe("mcp tools", () => {
   it("registers all public local-ydb tools", () => {
@@ -32,8 +62,11 @@ describe("mcp tools", () => {
       "local_ydb_dump_tenant",
       "local_ydb_graphshard_check",
       "local_ydb_inventory",
+      "local_ydb_list_versions",
       "local_ydb_nodes_check",
       "local_ydb_prepare_auth_config",
+      "local_ydb_pull_image",
+      "local_ydb_pull_status",
       "local_ydb_reduce_storage_groups",
       "local_ydb_remove_dynamic_nodes",
       "local_ydb_restart_stack",
@@ -44,6 +77,7 @@ describe("mcp tools", () => {
       "local_ydb_storage_leftovers",
       "local_ydb_storage_placement",
       "local_ydb_tenant_check",
+      "local_ydb_upgrade_version",
       "local_ydb_write_dynamic_auth_config"
     ]);
   });
@@ -85,6 +119,54 @@ describe("mcp tools", () => {
     }
   });
 
+  it("passes configPath through to version upgrade planning", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-toolkit-"));
+    const configPath = join(dir, "upgrade.json");
+    writeFileSync(configPath, JSON.stringify({
+      profiles: {
+        default: {
+          image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6"
+        }
+      }
+    }), "utf8");
+
+    try {
+      const result = await callLocalYdbToolForTest("local_ydb_upgrade_version", {
+        configPath,
+        version: "26.1.2.0"
+      }, {
+        executor: new RecordingExecutor()
+      }) as { executed: boolean; profileImageUpdate?: { configPath: string; ok: boolean }; plannedCommands: string[] };
+
+      expect(result.executed).toBe(false);
+      expect(result.profileImageUpdate).toMatchObject({
+        configPath,
+        ok: false
+      });
+      expect(result.plannedCommands.join("\n")).toContain(`update ${configPath}: profiles.default.image`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps injected test config in-memory for version upgrades", async () => {
+    const executor = new RecordingExecutor();
+
+    await expect(callLocalYdbToolForTest("local_ydb_upgrade_version", {
+      version: "26.1.2.0"
+    }, {
+      config: ConfigSchema.parse({
+        profiles: {
+          default: {
+            image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6"
+          }
+        }
+      }),
+      executor
+    })).rejects.toThrow(/file-backed local-ydb config path/);
+    expect(executor.commands).toEqual([]);
+  });
+
   it("exposes nodeIds for targeted dynamic-node removal", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_remove_dynamic_nodes");
     expect(tool?.inputSchema.properties?.nodeIds).toMatchObject({
@@ -98,6 +180,59 @@ describe("mcp tools", () => {
     expect(tool?.inputSchema.properties?.configPath).toMatchObject({
       type: "string"
     });
+  });
+
+  it("requires version for the upgrade tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
+    expect(tool?.inputSchema.required).toContain("version");
+  });
+
+  it("requires jobId for the pull status tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_pull_status");
+    expect(tool?.inputSchema.required).toContain("jobId");
+  });
+
+  it("can plan a background image pull through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_pull_image", {
+      image: "ghcr.io/ydb-platform/local-ydb:25.4"
+    }, {
+      config: ConfigSchema.parse({})
+    }) as { executed: boolean; status: string; plannedCommands: string[] };
+
+    expect(result.executed).toBe(false);
+    expect(result.status).toBe("planned");
+    expect(result.plannedCommands.join("\n")).toContain("docker pull ghcr.io/ydb-platform/local-ydb:25.4");
+  });
+
+  it("can read missing pull status through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_pull_status", {
+      jobId: "missing-job"
+    }) as { found: boolean; status: string };
+
+    expect(result.found).toBe(false);
+    expect(result.status).toBe("unknown");
+  });
+
+  it("can list registry tags through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_list_versions", {
+      image: "ghcr.io/ydb-platform/local-ydb",
+      pageSize: 2,
+      maxPages: 1
+    }, {
+      fetchImpl: async (input) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url === "https://ghcr.io/v2/ydb-platform/local-ydb/tags/list?n=2") {
+          return new Response(JSON.stringify({ tags: ["26.1.1.6", "latest"] }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+        throw new Error(`Unexpected fetch request: ${url}`);
+      }
+    }) as { tags: string[]; truncated: boolean };
+
+    expect(result.tags).toEqual(["26.1.1.6", "latest"]);
+    expect(result.truncated).toBe(false);
   });
 
   it("exposes server instructions during initialization", () => {

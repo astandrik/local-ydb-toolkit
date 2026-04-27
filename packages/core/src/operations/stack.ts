@@ -9,10 +9,12 @@ import {
 } from "./commands.js";
 import { normalizeExpectedYdbResult, runMutating } from "./execution.js";
 import { findExtraDynamicContainers } from "./helpers.js";
+import { ensureImagePresentSpec } from "./images.js";
 import type { DestroyStackOptions, DestroyStackResponse, MutatingOptions, OperationResponse, ToolkitContext } from "./types.js";
 
 export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<OperationResponse> {
   const specs = [
+    ensureImagePresentSpec(ctx.profile.image),
     bash(`docker network inspect ${shellQuote(ctx.profile.network)} >/dev/null 2>&1 || docker network create ${shellQuote(ctx.profile.network)}`, { description: "Ensure Docker network exists" }),
     ctx.profile.bindMountPath
       ? bash(`mkdir -p ${shellQuote(ctx.profile.bindMountPath)}`, { description: "Ensure bind mount path exists" })
@@ -47,7 +49,10 @@ export async function startDynamicNode(ctx: ToolkitContext, options: MutatingOpt
   return runMutating(ctx, {
     summary: `Start dynamic node ${ctx.profile.dynamicContainer}.`,
     risk: "medium",
-    specs: [bash(commandForDynamicEnsureRun(ctx.profile), { timeoutMs: 60_000 })],
+    specs: [
+      ensureImagePresentSpec(ctx.profile.image),
+      bash(commandForDynamicEnsureRun(ctx.profile), { timeoutMs: 60_000 })
+    ],
     rollback: [`docker rm -f ${ctx.profile.dynamicContainer}`],
     verification: ["container is Up", "viewer/json/nodelist includes the dynamic node", `scheme ls ${ctx.profile.tenantPath}`]
   }, options);
@@ -178,6 +183,7 @@ function canContinueAfterTenantRemoveFailure(
 
 export async function restartStack(ctx: ToolkitContext, options: MutatingOptions = {}) {
   const specs = [
+    ensureImagePresentSpec(ctx.profile.image),
     bash(`docker stop ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`),
     bash(`docker stop ${shellQuote(ctx.profile.staticContainer)} 2>/dev/null || true`),
     bash(`docker start ${shellQuote(ctx.profile.staticContainer)}`),

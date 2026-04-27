@@ -12,6 +12,8 @@ import {
   destroyStack,
   dumpTenant,
   prepareAuthConfig,
+  pullImage,
+  pullImageStatus,
   redactCommand,
   reduceStorageGroups,
   removeDynamicNodes,
@@ -54,7 +56,36 @@ describe("mutating operations", () => {
     const response = await bootstrap(ctx, {});
     expect(response.executed).toBe(false);
     expect(executor.commands).toEqual([]);
+    expect(response.plannedCommands[0]).toContain("docker image inspect");
     expect(response.plannedCommands.some((command) => command.includes("docker network"))).toBe(true);
+  });
+
+  it("plans a background image pull without confirm=true", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await pullImage(ctx, { image: "ghcr.io/ydb-platform/local-ydb:25.4" });
+    expect(response.executed).toBe(false);
+    expect(response.status).toBe("planned");
+    expect(response.plannedCommands.join("\n")).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:25.4");
+    expect(response.plannedCommands.join("\n")).toContain("docker pull ghcr.io/ydb-platform/local-ydb:25.4");
+  });
+
+  it("does not start a pull job when the image is already present", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await pullImage(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.status).toBe("already-present");
+    expect(response.jobId).toBeUndefined();
+    expect(executor.commands).toEqual(["docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6"]);
+  });
+
+  it("reports unknown image pull jobs without throwing", () => {
+    expect(pullImageStatus("missing-job")).toMatchObject({
+      found: false,
+      jobId: "missing-job",
+      status: "unknown"
+    });
   });
 
   it("checks prerequisites and prepares an apt install plan for missing host helpers", async () => {
@@ -198,11 +229,12 @@ describe("mutating operations", () => {
     }));
     const response = await startDynamicNode(ctx, {});
     expect(response.executed).toBe(false);
-    expect(response.plannedCommands[0]).toContain("-e GRPC_TLS_PORT=");
-    expect(response.plannedCommands[0]).toContain("-e YDB_GRPC_ENABLE_TLS=0");
-    expect(response.plannedCommands[0]).toContain("local-ydb-dynamic-config.yaml");
-    expect(response.plannedCommands[0]).toContain("/tmp/local-ydb-auth.pb:/run/local-ydb/dynamic-node-auth.pb:ro");
-    expect(response.plannedCommands[0]).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
+    expect(response.plannedCommands[0]).toContain("docker image inspect");
+    expect(response.plannedCommands[1]).toContain("-e GRPC_TLS_PORT=");
+    expect(response.plannedCommands[1]).toContain("-e YDB_GRPC_ENABLE_TLS=0");
+    expect(response.plannedCommands[1]).toContain("local-ydb-dynamic-config.yaml");
+    expect(response.plannedCommands[1]).toContain("/tmp/local-ydb-auth.pb:/run/local-ydb/dynamic-node-auth.pb:ro");
+    expect(response.plannedCommands[1]).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
   });
 
   it("plans additional dynamic nodes with unique containers and ports", async () => {

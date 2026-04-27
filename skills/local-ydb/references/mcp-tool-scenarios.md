@@ -21,12 +21,16 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_add_storage_groups`
 - `local_ydb_reduce_storage_groups`
 - `local_ydb_storage_leftovers`
+- `local_ydb_list_versions`
+- `local_ydb_pull_image`
+- `local_ydb_pull_status`
 - `local_ydb_bootstrap`
 - `local_ydb_create_tenant`
 - `local_ydb_start_dynamic_node`
 - `local_ydb_add_dynamic_nodes`
 - `local_ydb_remove_dynamic_nodes`
 - `local_ydb_restart_stack`
+- `local_ydb_upgrade_version`
 - `local_ydb_dump_tenant`
 - `local_ydb_restore_tenant`
 - `local_ydb_prepare_auth_config`
@@ -50,6 +54,8 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Run `local_ydb_check_prerequisites` first on a new host or profile.
 - If `local_ydb_check_prerequisites` reports installable packages, review its plan-only output and then use `confirm: true` to install supported host helpers before trying deeper checks.
 - Run read-only tools first.
+- Use `local_ydb_list_versions` before `local_ydb_upgrade_version` when you need to verify the exact registry tag to deploy.
+- If an image is not already present on the target host, use `local_ydb_pull_image(confirm=true)` and poll `local_ydb_pull_status` before bootstrap or upgrade.
 - For mutating tools, call plan-only once before `confirm: true` unless you are deliberately smoke-testing an idempotent path.
 - Do not test `cleanup_storage` against active volumes or paths.
 - Do not mix static and dynamic image tags inside one profile.
@@ -110,6 +116,54 @@ Expected:
 Avoid:
 
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
+
+## Scenario 1A: Published Image Tags
+
+Goal: verify that the registry tag listing tool can discover concrete `local-ydb` image versions before an upgrade.
+
+Calls:
+
+```json
+{ "tool": "local_ydb_list_versions", "arguments": {} }
+{ "tool": "local_ydb_list_versions", "arguments": { "image": "ghcr.io/ydb-platform/local-ydb", "pageSize": 50, "maxPages": 2 } }
+```
+
+Expected:
+
+- the response includes `image`, `registry`, `repository`, `tags`, `count`, and `truncated`
+- the default image resolves to `ghcr.io/ydb-platform/local-ydb`
+- `tags` includes concrete patch tags when the registry publishes them
+- numeric version tags are sorted newest first; mutable aliases such as `latest`, `nightly`, and `trunk` follow the numeric versions
+- `truncated` becomes `true` only when the configured page limit is reached before the registry finishes pagination
+
+Avoid:
+
+- assuming `latest` is the only safe upgrade target
+- using a short major/minor tag in production-like checks when an exact patch tag is available
+
+## Scenario 1B: Background Image Pull
+
+Goal: start slow registry downloads outside synchronous bootstrap or upgrade calls.
+
+Calls:
+
+```json
+{ "tool": "local_ydb_pull_image", "arguments": { "profile": "ghcr261-clean", "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6", "confirm": false } }
+{ "tool": "local_ydb_pull_image", "arguments": { "profile": "ghcr261-clean", "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6", "confirm": true } }
+{ "tool": "local_ydb_pull_status", "arguments": { "jobId": "<jobId-from-pull-image>" } }
+```
+
+Expected:
+
+- plan-only output includes `docker image inspect` and `docker pull`
+- with `confirm: true`, the tool returns quickly with `status: running` and a `jobId`, unless the image is already present
+- status polling eventually returns `completed` or `failed`
+- bootstrap and upgrade image preflight failures point back to `local_ydb_pull_image` instead of hanging inside `docker run`
+
+Avoid:
+
+- relying on `docker run` to implicitly pull large images inside a synchronous MCP tool call
+- treating a 120-second MCP client timeout during image download as a YDB bootstrap failure
 
 ## Scenario 2: Fresh Bootstrap on an Isolated GHCR Stack
 
@@ -574,14 +628,57 @@ Avoid:
 
 - using `cleanup_storage(confirm=true)` against any active profile volume or the current auth stack
 
+## Scenario 14A: Version Upgrade By Rebuild
+
+Goal: upgrade a working profile to a specific image tag without reusing the old volume in place.
+
+Profile:
+`ghcr261-auth`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_upgrade_version", "arguments": { "profile": "ghcr261-auth", "version": "26.1.1.6", "confirm": false } }
+```
+
+Optional execution path on a disposable stack:
+
+```json
+{ "tool": "local_ydb_upgrade_version", "arguments": { "profile": "ghcr261-auth", "version": "<target-tag>", "dumpName": "upgrade-smoke", "confirm": true } }
+```
+
+Expected:
+
+- the plan starts with source and target image preflight checks
+- if either image is missing, run `local_ydb_pull_image` first and retry after `local_ydb_pull_status` reports completion
+- after image preflight, the upgrade path performs dump, destroy, bootstrap, restore, auth reapply, and extra dynamic-node recreation in that order
+- auth-enabled profiles re-run:
+  `local_ydb_prepare_auth_config`
+  `local_ydb_write_dynamic_auth_config`
+  `local_ydb_apply_auth_hardening`
+- final verification checks tenant metadata, the recreated containers' image tags, and persists `profiles.<name>.image` in the file-backed config
+
+Avoid:
+
+- using this tool against a profile pinned by image digest
+- using this tool against a profile with `bindMountPath`; automatic version upgrade only supports volume-backed rebuilds
+- treating it as an in-place rolling upgrade of the existing volume
+- skipping the explicit target tag check from `local_ydb_list_versions`
+
 ## Coverage Matrix
 
 - Bootstrap and lifecycle:
   `local_ydb_bootstrap`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_add_dynamic_nodes`, `local_ydb_remove_dynamic_nodes`, `local_ydb_restart_stack`
+- Version discovery:
+  `local_ydb_list_versions`
+- Image pulls:
+  `local_ydb_pull_image`, `local_ydb_pull_status`
 - Storage-pool expansion:
   `local_ydb_add_storage_groups`
 - Storage-pool reduction by rebuild:
   `local_ydb_reduce_storage_groups`
+- Version upgrade by rebuild:
+  `local_ydb_upgrade_version`
 - Full teardown:
   `local_ydb_destroy_stack`
 - Backup and restore:
