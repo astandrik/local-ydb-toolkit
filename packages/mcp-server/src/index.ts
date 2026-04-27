@@ -18,6 +18,7 @@ import {
   reduceStorageGroups,
   dumpTenant,
   graphshardCheck,
+  inspectScheme,
   pullImage,
   pullImageStatus,
   inventory,
@@ -65,6 +66,16 @@ const ProfileArgs = z.object({
 const LogsArgs = ProfileArgs.extend({
   target: z.enum(["static", "dynamic"]),
   lines: z.number().int().positive().optional(),
+});
+
+const SchemeArgs = ProfileArgs.extend({
+  action: z.enum(["list", "describe"]).optional(),
+  path: z.string().min(1).optional(),
+  recursive: z.boolean().optional(),
+  long: z.boolean().optional(),
+  onePerLine: z.boolean().optional(),
+  stats: z.boolean().optional(),
+  maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
 });
 
 const MutatingArgs = ProfileArgs.extend({
@@ -177,6 +188,7 @@ const localYdbToolIndex = [
       "local_ydb_container_logs",
       "local_ydb_status_report",
       "local_ydb_tenant_check",
+      "local_ydb_scheme",
       "local_ydb_nodes_check",
       "local_ydb_graphshard_check",
       "local_ydb_auth_check",
@@ -271,6 +283,11 @@ export const localYdbTools: Tool[] = [
     "local_ydb_tenant_check",
     "Check tenant metadata reachability with the YDB CLI.",
     profileSchema(),
+  ),
+  tool(
+    "local_ydb_scheme",
+    "List or describe YDB scheme objects with capped output.",
+    schemeSchema(),
   ),
   tool(
     "local_ydb_nodes_check",
@@ -454,6 +471,17 @@ const handlers: Record<string, ToolHandler> = {
         options.executor,
         handlerConfig(parsed.configPath, options),
       ),
+    );
+  },
+  local_ydb_scheme: async (args, options) => {
+    const parsed = SchemeArgs.parse(args ?? {});
+    return inspectScheme(
+      createContext(
+        parsed.profile,
+        options.executor,
+        handlerConfig(parsed.configPath, options),
+      ),
+      parsed,
     );
   },
   local_ydb_nodes_check: async (args, options) => {
@@ -812,6 +840,58 @@ function logsSchema(): Tool["inputSchema"] {
         type: "integer",
         minimum: 1,
         description: "Number of recent log lines to read. Defaults to 200.",
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
+function schemeSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: {
+        type: "string",
+        description:
+          "Named profile from local-ydb.config.json. Defaults to config.defaultProfile.",
+      },
+      configPath: {
+        type: "string",
+        description:
+          "Explicit local-ydb config file path to load for this tool call.",
+      },
+      action: {
+        type: "string",
+        enum: ["list", "describe"],
+        description: "Scheme operation to run. Defaults to list.",
+      },
+      path: {
+        type: "string",
+        description:
+          "Scheme path to inspect. Defaults to the configured tenant root.",
+      },
+      recursive: {
+        type: "boolean",
+        description: "For action=list, pass -R to recursively list subdirectories.",
+      },
+      long: {
+        type: "boolean",
+        description: "For action=list, pass -l for detailed object attributes.",
+      },
+      onePerLine: {
+        type: "boolean",
+        description: "For action=list, pass -1 to print one object per line.",
+      },
+      stats: {
+        type: "boolean",
+        description: "For action=describe, pass --stats.",
+      },
+      maxOutputBytes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 1_048_576,
+        description:
+          "Maximum UTF-8 bytes returned per stdout/stderr stream. Defaults to 65536.",
       },
     },
     additionalProperties: false,

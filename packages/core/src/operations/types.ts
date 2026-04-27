@@ -73,6 +73,18 @@ export interface UpgradeVersionOptions extends MutatingOptions {
   dumpName?: string;
 }
 
+export type SchemeAction = "list" | "describe";
+
+export interface SchemeOptions {
+  action?: SchemeAction;
+  path?: string;
+  recursive?: boolean;
+  long?: boolean;
+  onePerLine?: boolean;
+  stats?: boolean;
+  maxOutputBytes?: number;
+}
+
 export interface SetRootPasswordOptions extends MutatingOptions {
   password?: string;
 }
@@ -222,4 +234,26 @@ export interface UpgradeVersionResponse extends OperationResponse {
     missing: string[];
     mismatches: string[];
   };
+}
+
+export interface SchemeResponse {
+  summary: string;
+  ok: boolean;
+  action: SchemeAction;
+  path: string;
+  command: string;
+  /** Captured stdout, potentially capped to maxOutputBytes. */
+  stdout: string;
+  /** Captured stderr, potentially capped to maxOutputBytes. */
+  stderr: string;
+  /** Byte length of the original uncapped stdout stream. */
+  stdoutBytes: number;
+  /** Byte length of the original uncapped stderr stream. */
+  stderrBytes: number;
+  /** Whether stdout was truncated due to maxOutputBytes. */
+  stdoutTruncated: boolean;
+  /** Whether stderr was truncated due to maxOutputBytes. */
+  stderrTruncated: boolean;
+  /** Maximum bytes returned in each stdout/stderr field. */
+  maxOutputBytes: number;
 }
