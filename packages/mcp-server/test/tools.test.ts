@@ -71,6 +71,7 @@ describe("mcp tools", () => {
       "local_ydb_remove_dynamic_nodes",
       "local_ydb_restart_stack",
       "local_ydb_restore_tenant",
+      "local_ydb_scheme",
       "local_ydb_set_root_password",
       "local_ydb_start_dynamic_node",
       "local_ydb_status_report",
@@ -182,6 +183,23 @@ describe("mcp tools", () => {
     });
   });
 
+  it("exposes scheme inspection options in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_scheme");
+    expect(tool?.inputSchema.properties?.action).toMatchObject({
+      type: "string",
+      enum: ["list", "describe"]
+    });
+    expect(tool?.inputSchema.properties?.path).toMatchObject({ type: "string" });
+    expect(tool?.inputSchema.properties?.recursive).toMatchObject({ type: "boolean" });
+    expect(tool?.inputSchema.properties?.long).toMatchObject({ type: "boolean" });
+    expect(tool?.inputSchema.properties?.onePerLine).toMatchObject({ type: "boolean" });
+    expect(tool?.inputSchema.properties?.stats).toMatchObject({ type: "boolean" });
+    expect(tool?.inputSchema.properties?.maxOutputBytes).toMatchObject({
+      type: "integer",
+      maximum: 1_048_576
+    });
+  });
+
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
     expect(tool?.inputSchema.required).toContain("version");
@@ -233,6 +251,38 @@ describe("mcp tools", () => {
 
     expect(result.tags).toEqual(["26.1.1.6", "latest"]);
     expect(result.truncated).toBe(false);
+  });
+
+  it("can inspect scheme objects through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_scheme", {
+      path: "/local/example/dir",
+      recursive: true,
+      long: true,
+      onePerLine: true
+    }, {
+      config: ConfigSchema.parse({}),
+      executor: new RecordingExecutor()
+    }) as { action: string; path: string; command: string; maxOutputBytes: number };
+
+    expect(result.action).toBe("list");
+    expect(result.path).toBe("/local/example/dir");
+    expect(result.maxOutputBytes).toBe(65_536);
+    expect(result.command).toContain("scheme ls /local/example/dir -l -R -1");
+  });
+
+  it("can describe scheme objects with stats through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_scheme", {
+      action: "describe",
+      path: "/local/example/users",
+      stats: true
+    }, {
+      config: ConfigSchema.parse({}),
+      executor: new RecordingExecutor()
+    }) as { action: string; path: string; command: string };
+
+    expect(result.action).toBe("describe");
+    expect(result.path).toBe("/local/example/users");
+    expect(result.command).toContain("scheme describe /local/example/users --stats");
   });
 
   it("exposes server instructions during initialization", () => {

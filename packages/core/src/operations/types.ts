@@ -73,6 +73,18 @@ export interface UpgradeVersionOptions extends MutatingOptions {
   dumpName?: string;
 }
 
+export type SchemeAction = "list" | "describe";
+
+export interface SchemeOptions {
+  action?: SchemeAction;
+  path?: string;
+  recursive?: boolean;
+  long?: boolean;
+  onePerLine?: boolean;
+  stats?: boolean;
+  maxOutputBytes?: number;
+}
+
 export interface SetRootPasswordOptions extends MutatingOptions {
   password?: string;
 }
@@ -222,4 +234,19 @@ export interface UpgradeVersionResponse extends OperationResponse {
     missing: string[];
     mismatches: string[];
   };
+}
+
+export interface SchemeResponse {
+  summary: string;
+  ok: boolean;
+  action: SchemeAction;
+  path: string;
+  command: string;
+  stdout: string;
+  stderr: string;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  maxOutputBytes: number;
 }

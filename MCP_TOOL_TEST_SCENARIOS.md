@@ -14,6 +14,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_destroy_stack`
 - `local_ydb_status_report`
 - `local_ydb_tenant_check`
+- `local_ydb_scheme`
 - `local_ydb_nodes_check`
 - `local_ydb_graphshard_check`
 - `local_ydb_auth_check`
@@ -105,6 +106,9 @@ Calls:
 { "tool": "local_ydb_inventory", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_storage_leftovers", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_status_report", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "list", "recursive": true, "onePerLine": true } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "describe", "path": "/local/example", "stats": true } }
 ```
 
 Expected:
@@ -112,10 +116,13 @@ Expected:
 - `inventory` returns the profile shape and current container list.
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
 - `status_report` returns a structured snapshot even when the stack is not yet healthy.
+- `scheme` defaults to the tenant root, returns `command`, capped `stdout`/`stderr`, byte counts, and truncation flags.
+- recursive schema listings should use `maxOutputBytes` when the tenant has many objects.
 
 Avoid:
 
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
+- Passing list-only flags such as `recursive` to `action=describe`, or `stats` to `action=list`.
 
 ## Scenario 1A: Published Image Tags
 
@@ -688,7 +695,7 @@ Avoid:
 - Auth rollout:
   `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_auth_check`
 - Read-only diagnostics:
-  `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
+  `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
 - Cleanup:
   `local_ydb_cleanup_storage`
 

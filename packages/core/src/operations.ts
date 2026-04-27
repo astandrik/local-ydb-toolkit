@@ -9,3 +9,4 @@ export * from "./operations/dynamic-nodes.js";
 export * from "./operations/auth-operations.js";
 export * from "./operations/prerequisites.js";
 export * from "./operations/version.js";
+export * from "./operations/scheme.js";
