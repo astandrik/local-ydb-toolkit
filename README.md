@@ -150,7 +150,7 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 
 `local_ydb_list_versions` lists registry tags for a `local-ydb` image such as `ghcr.io/ydb-platform/local-ydb`. It follows OCI/Docker Registry V2 pagination and bearer-token challenges, then returns numeric version tags newest first so the MCP client can discover concrete tags before changing a profile version.
 
-`local_ydb_scheme` lists or describes schema objects with the YDB CLI. It defaults to `scheme ls` at the configured tenant root, supports `recursive`, `long`, and `onePerLine` list options, and supports `stats` for `scheme describe`. Large stdout/stderr streams are capped per stream and returned with byte counts and truncation flags so MCP responses stay usable.
+`local_ydb_scheme` lists or describes schema objects with the YDB CLI. It defaults to `scheme ls` at the configured tenant root, supports `recursive`, `long`, and `onePerLine` list options, and supports `stats` for `scheme describe`. Large stdout/stderr streams are capped per stream and returned with original uncapped byte counts and truncation flags so MCP responses stay usable.
 
 `local_ydb_pull_image` starts a background `docker pull` for a profile image or explicit image and returns a `jobId` immediately. Poll `local_ydb_pull_status` with that `jobId` until it reaches `completed` before retrying bootstrap or upgrade. This keeps slow registry downloads out of synchronous bootstrap/upgrade tool calls.
 

@@ -140,6 +140,17 @@ describe("scheme inspection", () => {
     expect(response.summary).toContain("with capped output");
   });
 
+  it("caps output without splitting UTF-8 characters", async () => {
+    const executor = new RecordingExecutor("a😀b");
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const response = await inspectScheme(ctx, { maxOutputBytes: 2 });
+
+    expect(response.stdout).toBe("a");
+    expect(response.stdoutBytes).toBe(6);
+    expect(response.stdoutTruncated).toBe(true);
+  });
+
   it("redacts root password file paths in authenticated command text", async () => {
     const executor = new DisplayOnlyShellExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({

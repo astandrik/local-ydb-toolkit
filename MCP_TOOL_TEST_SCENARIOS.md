@@ -116,8 +116,8 @@ Expected:
 - `inventory` returns the profile shape and current container list.
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
 - `status_report` returns a structured snapshot even when the stack is not yet healthy.
-- `scheme` defaults to the tenant root, returns `command`, capped `stdout`/`stderr`, byte counts, and truncation flags.
-- recursive schema listings should use `maxOutputBytes` when the tenant has many objects.
+- `scheme` defaults to the tenant root, returns `command`, capped `stdout`/`stderr`, original uncapped byte counts, and truncation flags.
+- recursive scheme listings should use `maxOutputBytes` when the tenant has many objects.
 
 Avoid:
 

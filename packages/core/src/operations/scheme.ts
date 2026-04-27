@@ -95,17 +95,17 @@ function capText(input: string, maxBytes: number): CappedText {
   }
 
   let usedBytes = 0;
-  let text = "";
+  const parts: string[] = [];
   for (const char of input) {
     const charBytes = Buffer.byteLength(char, "utf8");
     if (usedBytes + charBytes > maxBytes) {
       break;
     }
-    text += char;
+    parts.push(char);
     usedBytes += charBytes;
   }
 
-  return { text, bytes, truncated: true };
+  return { text: parts.join(""), bytes, truncated: true };
 }
 
 function schemeSummary(action: SchemeAction, path: string, ok: boolean, truncated: boolean): string {

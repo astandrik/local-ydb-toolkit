@@ -242,11 +242,18 @@ export interface SchemeResponse {
   action: SchemeAction;
   path: string;
   command: string;
+  /** Captured stdout, potentially capped to maxOutputBytes. */
   stdout: string;
+  /** Captured stderr, potentially capped to maxOutputBytes. */
   stderr: string;
+  /** Byte length of the original uncapped stdout stream. */
   stdoutBytes: number;
+  /** Byte length of the original uncapped stderr stream. */
   stderrBytes: number;
+  /** Whether stdout was truncated due to maxOutputBytes. */
   stdoutTruncated: boolean;
+  /** Whether stderr was truncated due to maxOutputBytes. */
   stderrTruncated: boolean;
+  /** Maximum bytes returned in each stdout/stderr field. */
   maxOutputBytes: number;
 }
