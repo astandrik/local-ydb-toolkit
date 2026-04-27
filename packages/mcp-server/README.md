@@ -44,3 +44,5 @@ npm install -g @astandrik/local-ydb-mcp
 ```
 
 Mutating tools are plan-only unless called with `confirm: true`.
+
+The server includes a read-only `local_ydb_list_versions` tool for discovering published `local-ydb` image tags with numeric versions sorted newest first, background image-pull tools (`local_ydb_pull_image` and `local_ydb_pull_status`) for slow registry downloads, and a high-risk `local_ydb_upgrade_version` tool that upgrades a profile by image preflight, dump, rebuild, restore, auth reapply, and image verification.

@@ -134,11 +134,11 @@ SSH profiles use existing SSH agent/key/known_hosts configuration. The toolkit d
 
 ### Operations
 
-Read-only tools collect inventory, tenant state, node state, GraphShard state, auth posture, storage placement, and leftover storage candidates.
+Read-only tools collect inventory, tenant state, node state, GraphShard state, auth posture, storage placement, leftover storage candidates, published `local-ydb` image tags, and background image-pull status.
 
 `local_ydb_check_prerequisites` is the expected first step on a new host or profile. It checks `docker`, `curl`, `ruby`, and auth-file prerequisites. With `confirm: true`, it can auto-install supported host helpers such as `curl` and `ruby` through `apt-get`; Docker is reported but must still be installed manually.
 
-Mutating tools include bootstrap, tenant creation, dynamic-node startup, restart, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, and explicit storage cleanup. They are plan-only unless called with:
+Mutating tools include image pulls, bootstrap, tenant creation, dynamic-node startup, restart, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, version upgrade by dump/rebuild/restore, and explicit storage cleanup. They are plan-only unless called with:
 
 ```json
 {
@@ -147,6 +147,10 @@ Mutating tools include bootstrap, tenant creation, dynamic-node startup, restart
 ```
 
 Without `confirm: true`, mutating tools return planned commands, risk, rollback notes, and verification steps.
+
+`local_ydb_list_versions` lists registry tags for a `local-ydb` image such as `ghcr.io/ydb-platform/local-ydb`. It follows OCI/Docker Registry V2 pagination and bearer-token challenges, then returns numeric version tags newest first so the MCP client can discover concrete tags before changing a profile version.
+
+`local_ydb_pull_image` starts a background `docker pull` for a profile image or explicit image and returns a `jobId` immediately. Poll `local_ydb_pull_status` with that `jobId` until it reaches `completed` before retrying bootstrap or upgrade. This keeps slow registry downloads out of synchronous bootstrap/upgrade tool calls.
 
 `local_ydb_bootstrap` creates a GraphShard-ready Docker topology:
 
@@ -162,6 +166,8 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 `local_ydb_add_storage_groups` rereads the current tenant storage pool definition with `ReadStoragePool`, resubmits that exact pool through `DefineStoragePool`, and increases `NumGroups` by the requested count. It is intended for live pool expansion on the current PDisk layout, not for adding new physical disks.
 
 `local_ydb_reduce_storage_groups` does not attempt an in-place `NumGroups` shrink. It preserves the tenant with `ydb tools dump`, tears down the profile stack, bootstraps a fresh stack with a smaller `storagePoolCount`, restores the dump, and reapplies auth when the selected profile uses auth artifacts.
+
+`local_ydb_upgrade_version` does not reuse an existing `local-ydb` data volume in place across versions. It first verifies that the source and target images are already present on the target host, then dumps the tenant, tears down the profile stack, bootstraps a fresh stack with the requested tag, restores the dump, reapplies auth when needed, re-adds extra dynamic nodes, and verifies that the recreated containers use the target image. If an image is missing, run `local_ydb_pull_image` and poll `local_ydb_pull_status` before retrying.
 
 `local_ydb_set_root_password` rotates the runtime `root` password with `ALTER USER`, then updates the configured host-side `config.auth.yaml` and `root.password` files to match. The password value is redacted from the planned command text.
 

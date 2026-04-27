@@ -1,5 +1,6 @@
 import { bash, shellQuote, type CommandSpec } from "../api-client.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
+import { ensureImagePresentSpec } from "./images.js";
 import type { DynamicNodePlan } from "./types.js";
 
 export function commandForStaticRun(profile: ResolvedLocalYdbProfile): string {
@@ -92,6 +93,7 @@ export function commandForDynamicEnsureRun(profile: ResolvedLocalYdbProfile, nod
 
 export function dynamicNodeStartSpecs(profile: ResolvedLocalYdbProfile, plan: DynamicNodePlan): CommandSpec[] {
   return [
+    ensureImagePresentSpec(profile.image),
     bash(commandForDynamicEnsureRun(profile, plan), {
       timeoutMs: 60_000,
       description: `Start dynamic tenant node ${plan.container}`

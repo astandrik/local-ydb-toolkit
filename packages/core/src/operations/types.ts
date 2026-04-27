@@ -24,6 +24,23 @@ export interface MutatingOptions {
   confirm?: boolean;
 }
 
+export type ImagePullStatus = "planned" | "already-present" | "running" | "completed" | "failed" | "unknown";
+
+export interface ListVersionsOptions {
+  image?: string;
+  pageSize?: number;
+  maxPages?: number;
+  fetchImpl?: typeof fetch;
+}
+
+export interface ImagePullOptions extends MutatingOptions {
+  image?: string;
+}
+
+export interface ImagePullStatusOptions {
+  jobId: string;
+}
+
 export interface AddDynamicNodesOptions extends MutatingOptions {
   count?: number;
   startIndex?: number;
@@ -48,6 +65,11 @@ export interface ReduceStorageGroupsOptions extends MutatingOptions {
   count?: number;
   dumpName?: string;
   poolName?: string;
+}
+
+export interface UpgradeVersionOptions extends MutatingOptions {
+  version?: string;
+  dumpName?: string;
 }
 
 export interface SetRootPasswordOptions extends MutatingOptions {
@@ -142,4 +164,52 @@ export interface CheckPrerequisitesResponse extends OperationResponse {
   installablePackages: string[];
   packageManager?: string;
   manualActions: string[];
+}
+
+export interface ListVersionsResponse {
+  summary: string;
+  image: string;
+  registry: string;
+  repository: string;
+  tags: string[];
+  count: number;
+  truncated: boolean;
+}
+
+export interface ImagePullResponse extends OperationResponse {
+  image: string;
+  status: ImagePullStatus;
+  jobId?: string;
+  startedAt?: string;
+  updatedAt?: string;
+}
+
+export interface ImagePullStatusResponse {
+  summary: string;
+  found: boolean;
+  jobId: string;
+  status: ImagePullStatus;
+  image?: string;
+  profile?: string;
+  command?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  exitCode?: number | null;
+  ok?: boolean;
+  timedOut?: boolean;
+  stdoutTail?: string;
+  stderrTail?: string;
+}
+
+export interface UpgradeVersionResponse extends OperationResponse {
+  sourceImage: string;
+  targetImage: string;
+  dumpName: string;
+  authReapplyPlanned: boolean;
+  extraDynamicNodes: string[];
+  imageVerification?: {
+    expectedImage: string;
+    missing: string[];
+    mismatches: string[];
+  };
 }
