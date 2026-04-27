@@ -11,6 +11,10 @@ on:
         required: false
         default: true
         type: boolean
+      publish_tag:
+        description: Existing release tag to publish when dry_run is false, for example mcp-server-v0.5.0.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -69,6 +73,47 @@ jobs:
       - name: Publish ${{ needs.release-please.outputs.tag_name }} to npm
         run: npm publish -w @astandrik/local-ydb-mcp
 
+  publish-existing-release:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.publish_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.publish_tag }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Verify tag matches package version
+        env:
+          PUBLISH_TAG: ${{ inputs.publish_tag }}
+        run: |
+          package_version="$(node -p "require('./packages/mcp-server/package.json').version")"
+          expected_tag="mcp-server-v${package_version}"
+          if [ "${PUBLISH_TAG}" != "${expected_tag}" ]; then
+            echo "publish_tag must match package version: expected ${expected_tag}, got ${PUBLISH_TAG}" >&2
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: npm test
+
+      - run: npm run typecheck
+
+      - run: npm pack -w @astandrik/local-ydb-mcp --dry-run
+
+      - name: Publish ${{ inputs.publish_tag }} to npm
+        run: npm publish -w @astandrik/local-ydb-mcp
+
   dry-run:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
     runs-on: ubuntu-latest
@@ -76,6 +121,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.publish_tag || github.ref }}
 
       - uses: actions/setup-node@v6
         with:
