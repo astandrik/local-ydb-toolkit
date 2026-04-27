@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.4.0...mcp-server-v0.5.0) (2026-04-27)
+
+
+### Features
+
+* Add scheme inspection MCP tool ([#25](https://github.com/astandrik/local-ydb-toolkit/issues/25)) ([988c281](https://github.com/astandrik/local-ydb-toolkit/commit/988c281052c7e33596bd2f23aecb37a9658be4ac))
+
 ## [0.4.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.3.2...mcp-server-v0.4.0) (2026-04-27)
 
 
