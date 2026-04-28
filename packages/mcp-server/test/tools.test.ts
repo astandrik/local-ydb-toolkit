@@ -91,6 +91,18 @@ describe("mcp tools", () => {
     expect(result.plannedCommands.length).toBeGreaterThan(0);
   });
 
+  it("rejects prototype-derived tool names like __proto__", async () => {
+    await expect(callLocalYdbToolForTest("__proto__", {})).rejects.toThrow(
+      "Unknown tool: __proto__",
+    );
+  });
+
+  it("rejects prototype-derived tool names like toString", async () => {
+    await expect(callLocalYdbToolForTest("toString", {})).rejects.toThrow(
+      "Unknown tool: toString",
+    );
+  });
+
   it("can load a config dynamically from configPath without restarting the server", async () => {
     const dir = mkdtempSync(join(tmpdir(), "local-ydb-toolkit-"));
     const configPath = join(dir, "remote.json");

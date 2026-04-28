@@ -1,5 +1,14 @@
-import { chmod, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import {
+  chmod,
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,8 +24,10 @@ await rm(vendoredCore, { recursive: true, force: true });
 await mkdir(vendoredCore, { recursive: true });
 await cp(coreDist, vendoredCore, { recursive: true });
 
-await rewriteCoreImport(resolve(serverDist, "index.js"));
-await rewriteCoreImport(resolve(serverDist, "index.d.ts"));
+const rewrittenFiles = await rewriteCoreImports(serverDist);
+if (rewrittenFiles === 0) {
+  throw new Error(`Expected emitted files in ${serverDist} to import @local-ydb-toolkit/core.`);
+}
 await chmod(resolve(serverDist, "index.js"), 0o755);
 
 async function assertFile(filePath, message) {
@@ -27,11 +38,63 @@ async function assertFile(filePath, message) {
   throw new Error(`${message} Missing file: ${filePath}`);
 }
 
+async function rewriteCoreImports(directoryPath) {
+  const filePaths = await listServerOutputFiles(directoryPath);
+  let rewrittenFiles = 0;
+
+  await Promise.all(
+    filePaths.map(async (filePath) => {
+      const didRewrite = await rewriteCoreImport(filePath);
+      if (didRewrite) {
+        rewrittenFiles++;
+      }
+    }),
+  );
+
+  return rewrittenFiles;
+}
+
+async function listServerOutputFiles(directoryPath) {
+  const entries = await readdir(directoryPath, { withFileTypes: true });
+  const filePaths = await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = resolve(directoryPath, entry.name);
+
+      if (entry.isDirectory()) {
+        if (entryPath === resolve(serverDist, "vendor")) {
+          return [];
+        }
+
+        return listServerOutputFiles(entryPath);
+      }
+
+      if (entry.isFile() && (entry.name.endsWith(".js") || entry.name.endsWith(".d.ts"))) {
+        return [entryPath];
+      }
+
+      return [];
+    }),
+  );
+
+  return filePaths.flat();
+}
+
 async function rewriteCoreImport(filePath) {
   const source = await readFile(filePath, "utf8");
-  const rewritten = source.replaceAll("\"@local-ydb-toolkit/core\"", "\"./vendor/core/index.js\"");
+  const coreImportPath = relative(dirname(filePath), resolve(vendoredCore, "index.js")).replaceAll(
+    "\\",
+    "/",
+  );
+  const importSpecifier = coreImportPath.startsWith(".")
+    ? coreImportPath
+    : `./${coreImportPath}`;
+  const rewritten = source.replaceAll(
+    "\"@local-ydb-toolkit/core\"",
+    `"${importSpecifier}"`,
+  );
   if (rewritten === source) {
-    throw new Error(`Expected ${filePath} to import @local-ydb-toolkit/core.`);
+    return false;
   }
   await writeFile(filePath, rewritten);
+  return true;
 }
