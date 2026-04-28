@@ -162,7 +162,7 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 - static `ydb-local` node;
 - root database verification with `scheme ls /local` through the static gRPC endpoint.
 
-It does not create a CMS tenant or start dynamic tenant nodes.
+Use it for generic local YDB requests when the caller did not explicitly ask for a tenant. It does not create a CMS tenant or start dynamic tenant nodes.
 
 `local_ydb_bootstrap` creates a GraphShard-ready Docker topology:
 
@@ -170,6 +170,8 @@ It does not create a CMS tenant or start dynamic tenant nodes.
 - static `ydb-local` node with `YDB_FEATURE_FLAGS=enable_graph_shard`;
 - CMS-created tenant with `ydbd admin database /local/<tenant> create hdd:1`;
 - one dynamic tenant node.
+
+Use it only when the caller needs `/local/<tenant>`, GraphShard, tenant storage workflows, tenant dump/restore, or dynamic-node behavior.
 
 `local_ydb_add_dynamic_nodes` adds extra dynamic tenant nodes from the selected profile without requiring separate profile entries. It derives container names and ports from the base dynamic node by default, starts nodes one at a time, and verifies each new IC port through `viewer/json/nodelist` before continuing.
 

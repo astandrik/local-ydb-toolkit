@@ -292,7 +292,8 @@ export const toolDefinitions = [
     group: "lifecycle",
     instructionOrder: 1,
     name: "local_ydb_bootstrap_root_database",
-    description: "Bootstrap only the root /local database with a static local-ydb node.",
+    description:
+      "Bootstrap a plain local YDB database at /local with only a static node; choose this for generic local database requests.",
     inputSchema: mutatingSchema(),
     handler: withContext(MutatingArgs, (context, parsed) =>
       bootstrapRootDatabase(context, parsed),
@@ -303,7 +304,7 @@ export const toolDefinitions = [
     instructionOrder: 2,
     name: "local_ydb_bootstrap",
     description:
-      "Bootstrap a tenant topology: static node, configured CMS tenant, and dynamic tenant node.",
+      "Bootstrap a tenant topology: static node, configured CMS tenant, and dynamic tenant node; choose this only for tenant, GraphShard, or dynamic-node scenarios.",
     inputSchema: mutatingSchema(),
     handler: withContext(MutatingArgs, (context, parsed) =>
       bootstrap(context, parsed),
