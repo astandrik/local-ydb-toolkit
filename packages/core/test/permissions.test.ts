@@ -184,6 +184,12 @@ describe("permissions management", () => {
       action: "chown",
     })).rejects.toThrow(/owner must be non-empty/);
 
+    await expect(managePermissions(ctx, {
+      action: "chown",
+      owner: "new-owner",
+      subject: "testuser",
+    })).rejects.toThrow(/subject is not supported/);
+
     expect(executor.commands).toEqual([]);
   });
 

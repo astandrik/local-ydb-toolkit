@@ -183,7 +183,7 @@ Avoid:
 - assuming `latest` is the only safe upgrade target
 - using a short major/minor tag in production-like checks when an exact patch tag is available
 
-## Scenario 1B: Background Image Pull
+## Scenario 1C: Background Image Pull
 
 Goal: start slow registry downloads outside synchronous bootstrap or upgrade calls.
 

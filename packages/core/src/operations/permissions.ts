@@ -99,6 +99,7 @@ function permissionsArgs(
   }
 
   if (action === "chown") {
+    ensureNoMutationOnlyFields(action, { ...options, owner: undefined });
     return [
       "scheme",
       "permissions",
