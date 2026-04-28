@@ -4,6 +4,7 @@ import {
   applyAuthHardening,
   authCheck,
   bootstrap,
+  bootstrapRootDatabase,
   checkPrerequisites,
   cleanupStorage,
   containerLogs,
@@ -256,7 +257,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 6,
+    instructionOrder: 7,
     name: "local_ydb_pull_image",
     description:
       "Start a background Docker pull for a local-ydb image on the selected target.",
@@ -278,7 +279,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 5,
+    instructionOrder: 6,
     name: "local_ydb_destroy_stack",
     description:
       "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup.",
@@ -290,8 +291,20 @@ export const toolDefinitions = [
   defineTool({
     group: "lifecycle",
     instructionOrder: 1,
+    name: "local_ydb_bootstrap_root_database",
+    description:
+      "Bootstrap a plain local YDB database at /local with only a static node; choose this for generic local database requests.",
+    inputSchema: mutatingSchema(),
+    handler: withContext(MutatingArgs, (context, parsed) =>
+      bootstrapRootDatabase(context, parsed),
+    ),
+  }),
+  defineTool({
+    group: "lifecycle",
+    instructionOrder: 2,
     name: "local_ydb_bootstrap",
-    description: "Bootstrap a GraphShard-ready local-ydb topology.",
+    description:
+      "Bootstrap a tenant topology: static node, configured CMS tenant, and dynamic tenant node; choose this only for tenant, GraphShard, or dynamic-node scenarios.",
     inputSchema: mutatingSchema(),
     handler: withContext(MutatingArgs, (context, parsed) =>
       bootstrap(context, parsed),
@@ -310,7 +323,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 2,
+    instructionOrder: 3,
     name: "local_ydb_create_tenant",
     description: "Create the configured CMS tenant if missing.",
     inputSchema: mutatingSchema(),
@@ -320,7 +333,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 3,
+    instructionOrder: 4,
     name: "local_ydb_start_dynamic_node",
     description: "Start the configured dynamic tenant node.",
     inputSchema: mutatingSchema(),
@@ -350,7 +363,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 4,
+    instructionOrder: 5,
     name: "local_ydb_restart_stack",
     description: "Restart static and dynamic local-ydb containers.",
     inputSchema: mutatingSchema(),
@@ -360,7 +373,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 7,
+    instructionOrder: 8,
     name: "local_ydb_upgrade_version",
     description:
       "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag via image preflight, dump, rebuild, restore, auth reapply, extra-node recreation, image verification, and profile image persistence.",

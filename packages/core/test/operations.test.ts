@@ -4,6 +4,7 @@ import {
   addDynamicNodes,
   applyAuthHardening,
   bootstrap,
+  bootstrapRootDatabase,
   checkPrerequisites,
   cleanupStorage,
   commandToShell,
@@ -58,6 +59,102 @@ describe("mutating operations", () => {
     expect(executor.commands).toEqual([]);
     expect(response.plannedCommands[0]).toContain("docker image inspect");
     expect(response.plannedCommands.some((command) => command.includes("docker network"))).toBe(true);
+  });
+
+  it("plans root database bootstrap without tenant or dynamic-node commands", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await bootstrapRootDatabase(ctx, {});
+    const plan = response.plannedCommands.join("\n");
+    expect(response.executed).toBe(false);
+    expect(executor.commands).toEqual([]);
+    expect(plan).toContain("scheme ls /local");
+    expect(plan).not.toContain("admin database");
+    expect(plan).not.toContain("ydb-dyn-example");
+    expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
+  });
+
+  it("plans root bootstrap to start an existing stopped static container", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await bootstrapRootDatabase(ctx, {});
+    expect(response.plannedCommands[3]).toContain(".State.Running");
+    expect(response.plannedCommands[3]).toContain("docker start ydb-local >/dev/null");
+  });
+
+  it("fails tenant bootstrap before tenant creation when the static container lacks the GraphShard flag", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("local_ydb_destroy_stack")) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "Existing static container ydb-local is missing YDB_FEATURE_FLAGS=enable_graph_shard.",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await bootstrap(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.results?.at(-1)?.ok).toBe(false);
+    expect(response.results?.at(-1)?.stderr).toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
+    expect(executor.commands.some((command) => command.includes("admin database /local/example create"))).toBe(false);
+  });
+
+  it("keeps the root bootstrap viewer probe non-fatal", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: command.includes("/viewer/json/tenants") ? "curl probe failed" : "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await bootstrapRootDatabase(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.results?.at(-1)?.command).toContain("|| true");
+  });
+
+  it("keeps the tenant bootstrap viewer probe non-fatal", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: command.includes("/viewer/json/capabilities") ? "curl probe failed" : "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await bootstrap(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.results?.at(-1)?.command).toContain("|| true");
   });
 
   it("plans a background image pull without confirm=true", async () => {

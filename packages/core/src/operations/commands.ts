@@ -3,7 +3,11 @@ import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { ensureImagePresentSpec } from "./images.js";
 import type { DynamicNodePlan } from "./types.js";
 
-export function commandForStaticRun(profile: ResolvedLocalYdbProfile): string {
+export function commandForStaticRun(
+  profile: ResolvedLocalYdbProfile,
+  options: { enableGraphShard?: boolean } = {}
+): string {
+  const enableGraphShard = options.enableGraphShard ?? true;
   const mount = profile.bindMountPath ? `${profile.bindMountPath}:/ydb_data` : `${profile.volume}:/ydb_data`;
   return [
     "docker", "run", "-d",
@@ -19,9 +23,45 @@ export function commandForStaticRun(profile: ResolvedLocalYdbProfile): string {
     "-e", "YDB_GRPC_ENABLE_TLS=0",
     "-e", "YDB_ANONYMOUS_CREDENTIALS=1",
     "-e", "YDB_LOCAL_SURVIVE_RESTART=1",
-    "-e", "YDB_FEATURE_FLAGS=enable_graph_shard",
+    ...(enableGraphShard ? ["-e", "YDB_FEATURE_FLAGS=enable_graph_shard"] : []),
     profile.image
   ].map(shellQuote).join(" ");
+}
+
+export function commandForStaticEnsureRun(
+  profile: ResolvedLocalYdbProfile,
+  options: { enableGraphShard?: boolean; requireGraphShard?: boolean } = {}
+): string {
+  const enableGraphShard = options.enableGraphShard ?? true;
+  const requireGraphShard = options.requireGraphShard ?? false;
+  const container = shellQuote(profile.staticContainer);
+  const graphShardCheck = `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' ${container} 2>/dev/null | grep -qx 'YDB_FEATURE_FLAGS=enable_graph_shard'`;
+  const missingGraphShardHint = [
+    `printf '%s\\n' ${shellQuote(`Existing static container ${profile.staticContainer} is missing YDB_FEATURE_FLAGS=enable_graph_shard.`)} >&2`,
+    `printf '%s\\n' ${shellQuote(`Recreate it with local_ydb_destroy_stack or docker rm -f ${profile.staticContainer}, then rerun local_ydb_bootstrap.`)} >&2`
+  ];
+  const requireGraphShardLines = requireGraphShard
+    ? [
+        `  if ! ${graphShardCheck}; then`,
+        ...missingGraphShardHint.map((line) => `    ${line}`),
+        "    exit 1",
+        "  fi"
+      ]
+    : [];
+
+  return [
+    "set -euo pipefail",
+    `if docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null | grep -qx true; then`,
+    ...requireGraphShardLines,
+    "  exit 0",
+    "fi",
+    `if docker inspect ${container} >/dev/null 2>&1; then`,
+    ...requireGraphShardLines,
+    `  docker start ${container} >/dev/null`,
+    "  exit 0",
+    "fi",
+    commandForStaticRun(profile, { enableGraphShard })
+  ].join("\n");
 }
 
 export function commandForDynamicRun(profile: ResolvedLocalYdbProfile): string {
@@ -170,6 +210,19 @@ export function ydbCli(profile: ResolvedLocalYdbProfile, args: string[], databas
   return {
     command: "docker",
     args: ["exec", profile.staticContainer, "/ydb", "-e", `grpc://localhost:${profile.ports.dynamicGrpc}`, "-d", database, ...args],
+    allowFailure: true,
+    description
+  };
+}
+
+export function ydbRootCli(profile: ResolvedLocalYdbProfile, args: string[], description: string): CommandSpec {
+  const endpoint = `grpc://localhost:${profile.ports.staticGrpc}`;
+  if (profile.rootPasswordFile) {
+    return passwordPipedDockerExec(profile, `/ydb -e ${shellQuote(endpoint)} -d ${shellQuote(profile.rootDatabase)} --user ${shellQuote(profile.rootUser)} --password-file /tmp/root.password ${args.map(shellQuote).join(" ")}`, description);
+  }
+  return {
+    command: "docker",
+    args: ["exec", profile.staticContainer, "/ydb", "-e", endpoint, "-d", profile.rootDatabase, ...args],
     allowFailure: true,
     description
   };

@@ -2,10 +2,11 @@ import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-c
 import { inventory } from "./checks.js";
 import {
   commandForDynamicEnsureRun,
-  commandForStaticRun,
+  commandForStaticEnsureRun,
   createTenantSpec,
   removeTenantIfPresentSpec,
-  ydbCli
+  ydbCli,
+  ydbRootCli
 } from "./commands.js";
 import { normalizeExpectedYdbResult, runMutating } from "./execution.js";
 import { findExtraDynamicContainers } from "./helpers.js";
@@ -19,14 +20,14 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
     ctx.profile.bindMountPath
       ? bash(`mkdir -p ${shellQuote(ctx.profile.bindMountPath)}`, { description: "Ensure bind mount path exists" })
       : bash(`docker volume inspect ${shellQuote(ctx.profile.volume)} >/dev/null 2>&1 || docker volume create ${shellQuote(ctx.profile.volume)}`, { description: "Ensure Docker volume exists" }),
-    bash(`docker inspect ${shellQuote(ctx.profile.staticContainer)} >/dev/null 2>&1 || ${commandForStaticRun(ctx.profile)}`, { timeoutMs: 60_000, description: "Start static local-ydb node" }),
+    bash(commandForStaticEnsureRun(ctx.profile, { enableGraphShard: true, requireGraphShard: true }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
     bash("sleep 5", { description: "Wait briefly for static node startup" }),
     createTenantSpec(ctx.profile),
     bash("sleep 5", { description: "Wait briefly for tenant creation" }),
     bash(commandForDynamicEnsureRun(ctx.profile), { timeoutMs: 60_000, description: "Start dynamic tenant node" }),
     bash("sleep 5", { description: "Wait briefly for dynamic node startup" }),
     ydbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata"),
-    bash(`curl -fsSL ${shellQuote(`${ctx.profile.monitoringBaseUrl}/viewer/json/capabilities?database=${encodeURIComponent(ctx.profile.tenantPath)}`)} >/dev/null`, { allowFailure: true, description: "Verify viewer capabilities endpoint" })
+    bash(`curl -fsSL ${shellQuote(`${ctx.profile.monitoringBaseUrl}/viewer/json/capabilities?database=${encodeURIComponent(ctx.profile.tenantPath)}`)} >/dev/null || true`, { allowFailure: true, description: "Verify viewer capabilities endpoint" })
   ];
   return runMutating(ctx, {
     summary: `Bootstrap local-ydb topology for ${ctx.profile.tenantPath}.`,
@@ -41,6 +42,34 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
       `scheme ls ${ctx.profile.tenantPath}`,
       "viewer capabilities reports GraphShardExists=true",
       "dynamic node appears in viewer/json/nodelist"
+    ]
+  }, options);
+}
+
+export async function bootstrapRootDatabase(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<OperationResponse> {
+  const specs = [
+    ensureImagePresentSpec(ctx.profile.image),
+    bash(`docker network inspect ${shellQuote(ctx.profile.network)} >/dev/null 2>&1 || docker network create ${shellQuote(ctx.profile.network)}`, { description: "Ensure Docker network exists" }),
+    ctx.profile.bindMountPath
+      ? bash(`mkdir -p ${shellQuote(ctx.profile.bindMountPath)}`, { description: "Ensure bind mount path exists" })
+      : bash(`docker volume inspect ${shellQuote(ctx.profile.volume)} >/dev/null 2>&1 || docker volume create ${shellQuote(ctx.profile.volume)}`, { description: "Ensure Docker volume exists" }),
+    bash(commandForStaticEnsureRun(ctx.profile, { enableGraphShard: false }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
+    bash("sleep 5", { description: "Wait briefly for static node startup" }),
+    ydbRootCli(ctx.profile, ["scheme", "ls", ctx.profile.rootDatabase], "Verify root database metadata"),
+    bash(`curl -fsSL ${shellQuote(`${ctx.profile.monitoringBaseUrl}/viewer/json/tenants?database=${encodeURIComponent(ctx.profile.rootDatabase)}`)} >/dev/null || true`, { allowFailure: true, description: "Verify viewer tenants endpoint" })
+  ];
+  return runMutating(ctx, {
+    summary: `Bootstrap local-ydb root database ${ctx.profile.rootDatabase}.`,
+    risk: "high",
+    specs,
+    rollback: [
+      `docker rm -f ${ctx.profile.staticContainer}`,
+      ctx.profile.bindMountPath ? `Review and remove bind mount path manually: ${ctx.profile.bindMountPath}` : `docker volume rm ${ctx.profile.volume}`
+    ],
+    verification: [
+      `scheme ls ${ctx.profile.rootDatabase}`,
+      "static container is Up",
+      "monitoring endpoint is reachable"
     ]
   }, options);
 }
