@@ -53,6 +53,7 @@ describe("mcp tools", () => {
       "local_ydb_apply_auth_hardening",
       "local_ydb_auth_check",
       "local_ydb_bootstrap",
+      "local_ydb_bootstrap_root_database",
       "local_ydb_check_prerequisites",
       "local_ydb_cleanup_storage",
       "local_ydb_container_logs",
@@ -90,6 +91,17 @@ describe("mcp tools", () => {
     }) as { executed: boolean; plannedCommands: string[] };
     expect(result.executed).toBe(false);
     expect(result.plannedCommands.length).toBeGreaterThan(0);
+  });
+
+  it("exposes a root-only bootstrap tool", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_bootstrap_root_database", {}, {
+      config: ConfigSchema.parse({})
+    }) as { executed: boolean; plannedCommands: string[] };
+    const plan = result.plannedCommands.join("\n");
+    expect(result.executed).toBe(false);
+    expect(plan).toContain("scheme ls /local");
+    expect(plan).not.toContain("admin database");
+    expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
   });
 
   it("rejects prototype-derived tool names like __proto__", async () => {

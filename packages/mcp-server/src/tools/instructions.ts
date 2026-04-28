@@ -11,6 +11,7 @@ export const localYdbInstructions = [
   "Use local_ydb_status_report or local_ydb_inventory first to establish the current stack state before mutating anything.",
   "Use local_ydb_list_versions to inspect published local-ydb image tags before choosing a target version for upgrade.",
   "Use local_ydb_pull_image with confirm=true before bootstrap or upgrade when an image is missing, then poll local_ydb_pull_status until it completes.",
+  "Use local_ydb_bootstrap_root_database when the task only needs the root /local database; use local_ydb_bootstrap only when a CMS tenant and dynamic node are required.",
   "For bootstrap or restart issues, inspect local_ydb_database_status and local_ydb_container_logs before retrying.",
   "Prefer exact image tags for local-ydb stacks and avoid mixing static and dynamic image versions in one stack.",
   "For volume-backed version upgrades, prefer local_ydb_upgrade_version, which requires a file-backed config path, verifies source and target images are present, then uses dump, rebuild, restore, auth reapply, extra-node recreation, image verification, and profile image persistence instead of reusing an old volume in place; bindMountPath profiles are not supported.",

@@ -4,6 +4,7 @@ import {
   applyAuthHardening,
   authCheck,
   bootstrap,
+  bootstrapRootDatabase,
   checkPrerequisites,
   cleanupStorage,
   containerLogs,
@@ -290,6 +291,16 @@ export const toolDefinitions = [
   defineTool({
     group: "lifecycle",
     instructionOrder: 1,
+    name: "local_ydb_bootstrap_root_database",
+    description: "Bootstrap only the root /local database with a static local-ydb node.",
+    inputSchema: mutatingSchema(),
+    handler: withContext(MutatingArgs, (context, parsed) =>
+      bootstrapRootDatabase(context, parsed),
+    ),
+  }),
+  defineTool({
+    group: "lifecycle",
+    instructionOrder: 2,
     name: "local_ydb_bootstrap",
     description: "Bootstrap a GraphShard-ready local-ydb topology.",
     inputSchema: mutatingSchema(),
@@ -310,7 +321,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 2,
+    instructionOrder: 3,
     name: "local_ydb_create_tenant",
     description: "Create the configured CMS tenant if missing.",
     inputSchema: mutatingSchema(),
@@ -320,7 +331,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 3,
+    instructionOrder: 4,
     name: "local_ydb_start_dynamic_node",
     description: "Start the configured dynamic tenant node.",
     inputSchema: mutatingSchema(),
@@ -350,7 +361,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 4,
+    instructionOrder: 5,
     name: "local_ydb_restart_stack",
     description: "Restart static and dynamic local-ydb containers.",
     inputSchema: mutatingSchema(),

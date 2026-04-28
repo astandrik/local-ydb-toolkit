@@ -138,7 +138,7 @@ Read-only tools collect inventory, tenant state, schema objects, schema permissi
 
 `local_ydb_check_prerequisites` is the expected first step on a new host or profile. It checks `docker`, `curl`, `ruby`, and auth-file prerequisites. With `confirm: true`, it can auto-install supported host helpers such as `curl` and `ruby` through `apt-get`; Docker is reported but must still be installed manually.
 
-Mutating tools include image pulls, bootstrap, tenant creation, dynamic-node startup, restart, schema permissions changes, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, version upgrade by dump/rebuild/restore, and explicit storage cleanup. They are plan-only unless called with:
+Mutating tools include image pulls, root-database bootstrap, tenant topology bootstrap, tenant creation, dynamic-node startup, restart, schema permissions changes, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, version upgrade by dump/rebuild/restore, and explicit storage cleanup. They are plan-only unless called with:
 
 ```json
 {
@@ -155,6 +155,14 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 `local_ydb_permissions` manages YDB schema ACLs through `scheme permissions`. Its read-only `list` action defaults to the configured tenant root and runs without `confirm`. Mutating actions `grant`, `revoke`, `set`, `clear`, `chown`, `set-inheritance`, and `clear-inheritance` return a plan unless `confirm: true` is supplied. For `grant`, `revoke`, and `set`, pass permission names as a structured `permissions` array; each item is emitted as a separate `-p` CLI argument.
 
 `local_ydb_pull_image` starts a background `docker pull` for a profile image or explicit image and returns a `jobId` immediately. Poll `local_ydb_pull_status` with that `jobId` until it reaches `completed` before retrying bootstrap or upgrade. This keeps slow registry downloads out of synchronous bootstrap/upgrade tool calls.
+
+`local_ydb_bootstrap_root_database` creates only the root local database stack:
+
+- Docker network and volume or bind mount;
+- static `ydb-local` node;
+- root database verification with `scheme ls /local` through the static gRPC endpoint.
+
+It does not create a CMS tenant or start dynamic tenant nodes.
 
 `local_ydb_bootstrap` creates a GraphShard-ready Docker topology:
 

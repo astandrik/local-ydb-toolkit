@@ -26,6 +26,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_list_versions`
 - `local_ydb_pull_image`
 - `local_ydb_pull_status`
+- `local_ydb_bootstrap_root_database`
 - `local_ydb_bootstrap`
 - `local_ydb_create_tenant`
 - `local_ydb_start_dynamic_node`
@@ -207,7 +208,34 @@ Avoid:
 - relying on `docker run` to implicitly pull large images inside a synchronous MCP tool call
 - treating a 120-second MCP client timeout during image download as a YDB bootstrap failure
 
-## Scenario 2: Fresh Bootstrap on an Isolated GHCR Stack
+## Scenario 2: Fresh Root Database Bootstrap
+
+Goal: validate network/volume/static-node bring-up for plain `/local` without creating a CMS tenant or dynamic node.
+
+Profile:
+`ghcr261-clean`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "path": "/local" } }
+```
+
+Expected:
+
+- plan-only output starts the static container only
+- no `admin database /local/... create` command is planned
+- no dynamic-node container is created
+- `scheme ls /local` succeeds through the static gRPC endpoint
+
+Avoid:
+
+- using the tenant bootstrap tool when the task only needs `/local`
+- treating a missing configured tenant as a root database failure
+
+## Scenario 3: Fresh Tenant Bootstrap on an Isolated GHCR Stack
 
 Goal: validate network/volume/static/dynamic bring-up on a clean profile.
 
@@ -243,7 +271,7 @@ Avoid:
 - using `ghcr.io/ydb-platform/local-ydb:26.1`
 - reusing a stale dynamic container with `docker start` if its original launch command was broken
 
-## Scenario 3: Explicit Tenant and Dynamic-Node Smoke Test
+## Scenario 3A: Explicit Tenant and Dynamic-Node Smoke Test
 
 Goal: exercise tenant creation and dynamic start as separate tools.
 
@@ -712,7 +740,7 @@ Avoid:
 ## Coverage Matrix
 
 - Bootstrap and lifecycle:
-  `local_ydb_bootstrap`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_add_dynamic_nodes`, `local_ydb_remove_dynamic_nodes`, `local_ydb_restart_stack`
+  `local_ydb_bootstrap_root_database`, `local_ydb_bootstrap`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_add_dynamic_nodes`, `local_ydb_remove_dynamic_nodes`, `local_ydb_restart_stack`
 - Version discovery:
   `local_ydb_list_versions`
 - Image pulls:

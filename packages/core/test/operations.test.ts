@@ -4,6 +4,7 @@ import {
   addDynamicNodes,
   applyAuthHardening,
   bootstrap,
+  bootstrapRootDatabase,
   checkPrerequisites,
   cleanupStorage,
   commandToShell,
@@ -58,6 +59,19 @@ describe("mutating operations", () => {
     expect(executor.commands).toEqual([]);
     expect(response.plannedCommands[0]).toContain("docker image inspect");
     expect(response.plannedCommands.some((command) => command.includes("docker network"))).toBe(true);
+  });
+
+  it("plans root database bootstrap without tenant or dynamic-node commands", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await bootstrapRootDatabase(ctx, {});
+    const plan = response.plannedCommands.join("\n");
+    expect(response.executed).toBe(false);
+    expect(executor.commands).toEqual([]);
+    expect(plan).toContain("scheme ls /local");
+    expect(plan).not.toContain("admin database");
+    expect(plan).not.toContain("ydb-dyn-example");
+    expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
   });
 
   it("plans a background image pull without confirm=true", async () => {
