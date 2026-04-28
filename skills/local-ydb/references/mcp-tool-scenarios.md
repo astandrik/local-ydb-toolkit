@@ -14,6 +14,8 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_destroy_stack`
 - `local_ydb_status_report`
 - `local_ydb_tenant_check`
+- `local_ydb_scheme`
+- `local_ydb_permissions`
 - `local_ydb_nodes_check`
 - `local_ydb_graphshard_check`
 - `local_ydb_auth_check`
@@ -105,6 +107,8 @@ Calls:
 { "tool": "local_ydb_inventory", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_storage_leftovers", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_status_report", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
 Expected:
@@ -112,6 +116,7 @@ Expected:
 - `inventory` returns the profile shape and current container list.
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
 - `status_report` returns a structured snapshot even when the stack is not yet healthy.
+- `scheme` and `permissions` default to the tenant root for read-only schema and ACL inspection.
 
 Avoid:
 
@@ -684,9 +689,9 @@ Avoid:
 - Backup and restore:
   `local_ydb_dump_tenant`, `local_ydb_restore_tenant`
 - Auth rollout:
-  `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_auth_check`
+  `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_permissions`, `local_ydb_auth_check`
 - Read-only diagnostics:
-  `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
+  `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_permissions`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
 - Cleanup:
   `local_ydb_cleanup_storage`
 

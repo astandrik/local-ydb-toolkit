@@ -15,6 +15,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_status_report`
 - `local_ydb_tenant_check`
 - `local_ydb_scheme`
+- `local_ydb_permissions`
 - `local_ydb_nodes_check`
 - `local_ydb_graphshard_check`
 - `local_ydb_auth_check`
@@ -109,6 +110,7 @@ Calls:
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "list", "recursive": true, "onePerLine": true } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "describe", "path": "/local/example", "stats": true } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
 Expected:
@@ -117,6 +119,7 @@ Expected:
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
 - `status_report` returns a structured snapshot even when the stack is not yet healthy.
 - `scheme` defaults to the tenant root, returns `command`, capped `stdout`/`stderr`, original uncapped byte counts, and truncation flags.
+- `permissions` defaults to the tenant root for read-only ACL inspection and returns the owner, direct permissions, and effective permissions from the YDB CLI output.
 - recursive scheme listings should use `maxOutputBytes` when the tenant has many objects.
 
 Avoid:
@@ -124,7 +127,39 @@ Avoid:
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
 - Passing list-only flags such as `recursive` to `action=describe`, or `stats` to `action=list`.
 
-## Scenario 1A: Published Image Tags
+## Scenario 1A: Schema Permissions
+
+Goal: verify ACL command construction and confirm-gating without accidentally changing an active stack.
+
+Profile:
+`ghcr261-auth`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "list", "path": "/local/example" } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "grant", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "revoke", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "set", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read", "ydb.generic.list"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "clear", "path": "/local/example", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "chown", "path": "/local/example", "owner": "root", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "clear-inheritance", "path": "/local/example", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "set-inheritance", "path": "/local/example", "confirm": false } }
+```
+
+Expected:
+
+- `action=list` executes without `confirm` and returns capped stdout/stderr plus byte counts.
+- mutating actions return `executed=false`, planned command text, rollback notes, and verification steps when `confirm` is omitted or false.
+- `grant`, `revoke`, and `set` render each permission as a separate `-p` argument.
+- authenticated profiles redact configured password-file paths in planned command text.
+
+Avoid:
+
+- using `confirm: true` for `clear`, `chown`, or inheritance changes unless the target path and rollback are already captured by `action=list`.
+- passing a comma-separated permission string; use the structured `permissions` array.
+
+## Scenario 1B: Published Image Tags
 
 Goal: verify that the registry tag listing tool can discover concrete `local-ydb` image versions before an upgrade.
 
@@ -148,7 +183,7 @@ Avoid:
 - assuming `latest` is the only safe upgrade target
 - using a short major/minor tag in production-like checks when an exact patch tag is available
 
-## Scenario 1B: Background Image Pull
+## Scenario 1C: Background Image Pull
 
 Goal: start slow registry downloads outside synchronous bootstrap or upgrade calls.
 
@@ -693,9 +728,9 @@ Avoid:
 - Backup and restore:
   `local_ydb_dump_tenant`, `local_ydb_restore_tenant`
 - Auth rollout:
-  `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_auth_check`
+  `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_permissions`, `local_ydb_auth_check`
 - Read-only diagnostics:
-  `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
+  `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_permissions`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
 - Cleanup:
   `local_ydb_cleanup_storage`
 
