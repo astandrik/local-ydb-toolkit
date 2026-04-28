@@ -85,6 +85,25 @@ export interface SchemeOptions {
   maxOutputBytes?: number;
 }
 
+export type PermissionsAction =
+  | "list"
+  | "grant"
+  | "revoke"
+  | "set"
+  | "clear"
+  | "chown"
+  | "set-inheritance"
+  | "clear-inheritance";
+
+export interface PermissionsOptions extends MutatingOptions {
+  action?: PermissionsAction;
+  path?: string;
+  subject?: string;
+  permissions?: string[];
+  owner?: string;
+  maxOutputBytes?: number;
+}
+
 export interface SetRootPasswordOptions extends MutatingOptions {
   password?: string;
 }
@@ -257,3 +276,35 @@ export interface SchemeResponse {
   /** Maximum bytes returned in each stdout/stderr field. */
   maxOutputBytes: number;
 }
+
+export interface PermissionsListResponse {
+  summary: string;
+  ok: boolean;
+  action: "list";
+  path: string;
+  command: string;
+  /** Captured stdout, potentially capped to maxOutputBytes. */
+  stdout: string;
+  /** Captured stderr, potentially capped to maxOutputBytes. */
+  stderr: string;
+  /** Byte length of the original uncapped stdout stream. */
+  stdoutBytes: number;
+  /** Byte length of the original uncapped stderr stream. */
+  stderrBytes: number;
+  /** Whether stdout was truncated due to maxOutputBytes. */
+  stdoutTruncated: boolean;
+  /** Whether stderr was truncated due to maxOutputBytes. */
+  stderrTruncated: boolean;
+  /** Maximum bytes returned in each stdout/stderr field. */
+  maxOutputBytes: number;
+}
+
+export interface PermissionsMutationResponse extends OperationResponse {
+  action: Exclude<PermissionsAction, "list">;
+  path: string;
+  subject?: string;
+  permissions?: string[];
+  owner?: string;
+}
+
+export type PermissionsResponse = PermissionsListResponse | PermissionsMutationResponse;

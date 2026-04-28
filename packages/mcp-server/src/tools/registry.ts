@@ -15,6 +15,7 @@ import {
   inspectScheme,
   inventory,
   listVersions,
+  managePermissions,
   nodesCheck,
   prepareAuthConfig,
   pullImage,
@@ -46,6 +47,7 @@ import {
   ListVersionsArgs,
   LogsArgs,
   MutatingArgs,
+  PermissionsArgs,
   PrepareAuthConfigArgs,
   ProfileArgs,
   PullImageArgs,
@@ -68,6 +70,7 @@ import {
   listVersionsSchema,
   logsSchema,
   mutatingSchema,
+  permissionsSchema,
   prepareAuthConfigSchema,
   profileSchema,
   pullImageSchema,
@@ -173,6 +176,16 @@ export const toolDefinitions = [
     inputSchema: schemeSchema(),
     handler: withContext(SchemeArgs, (context, parsed) =>
       inspectScheme(context, parsed),
+    ),
+  }),
+  defineTool({
+    group: "auth",
+    name: "local_ydb_permissions",
+    description:
+      "List, grant, revoke, set, clear, chown, or toggle inheritance for YDB scheme permissions.",
+    inputSchema: permissionsSchema(),
+    handler: withContext(PermissionsArgs, (context, parsed) =>
+      managePermissions(context, parsed),
     ),
   }),
   defineTool({

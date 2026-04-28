@@ -89,6 +89,73 @@ export function schemeSchema(): Tool["inputSchema"] {
   };
 }
 
+export function permissionsSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: {
+        type: "string",
+        description:
+          "Named profile from local-ydb.config.json. Defaults to config.defaultProfile.",
+      },
+      configPath: {
+        type: "string",
+        description:
+          "Explicit local-ydb config file path to load for this tool call.",
+      },
+      action: {
+        type: "string",
+        enum: [
+          "list",
+          "grant",
+          "revoke",
+          "set",
+          "clear",
+          "chown",
+          "set-inheritance",
+          "clear-inheritance",
+        ],
+        description:
+          "Permissions operation to run. Defaults to list, which is read-only and does not require confirm.",
+      },
+      path: {
+        type: "string",
+        description:
+          "Scheme path to manage. Defaults to the configured tenant root.",
+      },
+      subject: {
+        type: "string",
+        description:
+          "User or group subject for grant, revoke, and set actions.",
+      },
+      permissions: {
+        type: "array",
+        minItems: 1,
+        items: { type: "string", minLength: 1 },
+        description:
+          "Permission names for grant, revoke, and set actions. Each item is passed as its own -p argument.",
+      },
+      owner: {
+        type: "string",
+        description: "New owner for action=chown.",
+      },
+      maxOutputBytes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 1_048_576,
+        description:
+          "For action=list, maximum UTF-8 bytes returned per stdout/stderr stream. Defaults to 65536.",
+      },
+      confirm: {
+        type: "boolean",
+        description:
+          "Must be true to execute mutating actions. Omit or false for plan-only output. Not required for action=list.",
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
 export function listVersionsSchema(): Tool["inputSchema"] {
   return {
     type: "object",

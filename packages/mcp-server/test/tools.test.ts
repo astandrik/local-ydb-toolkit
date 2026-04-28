@@ -64,6 +64,7 @@ describe("mcp tools", () => {
       "local_ydb_inventory",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
+      "local_ydb_permissions",
       "local_ydb_prepare_auth_config",
       "local_ydb_pull_image",
       "local_ydb_pull_status",
@@ -212,6 +213,30 @@ describe("mcp tools", () => {
     });
   });
 
+  it("exposes permissions management options in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_permissions");
+    expect(tool?.inputSchema.properties?.action).toMatchObject({
+      type: "string",
+      enum: [
+        "list",
+        "grant",
+        "revoke",
+        "set",
+        "clear",
+        "chown",
+        "set-inheritance",
+        "clear-inheritance"
+      ]
+    });
+    expect(tool?.inputSchema.properties?.permissions).toMatchObject({
+      type: "array",
+      minItems: 1
+    });
+    expect(tool?.inputSchema.properties?.subject).toMatchObject({ type: "string" });
+    expect(tool?.inputSchema.properties?.owner).toMatchObject({ type: "string" });
+    expect(tool?.inputSchema.properties?.confirm).toMatchObject({ type: "boolean" });
+  });
+
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
     expect(tool?.inputSchema.required).toContain("version");
@@ -295,6 +320,38 @@ describe("mcp tools", () => {
     expect(result.action).toBe("describe");
     expect(result.path).toBe("/local/example/users");
     expect(result.command).toContain("scheme describe /local/example/users --stats");
+  });
+
+  it("can list permissions through the MCP handler without confirm", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_permissions", {
+      path: "/local/example/dir"
+    }, {
+      config: ConfigSchema.parse({}),
+      executor: new RecordingExecutor()
+    }) as { action: string; path: string; command: string; maxOutputBytes: number };
+
+    expect(result.action).toBe("list");
+    expect(result.path).toBe("/local/example/dir");
+    expect(result.maxOutputBytes).toBe(65_536);
+    expect(result.command).toContain("scheme permissions list /local/example/dir");
+  });
+
+  it("plans mutating permissions through the MCP handler without confirm", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_permissions", {
+      action: "grant",
+      path: "/local/example/dir",
+      subject: "testuser",
+      permissions: ["ydb.generic.read", "ydb.access.grant"]
+    }, {
+      config: ConfigSchema.parse({}),
+      executor: new RecordingExecutor()
+    }) as { executed: boolean; plannedCommands: string[]; permissions: string[] };
+
+    expect(result.executed).toBe(false);
+    expect(result.permissions).toEqual(["ydb.generic.read", "ydb.access.grant"]);
+    expect(result.plannedCommands[0]).toContain(
+      "scheme permissions grant -p ydb.generic.read -p ydb.access.grant /local/example/dir testuser"
+    );
   });
 
   it("exposes server instructions during initialization", () => {

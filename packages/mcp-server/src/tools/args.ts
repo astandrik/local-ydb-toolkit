@@ -20,6 +20,25 @@ export const SchemeArgs = ProfileArgs.extend({
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
 });
 
+export const PermissionsArgs = ProfileArgs.extend({
+  action: z.enum([
+    "list",
+    "grant",
+    "revoke",
+    "set",
+    "clear",
+    "chown",
+    "set-inheritance",
+    "clear-inheritance",
+  ]).optional(),
+  path: z.string().min(1).optional(),
+  subject: z.string().min(1).optional(),
+  permissions: z.array(z.string().min(1)).nonempty().optional(),
+  owner: z.string().min(1).optional(),
+  maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+  confirm: z.boolean().optional(),
+});
+
 export const MutatingArgs = ProfileArgs.extend({
   confirm: z.boolean().optional(),
 });
