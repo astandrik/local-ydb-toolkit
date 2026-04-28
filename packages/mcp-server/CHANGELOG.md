@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.5.0...mcp-server-v0.6.0) (2026-04-28)
+
+
+### Features
+
+* add local YDB permissions MCP tool ([#31](https://github.com/astandrik/local-ydb-toolkit/issues/31)) ([89ce072](https://github.com/astandrik/local-ydb-toolkit/commit/89ce07257241edd6ae399fd38137b890005efed7))
+
 ## [0.5.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.4.0...mcp-server-v0.5.0) (2026-04-27)
 
 
