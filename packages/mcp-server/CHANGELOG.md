@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.6.0...mcp-server-v0.7.0) (2026-04-28)
+
+
+### Features
+
+* root database bootstrap tool ([#34](https://github.com/astandrik/local-ydb-toolkit/issues/34)) ([d371d4e](https://github.com/astandrik/local-ydb-toolkit/commit/d371d4e4c0e20f53c3552a095a7f396325330c1a))
+
 ## [0.6.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.5.0...mcp-server-v0.6.0) (2026-04-28)
 
 
