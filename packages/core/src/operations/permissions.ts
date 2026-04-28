@@ -86,6 +86,9 @@ function permissionsArgs(
   }
 
   if (action === "grant" || action === "revoke" || action === "set") {
+    if (options.owner !== undefined) {
+      throw new Error(`owner is not supported when action is ${action}`);
+    }
     const subject = normalizeNonEmpty("subject", options.subject);
     const permissions = normalizePermissions(action, options.permissions);
     return [

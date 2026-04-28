@@ -181,6 +181,13 @@ describe("permissions management", () => {
     })).rejects.toThrow(/At least one permission/);
 
     await expect(managePermissions(ctx, {
+      action: "grant",
+      subject: "testuser",
+      permissions: ["ydb.generic.read"],
+      owner: "new-owner",
+    })).rejects.toThrow(/owner is not supported/);
+
+    await expect(managePermissions(ctx, {
       action: "chown",
     })).rejects.toThrow(/owner must be non-empty/);
 
