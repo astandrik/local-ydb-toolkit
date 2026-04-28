@@ -257,7 +257,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 6,
+    instructionOrder: 7,
     name: "local_ydb_pull_image",
     description:
       "Start a background Docker pull for a local-ydb image on the selected target.",
@@ -279,7 +279,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 5,
+    instructionOrder: 6,
     name: "local_ydb_destroy_stack",
     description:
       "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup.",
@@ -373,7 +373,7 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "lifecycle",
-    instructionOrder: 7,
+    instructionOrder: 8,
     name: "local_ydb_upgrade_version",
     description:
       "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag via image preflight, dump, rebuild, restore, auth reapply, extra-node recreation, image verification, and profile image persistence.",

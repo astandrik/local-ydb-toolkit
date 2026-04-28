@@ -17,6 +17,7 @@ import {
   localYdbMcpServerVersion,
   localYdbTools
 } from "../src/index.js";
+import { toolDefinitions } from "../src/tools/registry.js";
 
 const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string;
@@ -102,6 +103,25 @@ describe("mcp tools", () => {
     expect(plan).toContain("scheme ls /local");
     expect(plan).not.toContain("admin database");
     expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
+  });
+
+  it("assigns unique lifecycle instruction orders", () => {
+    const lifecycle = toolDefinitions
+      .filter((definition) => definition.group === "lifecycle")
+      .map(({ name, instructionOrder }) => [name, instructionOrder] as const)
+      .sort((left, right) => (left[1] ?? Number.MAX_SAFE_INTEGER) - (right[1] ?? Number.MAX_SAFE_INTEGER));
+
+    expect(lifecycle).toEqual([
+      ["local_ydb_check_prerequisites", 0],
+      ["local_ydb_bootstrap_root_database", 1],
+      ["local_ydb_bootstrap", 2],
+      ["local_ydb_create_tenant", 3],
+      ["local_ydb_start_dynamic_node", 4],
+      ["local_ydb_restart_stack", 5],
+      ["local_ydb_destroy_stack", 6],
+      ["local_ydb_pull_image", 7],
+      ["local_ydb_upgrade_version", 8]
+    ]);
   });
 
   it("rejects prototype-derived tool names like __proto__", async () => {

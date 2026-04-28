@@ -28,6 +28,42 @@ export function commandForStaticRun(
   ].map(shellQuote).join(" ");
 }
 
+export function commandForStaticEnsureRun(
+  profile: ResolvedLocalYdbProfile,
+  options: { enableGraphShard?: boolean; requireGraphShard?: boolean } = {}
+): string {
+  const enableGraphShard = options.enableGraphShard ?? true;
+  const requireGraphShard = options.requireGraphShard ?? false;
+  const container = shellQuote(profile.staticContainer);
+  const graphShardCheck = `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' ${container} 2>/dev/null | grep -qx 'YDB_FEATURE_FLAGS=enable_graph_shard'`;
+  const missingGraphShardHint = [
+    `printf '%s\\n' ${shellQuote(`Existing static container ${profile.staticContainer} is missing YDB_FEATURE_FLAGS=enable_graph_shard.`)} >&2`,
+    `printf '%s\\n' ${shellQuote(`Recreate it with local_ydb_destroy_stack or docker rm -f ${profile.staticContainer}, then rerun local_ydb_bootstrap.`)} >&2`
+  ];
+  const requireGraphShardLines = requireGraphShard
+    ? [
+        `  if ! ${graphShardCheck}; then`,
+        ...missingGraphShardHint.map((line) => `    ${line}`),
+        "    exit 1",
+        "  fi"
+      ]
+    : [];
+
+  return [
+    "set -euo pipefail",
+    `if docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null | grep -qx true; then`,
+    ...requireGraphShardLines,
+    "  exit 0",
+    "fi",
+    `if docker inspect ${container} >/dev/null 2>&1; then`,
+    ...requireGraphShardLines,
+    `  docker start ${container} >/dev/null`,
+    "  exit 0",
+    "fi",
+    commandForStaticRun(profile, { enableGraphShard })
+  ].join("\n");
+}
+
 export function commandForDynamicRun(profile: ResolvedLocalYdbProfile): string {
   return commandForDynamicNodeRun(profile, {
     container: profile.dynamicContainer,

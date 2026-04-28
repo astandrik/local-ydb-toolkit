@@ -26,6 +26,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_list_versions`
 - `local_ydb_pull_image`
 - `local_ydb_pull_status`
+- `local_ydb_bootstrap_root_database`
 - `local_ydb_bootstrap`
 - `local_ydb_create_tenant`
 - `local_ydb_start_dynamic_node`
@@ -170,7 +171,34 @@ Avoid:
 - relying on `docker run` to implicitly pull large images inside a synchronous MCP tool call
 - treating a 120-second MCP client timeout during image download as a YDB bootstrap failure
 
-## Scenario 2: Fresh Bootstrap on an Isolated GHCR Stack
+## Scenario 2: Fresh Root Database Bootstrap
+
+Goal: validate network/volume/static-node bring-up for plain `/local` without creating a CMS tenant or dynamic node.
+
+Profile:
+`ghcr261-clean`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "path": "/local" } }
+```
+
+Expected:
+
+- plan-only output starts the static container only
+- no `admin database /local/... create` command is planned
+- no dynamic-node container is created
+- `scheme ls /local` succeeds through the static gRPC endpoint
+
+Avoid:
+
+- using the tenant bootstrap tool when the task only needs `/local`
+- treating a missing configured tenant as a root database failure
+
+## Scenario 3: Fresh Bootstrap on an Isolated GHCR Stack
 
 Goal: validate network/volume/static/dynamic bring-up on a clean profile.
 
@@ -206,7 +234,7 @@ Avoid:
 - using `ghcr.io/ydb-platform/local-ydb:26.1`
 - reusing a stale dynamic container with `docker start` if its original launch command was broken
 
-## Scenario 3: Explicit Tenant and Dynamic-Node Smoke Test
+## Scenario 4: Explicit Tenant and Dynamic-Node Smoke Test
 
 Goal: exercise tenant creation and dynamic start as separate tools.
 
@@ -235,7 +263,7 @@ Avoid:
 
 - assuming `create OK` alone means the tenant is resolvable by NodeBroker
 
-## Scenario 4: Runtime Diagnostics
+## Scenario 5: Runtime Diagnostics
 
 Goal: cover the focused read-only diagnostics used when bootstrap fails.
 
@@ -268,7 +296,7 @@ Avoid:
 
 - using generic `docker logs` or shell-only inspection before trying `local_ydb_container_logs`
 
-## Scenario 5: Idempotent Restart
+## Scenario 6: Idempotent Restart
 
 Goal: confirm the restart tool is safe and uses the current launch command.
 
@@ -294,7 +322,7 @@ Avoid:
 
 - trusting a plain `docker start <dynamic>` path for a container created with old flags
 
-## Scenario 6: Dump and Restore
+## Scenario 7: Dump and Restore
 
 Goal: prove backup/restore on a clean GHCR stack.
 
@@ -323,7 +351,7 @@ Avoid:
 
 - assuming the helper image entrypoint can run arbitrary shell commands without `--entrypoint /bin/bash`
 
-## Scenario 7: Auth Artifact Preparation
+## Scenario 8: Auth Artifact Preparation
 
 Goal: test the two new preparation tools before mutating the running stack.
 
@@ -360,7 +388,7 @@ Avoid:
 - assuming the viewer/admin SID is only `root@builtin`
 - assuming the default root token identifies as `root@builtin`; in our run `whoami` reported `User SID: root`
 
-## Scenario 8: Auth Rollout
+## Scenario 9: Auth Rollout
 
 Goal: turn a healthy clean stack into a working auth-enabled stack.
 
@@ -390,7 +418,7 @@ Avoid:
 - restarting a stale dynamic auth container without recreation
 - using a hardcoded login URL on `8765` when the profile runs on another monitoring port
 
-## Scenario 9: Post-Auth Verification
+## Scenario 10: Post-Auth Verification
 
 Goal: prove the auth rollout actually worked.
 
@@ -420,7 +448,7 @@ Avoid:
 
 - treating a `401` on `/viewer/json/whoami` as an error after auth; it is the expected anonymous result
 
-## Scenario 9A: Root Password Rotation
+## Scenario 10A: Root Password Rotation
 
 Goal: change the root password through one MCP tool without exposing it in plan output.
 
@@ -446,7 +474,7 @@ Avoid:
 - storing the password directly in committed config
 - changing the password on a profile that lacks `authConfigPath` or `rootPasswordFile`
 
-## Scenario 10: Add Extra Dynamic Nodes
+## Scenario 11: Add Extra Dynamic Nodes
 
 Goal: add multiple dynamic nodes to a healthy auth-enabled stack without creating extra profile entries.
 
@@ -484,7 +512,7 @@ Rollback:
 docker rm -f ydb-dyn-example-ghcr261-2 ydb-dyn-example-ghcr261-3
 ```
 
-## Scenario 11: Remove Extra Dynamic Nodes
+## Scenario 12: Remove Extra Dynamic Nodes
 
 Goal: remove one or more extra dynamic nodes from a healthy stack without touching the base dynamic node.
 
@@ -517,7 +545,7 @@ Avoid:
 - treating the profile's main `dynamicContainer` as removable through this tool
 - removing multiple extra nodes at once on a live stack without checking `nodelist` after each removal
 
-## Scenario 12: Add Storage Groups
+## Scenario 13: Add Storage Groups
 
 Goal: increase `NumGroups` for a tenant storage pool by rereading and redefining the current pool shape.
 
@@ -546,7 +574,7 @@ Avoid:
 - treating `DecommitGroups` or `storage_units_to_remove` as a pool expansion path
 - using a partial `DefineStoragePool` shape that drops `PDiskFilter`, `ScopeId`, or `ItemConfigGeneration`
 
-## Scenario 13: Destroy Stack
+## Scenario 14: Destroy Stack
 
 Goal: remove tenant metadata, local-ydb nodes, Docker network, and profile storage from one tool.
 
@@ -578,7 +606,7 @@ Avoid:
 - enabling host-path deletion flags on shared paths without checking whether other profiles use them
 - using this tool with `confirm=true` on a profile you still need without first taking a dump
 
-## Scenario 14: Reduce Storage Groups By Rebuild
+## Scenario 15: Reduce Storage Groups By Rebuild
 
 Goal: reduce a tenant pool from a larger `NumGroups` back to a smaller one without relying on an unverified live shrink path.
 
@@ -606,34 +634,7 @@ Avoid:
 - treating `DefineStoragePool { NumGroups: smaller }` as a proven live shrink path
 - deleting auth artifacts during the rebuild path for an auth-enabled profile
 
-## Scenario 15: Cleanup Candidates
-
-Goal: test the dangerous cleanup tool only on disposable targets.
-
-Recommended disposable targets:
-
-- stale rehearsal volumes discovered by `storage_leftovers`
-- old test dump directories under `/tmp/local-ydb-dump/...`
-- explicitly unused side-by-side rehearsal volumes such as `ydb-local-data-ghcr-clean` only after you have decided they are no longer needed
-
-Calls:
-
-```json
-{ "tool": "local_ydb_storage_leftovers", "arguments": { "profile": "ghcr261-auth" } }
-{ "tool": "local_ydb_cleanup_storage", "arguments": { "profile": "ghcr261-auth", "confirm": false, "volumes": ["<known-disposable-volume>"] } }
-{ "tool": "local_ydb_cleanup_storage", "arguments": { "profile": "ghcr261-auth", "confirm": false, "paths": ["/tmp/local-ydb-dump/<known-disposable-dump>"] } }
-```
-
-Expected:
-
-- plan-only output includes the exact `docker volume rm` or `rm -rf` target
-- unsafe targets like `/tmp`, `/var/lib/docker`, or unrelated names are rejected by validation
-
-Avoid:
-
-- using `cleanup_storage(confirm=true)` against any active profile volume or the current auth stack
-
-## Scenario 14A: Version Upgrade By Rebuild
+## Scenario 15A: Version Upgrade By Rebuild
 
 Goal: upgrade a working profile to a specific image tag without reusing the old volume in place.
 
@@ -670,10 +671,37 @@ Avoid:
 - treating it as an in-place rolling upgrade of the existing volume
 - skipping the explicit target tag check from `local_ydb_list_versions`
 
+## Scenario 16: Cleanup Candidates
+
+Goal: test the dangerous cleanup tool only on disposable targets.
+
+Recommended disposable targets:
+
+- stale rehearsal volumes discovered by `storage_leftovers`
+- old test dump directories under `/tmp/local-ydb-dump/...`
+- explicitly unused side-by-side rehearsal volumes such as `ydb-local-data-ghcr-clean` only after you have decided they are no longer needed
+
+Calls:
+
+```json
+{ "tool": "local_ydb_storage_leftovers", "arguments": { "profile": "ghcr261-auth" } }
+{ "tool": "local_ydb_cleanup_storage", "arguments": { "profile": "ghcr261-auth", "confirm": false, "volumes": ["<known-disposable-volume>"] } }
+{ "tool": "local_ydb_cleanup_storage", "arguments": { "profile": "ghcr261-auth", "confirm": false, "paths": ["/tmp/local-ydb-dump/<known-disposable-dump>"] } }
+```
+
+Expected:
+
+- plan-only output includes the exact `docker volume rm` or `rm -rf` target
+- unsafe targets like `/tmp`, `/var/lib/docker`, or unrelated names are rejected by validation
+
+Avoid:
+
+- using `cleanup_storage(confirm=true)` against any active profile volume or the current auth stack
+
 ## Coverage Matrix
 
 - Bootstrap and lifecycle:
-  `local_ydb_bootstrap`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_add_dynamic_nodes`, `local_ydb_remove_dynamic_nodes`, `local_ydb_restart_stack`
+  `local_ydb_bootstrap_root_database`, `local_ydb_bootstrap`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_add_dynamic_nodes`, `local_ydb_remove_dynamic_nodes`, `local_ydb_restart_stack`
 - Version discovery:
   `local_ydb_list_versions`
 - Image pulls:
