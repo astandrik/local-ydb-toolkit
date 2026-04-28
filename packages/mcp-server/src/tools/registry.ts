@@ -302,7 +302,8 @@ export const toolDefinitions = [
     group: "lifecycle",
     instructionOrder: 2,
     name: "local_ydb_bootstrap",
-    description: "Bootstrap a GraphShard-ready local-ydb topology.",
+    description:
+      "Bootstrap a tenant topology: static node, configured CMS tenant, and dynamic tenant node.",
     inputSchema: mutatingSchema(),
     handler: withContext(MutatingArgs, (context, parsed) =>
       bootstrap(context, parsed),
