@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.7.0...mcp-server-v0.7.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **deps:** require patched MCP SDK ([#39](https://github.com/astandrik/local-ydb-toolkit/issues/39)) ([083c496](https://github.com/astandrik/local-ydb-toolkit/commit/083c49689358c8fe26e52afdf9356eeb896afc36))
+
 ## [0.7.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.6.0...mcp-server-v0.7.0) (2026-04-28)
 
 
