@@ -159,7 +159,7 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 `local_ydb_bootstrap_root_database` creates only the root local database stack:
 
 - Docker network and volume or bind mount;
-- static `ydb-local` node with loopback-published monitoring and static gRPC ports;
+- static `ydb-local` node with loopback-published monitoring and static gRPC port;
 - root database verification with `scheme ls /local` through the static gRPC endpoint.
 
 Use it for generic local YDB requests when the caller did not explicitly ask for a tenant. It does not create a CMS tenant or start dynamic tenant nodes.

@@ -9,11 +9,10 @@ export function commandForStaticRun(
 ): string {
   const enableGraphShard = options.enableGraphShard ?? true;
   const publishDynamicGrpc = options.publishDynamicGrpc ?? false;
+  validatePublishedHostPorts(profile, publishDynamicGrpc);
   const mount = profile.bindMountPath ? `${profile.bindMountPath}:/ydb_data` : `${profile.volume}:/ydb_data`;
-  const grpcPortMappings = [
-    profile.ports.staticGrpc,
-    ...(publishDynamicGrpc && profile.ports.dynamicGrpc !== profile.ports.staticGrpc ? [profile.ports.dynamicGrpc] : [])
-  ].flatMap((port) => ["-p", `127.0.0.1:${port}:${port}`]);
+  const grpcPortMappings = requiredPublishedGrpcPorts(profile, publishDynamicGrpc)
+    .flatMap((port) => ["-p", `127.0.0.1:${port}:${port}`]);
   return [
     "docker", "run", "-d",
     "--name", profile.staticContainer,
@@ -41,6 +40,7 @@ export function commandForStaticEnsureRun(
   const enableGraphShard = options.enableGraphShard ?? true;
   const requireGraphShard = options.requireGraphShard ?? false;
   const publishDynamicGrpc = options.publishDynamicGrpc ?? false;
+  validatePublishedHostPorts(profile, publishDynamicGrpc);
   const container = shellQuote(profile.staticContainer);
   const graphShardCheck = `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' ${container} 2>/dev/null | grep -qx 'YDB_FEATURE_FLAGS=enable_graph_shard'`;
   const missingGraphShardHint = [
@@ -55,20 +55,55 @@ export function commandForStaticEnsureRun(
         "  fi"
       ]
     : [];
+  const requirePublishedGrpcLines = requiredPublishedGrpcPorts(profile, publishDynamicGrpc)
+    .flatMap((port) => [
+      `  if ! docker port ${container} ${shellQuote(`${port}/tcp`)} 2>/dev/null | grep -qx ${shellQuote(`127.0.0.1:${port}`)}; then`,
+      `    printf '%s\\n' ${shellQuote(`Existing static container ${profile.staticContainer} does not publish required gRPC port 127.0.0.1:${port}.`)} >&2`,
+      `    printf '%s\\n' ${shellQuote(`Recreate it with local_ydb_destroy_stack or docker rm -f ${profile.staticContainer}, then rerun local_ydb_bootstrap.`)} >&2`,
+      "    exit 1",
+      "  fi"
+    ]);
 
   return [
     "set -euo pipefail",
     `if docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null | grep -qx true; then`,
     ...requireGraphShardLines,
+    ...requirePublishedGrpcLines,
     "  exit 0",
     "fi",
     `if docker inspect ${container} >/dev/null 2>&1; then`,
     ...requireGraphShardLines,
+    ...requirePublishedGrpcLines,
     `  docker start ${container} >/dev/null`,
     "  exit 0",
     "fi",
     commandForStaticRun(profile, { enableGraphShard, publishDynamicGrpc })
   ].join("\n");
+}
+
+function requiredPublishedGrpcPorts(profile: ResolvedLocalYdbProfile, publishDynamicGrpc: boolean): number[] {
+  return [
+    profile.ports.staticGrpc,
+    ...(publishDynamicGrpc && profile.ports.dynamicGrpc !== profile.ports.staticGrpc ? [profile.ports.dynamicGrpc] : [])
+  ];
+}
+
+function validatePublishedHostPorts(profile: ResolvedLocalYdbProfile, publishDynamicGrpc: boolean): void {
+  const bindings = [
+    { name: "staticGrpc", port: profile.ports.staticGrpc },
+    ...(publishDynamicGrpc && profile.ports.dynamicGrpc !== profile.ports.staticGrpc
+      ? [{ name: "dynamicGrpc", port: profile.ports.dynamicGrpc }]
+      : []),
+    { name: "monitoring", port: profile.ports.monitoring }
+  ];
+  const seen = new Map<number, string>();
+  for (const binding of bindings) {
+    const existing = seen.get(binding.port);
+    if (existing) {
+      throw new Error(`Profile ${profile.name} maps both ${existing} and ${binding.name} to host port ${binding.port}; published host ports must be unique.`);
+    }
+    seen.set(binding.port, binding.name);
+  }
 }
 
 export function commandForDynamicRun(profile: ResolvedLocalYdbProfile): string {

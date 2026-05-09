@@ -62,6 +62,8 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.some((command) => command.includes("docker network"))).toBe(true);
     expect(plan).toContain("-p 127.0.0.1:2136:2136");
     expect(plan).toContain("-p 127.0.0.1:2137:2137");
+    expect(plan).toContain("docker port ydb-local 2136/tcp");
+    expect(plan).toContain("docker port ydb-local 2137/tcp");
   });
 
   it("plans root database bootstrap without tenant or dynamic-node commands", async () => {
@@ -73,7 +75,9 @@ describe("mutating operations", () => {
     expect(executor.commands).toEqual([]);
     expect(plan).toContain("scheme ls /local");
     expect(plan).toContain("-p 127.0.0.1:2136:2136");
+    expect(plan).toContain("docker port ydb-local 2136/tcp");
     expect(plan).not.toContain("-p 127.0.0.1:2137:2137");
+    expect(plan).not.toContain("docker port ydb-local 2137/tcp");
     expect(plan).not.toContain("admin database");
     expect(plan).not.toContain("ydb-dyn-example");
     expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
@@ -118,6 +122,54 @@ describe("mutating operations", () => {
     expect(response.results?.at(-1)?.ok).toBe(false);
     expect(response.results?.at(-1)?.stderr).toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
     expect(executor.commands.some((command) => command.includes("admin database /local/example create"))).toBe(false);
+  });
+
+  it("fails tenant bootstrap before tenant creation when the static container lacks published gRPC ports", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("does not publish required gRPC port")) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "Existing static container ydb-local does not publish required gRPC port 127.0.0.1:2136.",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await bootstrap(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.results?.at(-1)?.ok).toBe(false);
+    expect(response.results?.at(-1)?.stderr).toContain("does not publish required gRPC port");
+    expect(executor.commands.some((command) => command.includes("admin database /local/example create"))).toBe(false);
+  });
+
+  it("rejects static container host-port collisions before planning bootstrap", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          ports: {
+            monitoring: 2136
+          }
+        }
+      }
+    }));
+    await expect(bootstrapRootDatabase(ctx, {})).rejects.toThrow(/staticGrpc.*monitoring.*2136/);
+    expect(executor.commands).toEqual([]);
   });
 
   it("keeps the root bootstrap viewer probe non-fatal", async () => {
