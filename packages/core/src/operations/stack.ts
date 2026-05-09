@@ -20,7 +20,7 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
     ctx.profile.bindMountPath
       ? bash(`mkdir -p ${shellQuote(ctx.profile.bindMountPath)}`, { description: "Ensure bind mount path exists" })
       : bash(`docker volume inspect ${shellQuote(ctx.profile.volume)} >/dev/null 2>&1 || docker volume create ${shellQuote(ctx.profile.volume)}`, { description: "Ensure Docker volume exists" }),
-    bash(commandForStaticEnsureRun(ctx.profile, { enableGraphShard: true, requireGraphShard: true }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
+    bash(commandForStaticEnsureRun(ctx.profile, { enableGraphShard: true, requireGraphShard: true, publishDynamicGrpc: true }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
     bash("sleep 5", { description: "Wait briefly for static node startup" }),
     createTenantSpec(ctx.profile),
     bash("sleep 5", { description: "Wait briefly for tenant creation" }),

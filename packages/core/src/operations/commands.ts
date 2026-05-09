@@ -5,16 +5,22 @@ import type { DynamicNodePlan } from "./types.js";
 
 export function commandForStaticRun(
   profile: ResolvedLocalYdbProfile,
-  options: { enableGraphShard?: boolean } = {}
+  options: { enableGraphShard?: boolean; publishDynamicGrpc?: boolean } = {}
 ): string {
   const enableGraphShard = options.enableGraphShard ?? true;
+  const publishDynamicGrpc = options.publishDynamicGrpc ?? false;
   const mount = profile.bindMountPath ? `${profile.bindMountPath}:/ydb_data` : `${profile.volume}:/ydb_data`;
+  const grpcPortMappings = [
+    profile.ports.staticGrpc,
+    ...(publishDynamicGrpc && profile.ports.dynamicGrpc !== profile.ports.staticGrpc ? [profile.ports.dynamicGrpc] : [])
+  ].flatMap((port) => ["-p", `127.0.0.1:${port}:${port}`]);
   return [
     "docker", "run", "-d",
     "--name", profile.staticContainer,
     "--no-healthcheck",
     "--network", profile.network,
     "--restart", "unless-stopped",
+    ...grpcPortMappings,
     "-p", `127.0.0.1:${profile.ports.monitoring}:8765`,
     "-v", mount,
     "-e", `GRPC_PORT=${profile.ports.staticGrpc}`,
@@ -30,10 +36,11 @@ export function commandForStaticRun(
 
 export function commandForStaticEnsureRun(
   profile: ResolvedLocalYdbProfile,
-  options: { enableGraphShard?: boolean; requireGraphShard?: boolean } = {}
+  options: { enableGraphShard?: boolean; requireGraphShard?: boolean; publishDynamicGrpc?: boolean } = {}
 ): string {
   const enableGraphShard = options.enableGraphShard ?? true;
   const requireGraphShard = options.requireGraphShard ?? false;
+  const publishDynamicGrpc = options.publishDynamicGrpc ?? false;
   const container = shellQuote(profile.staticContainer);
   const graphShardCheck = `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' ${container} 2>/dev/null | grep -qx 'YDB_FEATURE_FLAGS=enable_graph_shard'`;
   const missingGraphShardHint = [
@@ -60,7 +67,7 @@ export function commandForStaticEnsureRun(
     `  docker start ${container} >/dev/null`,
     "  exit 0",
     "fi",
-    commandForStaticRun(profile, { enableGraphShard })
+    commandForStaticRun(profile, { enableGraphShard, publishDynamicGrpc })
   ].join("\n");
 }
 

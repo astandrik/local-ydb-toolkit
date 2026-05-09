@@ -55,10 +55,13 @@ describe("mutating operations", () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
     const response = await bootstrap(ctx, {});
+    const plan = response.plannedCommands.join("\n");
     expect(response.executed).toBe(false);
     expect(executor.commands).toEqual([]);
     expect(response.plannedCommands[0]).toContain("docker image inspect");
     expect(response.plannedCommands.some((command) => command.includes("docker network"))).toBe(true);
+    expect(plan).toContain("-p 127.0.0.1:2136:2136");
+    expect(plan).toContain("-p 127.0.0.1:2137:2137");
   });
 
   it("plans root database bootstrap without tenant or dynamic-node commands", async () => {
@@ -69,6 +72,8 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(executor.commands).toEqual([]);
     expect(plan).toContain("scheme ls /local");
+    expect(plan).toContain("-p 127.0.0.1:2136:2136");
+    expect(plan).not.toContain("-p 127.0.0.1:2137:2137");
     expect(plan).not.toContain("admin database");
     expect(plan).not.toContain("ydb-dyn-example");
     expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
