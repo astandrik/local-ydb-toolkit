@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.7.1...mcp-server-v0.7.2) (2026-05-09)
+
+
+### Bug Fixes
+
+* **core:** publish local-ydb grpc ports ([#41](https://github.com/astandrik/local-ydb-toolkit/issues/41)) ([769abee](https://github.com/astandrik/local-ydb-toolkit/commit/769abee640d2aca68c0f294d1c843ac80685d974))
+
 ## [0.7.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.7.0...mcp-server-v0.7.1) (2026-05-09)
 
 
