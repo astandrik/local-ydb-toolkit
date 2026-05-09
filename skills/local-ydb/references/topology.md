@@ -21,13 +21,15 @@ Practical tag note:
 
 ## Static Node
 
-Hardened internal-gRPC static-node shape:
+Local development static-node shape for host-side clients:
 
 ```bash
 docker run -d --name ydb-local \
   --no-healthcheck \
   --network ydb-net \
   --restart unless-stopped \
+  -p 127.0.0.1:2136:2136 \
+  -p 127.0.0.1:2137:2137 \
   -p 127.0.0.1:8765:8765 \
   -v ydb-local-data:/ydb_data \
   -e GRPC_PORT=2136 \
@@ -42,7 +44,9 @@ docker run -d --name ydb-local \
 
 Notes:
 
-- `2136` should normally be Docker-internal only in a hardened deployment.
+- `2136` is the root/static gRPC endpoint for host apps using `/local`.
+- `2137` is useful when dynamic tenant nodes share `ydb-local`'s network namespace and host apps use `/local/<tenant>`.
+- In a hardened deployment, keep gRPC ports Docker-internal unless direct host access is explicitly required.
 - `8765` should be loopback-only if exposed externally through HTTPS reverse proxy.
 - `--no-healthcheck` may be required in non-TLS topology because the image healthcheck can expect `/ydb_certs/ca.pem`.
 - For bind mounts, use placeholders such as `/path/to/ydb-data:/ydb_data` in reusable docs.
