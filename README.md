@@ -1,5 +1,7 @@
 # local-ydb-toolkit
 
+<a href="https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server"><img src="https://www.curatedmcp.com/api/badge/local-ydb-unofficial-mcp-server"></a>
+
 Reusable Codex skill for operating `local-ydb` deployments.
 
 ## Quick Start
