@@ -1,6 +1,6 @@
-# MCP Tool Scenarios
+# MCP Tool Test Scenarios
 
-Concrete scenarios for testing every `local-ydb` MCP tool in this repository.
+Concrete scenarios for testing every `local_ydb_*` MCP tool in this repository.
 
 These scenarios are intentionally opinionated and reflect what actually worked in this repo during local runs.
 
@@ -26,6 +26,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_list_versions`
 - `local_ydb_pull_image`
 - `local_ydb_pull_status`
+- `local_ydb_check_prerequisites`
 - `local_ydb_bootstrap_root_database`
 - `local_ydb_bootstrap`
 - `local_ydb_create_tenant`
@@ -109,6 +110,8 @@ Calls:
 { "tool": "local_ydb_storage_leftovers", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_status_report", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "list", "recursive": true, "onePerLine": true } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "describe", "path": "/local/example", "stats": true } }
 { "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
@@ -117,13 +120,48 @@ Expected:
 - `inventory` returns the profile shape and current container list.
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
 - `status_report` returns a structured snapshot even when the stack is not yet healthy.
-- `scheme` and `permissions` default to the tenant root for read-only schema and ACL inspection.
+- `scheme` defaults to the tenant root, returns `command`, capped `stdout`/`stderr`, original uncapped byte counts, and truncation flags.
+- `permissions` defaults to the tenant root for read-only ACL inspection and returns the owner, direct permissions, and effective permissions from the YDB CLI output.
+- recursive scheme listings should use `maxOutputBytes` when the tenant has many objects.
 
 Avoid:
 
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
+- Passing list-only flags such as `recursive` to `action=describe`, or `stats` to `action=list`.
 
-## Scenario 1A: Published Image Tags
+## Scenario 1A: Schema Permissions
+
+Goal: verify ACL command construction and confirm-gating without accidentally changing an active stack.
+
+Profile:
+`ghcr261-auth`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "list", "path": "/local/example" } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "grant", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "revoke", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "set", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read", "ydb.generic.list"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "clear", "path": "/local/example", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "chown", "path": "/local/example", "owner": "root", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "clear-inheritance", "path": "/local/example", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "set-inheritance", "path": "/local/example", "confirm": false } }
+```
+
+Expected:
+
+- `action=list` executes without `confirm` and returns capped stdout/stderr plus byte counts.
+- mutating actions return `executed=false`, planned command text, rollback notes, and verification steps when `confirm` is omitted or false.
+- `grant`, `revoke`, and `set` render each permission as a separate `-p` argument.
+- authenticated profiles redact configured password-file paths in planned command text.
+
+Avoid:
+
+- using `confirm: true` for `clear`, `chown`, or inheritance changes unless the target path and rollback are already captured by `action=list`.
+- passing a comma-separated permission string; use the structured `permissions` array.
+
+## Scenario 1B: Published Image Tags
 
 Goal: verify that the registry tag listing tool can discover concrete `local-ydb` image versions before an upgrade.
 
@@ -147,7 +185,7 @@ Avoid:
 - assuming `latest` is the only safe upgrade target
 - using a short major/minor tag in production-like checks when an exact patch tag is available
 
-## Scenario 1B: Background Image Pull
+## Scenario 1C: Background Image Pull
 
 Goal: start slow registry downloads outside synchronous bootstrap or upgrade calls.
 
@@ -198,7 +236,7 @@ Avoid:
 - using the tenant bootstrap tool when the task only needs `/local`
 - treating a missing configured tenant as a root database failure
 
-## Scenario 3: Fresh Bootstrap on an Isolated GHCR Stack
+## Scenario 3: Fresh Tenant Bootstrap on an Isolated GHCR Stack
 
 Goal: validate network/volume/static/dynamic bring-up on a clean profile.
 
@@ -538,11 +576,13 @@ Optional explicit targeting:
 
 ```json
 { "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "containers": ["ydb-dyn-example-ghcr261-2"] } }
+{ "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "nodeIds": [50001] } }
 ```
 
 Avoid:
 
 - treating the profile's main `dynamicContainer` as removable through this tool
+- using `nodeIds` for the base dynamic node; only IDs that resolve to extra dynamic-node containers are removable
 - removing multiple extra nodes at once on a live stack without checking `nodelist` after each removal
 
 ## Scenario 13: Add Storage Groups

@@ -23,6 +23,7 @@ Use this skill to inspect, document, run, harden, or troubleshoot `local-ydb` de
 - Read `references/storage-migration.md` when adding PDisks, changing storage placement, moving storage onto one physical disk, creating replacement tenants, migrating data, decommissioning groups, reclaiming space, cleaning old Docker volumes/PDisks/dumps, or debugging why UI and BSC disagree about storage.
 - Read `references/verification.md` when checking health, tenant state, GraphShard, graph data, storage, or auth behavior.
 - Read `references/history-and-non-goals.md` when cleaning docs, deciding what is reusable versus artifact noise, or reconciling stale hardening plans with final topology.
+- Read `references/mcp-tool-scenarios.md` when manually validating MCP tool coverage or choosing scenario sequences for tool smoke tests.
 - For exact-GHCR `26.1.1.6` local runs, combine `topology.md`, `auth-hardening.md`, and `verification.md`; they contain field-proven steps for fresh bootstrap, restore, auth rollout, and the nightly-vs-stable pitfalls we hit in practice.
 - Prefer the MCP read-only tools `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, and `local_ydb_storage_placement` over ad hoc shell diagnostics when they are available.
 

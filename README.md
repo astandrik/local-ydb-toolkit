@@ -33,6 +33,7 @@ skills/local-ydb/
   references/
     auth-hardening.md
     history-and-non-goals.md
+    mcp-tool-scenarios.md
     storage-migration.md
     topology.md
     verification.md
@@ -50,6 +51,10 @@ The skill covers reusable operational guidance for:
 - upstream `ydb-platform/ydb` source lookup through `gh api`
 
 The skill intentionally avoids private hostnames, IPs, user-specific paths, passwords, tokens, backup paths, and app-specific deployment details. Public examples use placeholders such as `/local/<tenant>`, `/path/to/root.password`, `<host>`, and `<public-domain>`.
+
+## Agent Context Architecture
+
+The repository is organized around progressive disclosure for coding agents: `SKILL.md` is the routing layer, `references/` holds task-specific context, and MCP tools provide live state plus verification. See [docs/agent-context-architecture.md](docs/agent-context-architecture.md) for the concise architecture note.
 
 ## Node.js MCP Server
 
