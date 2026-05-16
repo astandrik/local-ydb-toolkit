@@ -55,6 +55,8 @@ The skill intentionally avoids private hostnames, IPs, user-specific paths, pass
 
 This repository also contains an unofficial local stdio MCP server for operating `local-ydb` targets. The MCP server itself runs locally; tools operate either on the local Docker host or over SSH to a named remote profile.
 
+Official MCP Registry metadata is prepared in `server.json` under the name `io.github.astandrik/local-ydb-mcp`. This remains a local stdio server, not a remote MCP endpoint.
+
 Use the npm package directly from an MCP client:
 
 ```json
@@ -192,6 +194,8 @@ Use it only when the caller needs `/local/<tenant>`, GraphShard, tenant storage 
 ## Publishing
 
 The unofficial MCP npm package `@astandrik/local-ydb-mcp` is released by release-please and published by `.github/workflows/publish-mcp-server.yml`. It uses npm trusted publishing through GitHub Actions OIDC, so the repository does not need a long-lived `NPM_TOKEN` secret.
+
+The official MCP Registry name is `io.github.astandrik/local-ydb-mcp`. Publish `server.json` only after the matching npm package version has been published with the same `mcpName` in `packages/mcp-server/package.json`.
 
 Configure the npm package trusted publisher with:
 

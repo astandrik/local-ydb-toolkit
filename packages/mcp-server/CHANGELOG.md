@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.7.2...mcp-server-v0.7.3) (2026-05-16)
+
+
+### Features
+
+* add MCP Registry publication metadata
+
 ## [0.7.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.7.1...mcp-server-v0.7.2) (2026-05-09)
 
 

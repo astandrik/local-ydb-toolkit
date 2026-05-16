@@ -24,6 +24,8 @@ This form checks the npm registry when the MCP server starts, so clients pick up
 
 The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. If that file is missing, it uses a default local profile.
 
+Official MCP Registry metadata uses the name `io.github.astandrik/local-ydb-mcp` and is published from the repository root `server.json` after the matching npm version is available.
+
 ## Global Install
 
 ```bash
