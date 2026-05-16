@@ -14,8 +14,9 @@ targets.
 - Repository: `https://github.com/astandrik/local-ydb-toolkit`
 - Repository ID: `1220812874`
 - MCP package: `@astandrik/local-ydb-mcp`
-- Current npm version: `0.7.2`
-- Current published npm `0.7.2` metadata does not include `mcpName`.
+- Current published npm version: `0.7.2`
+- Published npm `0.7.2` metadata does not include `mcpName`; this PR adds
+  `mcpName` to the package source for the next release.
 - Runtime: Node.js `>=18`
 - Transport: `stdio`
 - Binary: `local-ydb-mcp`
