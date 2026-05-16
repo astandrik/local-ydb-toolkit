@@ -2,31 +2,31 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "include-component-in-tag": true,
   "packages": {
-    "packages": {
+    ".": {
       "release-type": "simple",
       "package-name": "@astandrik/local-ydb-mcp",
       "component": "mcp-server",
-      "changelog-path": "mcp-server/CHANGELOG.md",
-      "version-file": "mcp-server/.release-please-version",
+      "changelog-path": "packages/mcp-server/CHANGELOG.md",
+      "version-file": "packages/mcp-server/.release-please-version",
       "extra-files": [
         {
           "type": "json",
-          "path": "mcp-server/package.json",
+          "path": "packages/mcp-server/package.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": "../package-lock.json",
+          "path": "package-lock.json",
           "jsonpath": "$.packages['packages/mcp-server'].version"
         },
         {
           "type": "json",
-          "path": "../server.json",
+          "path": "server.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": "../server.json",
+          "path": "server.json",
           "jsonpath": "$.packages[0].version"
         }
       ]
