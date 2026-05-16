@@ -13,6 +13,21 @@
           "type": "json",
           "path": "mcp-server/package.json",
           "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "../package-lock.json",
+          "jsonpath": "$.packages['packages/mcp-server'].version"
+        },
+        {
+          "type": "json",
+          "path": "../server.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "../server.json",
+          "jsonpath": "$.packages[0].version"
         }
       ]
     }
