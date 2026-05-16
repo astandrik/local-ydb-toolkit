@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.7.2...mcp-server-v0.8.0) (2026-05-16)
+
+
+### Features
+
+* add MCP Registry publication metadata ([#46](https://github.com/astandrik/local-ydb-toolkit/issues/46)) ([521d4d0](https://github.com/astandrik/local-ydb-toolkit/commit/521d4d0e94ed22ed4bd1a8a448cd360ee19c421b))
+
+
+### Bug Fixes
+
+* repair release-please root paths ([44589fa](https://github.com/astandrik/local-ydb-toolkit/commit/44589fa8e789515035502a3608687e4f9e4c1a6d))
+
 ## [0.7.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.7.1...mcp-server-v0.7.2) (2026-05-09)
 
 
