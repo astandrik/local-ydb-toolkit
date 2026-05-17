@@ -1,9 +1,12 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { localYdbMcpServerVersion } from "./metadata.js";
+import { getLocalYdbPrompt, localYdbPrompts } from "./prompts.js";
 import { errorResult, successResult } from "./responses.js";
 import { localYdbInstructions } from "./tools/instructions.js";
 import { handlers, localYdbTools } from "./tools/registry.js";
@@ -12,12 +15,18 @@ import type { HandlerOptions, ToolHandler } from "./tools/context.js";
 export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
   const server = new Server(
     { name: "local-ydb-toolkit", version: localYdbMcpServerVersion },
-    { capabilities: { tools: {} }, instructions: localYdbInstructions },
+    { capabilities: { tools: {}, prompts: {} }, instructions: localYdbInstructions },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: localYdbTools,
   }));
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+    prompts: localYdbPrompts,
+  }));
+  server.setRequestHandler(GetPromptRequestSchema, async (request) =>
+    getLocalYdbPrompt(request.params.name, request.params.arguments ?? {}),
+  );
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     const handler = resolveHandler(name);

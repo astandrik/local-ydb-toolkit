@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createLocalYdbMcpServer } from "./server.js";
 
 export { localYdbMcpServerVersion } from "./metadata.js";
+export { getLocalYdbPrompt, localYdbPrompts } from "./prompts.js";
 export { createLocalYdbMcpServer, callLocalYdbToolForTest } from "./server.js";
 export { localYdbInstructions } from "./tools/instructions.js";
 export { localYdbTools } from "./tools/registry.js";

@@ -26,6 +26,15 @@ The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the serve
 
 Official MCP Registry metadata uses the name `io.github.astandrik/local-ydb-mcp` and is published from the repository root `server.json` after the matching npm version is available.
 
+## MCP Features
+
+The server exposes local-ydb operation tools and static MCP prompts. Prompt
+templates guide stack diagnosis, root database bootstrap, tenant topology
+bootstrap, version upgrades, auth hardening, and storage group reduction.
+Prompts return workflow instructions only; they do not execute commands.
+
+Mutating tools remain plan-only unless called with `confirm: true`.
+
 ## Global Install
 
 ```bash
