@@ -91,7 +91,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
         argumentBlock(args),
         workflowSafety,
         "Run local_ydb_status_report or local_ydb_inventory first to establish the current stack state.",
-        "Run local_ydb_list_versions before choosing or trusting the target tag. If the source or target image is missing on the target host, call local_ydb_pull_image without confirm first to review the pull plan; after explicit approval, poll local_ydb_pull_status until completed.",
+        "Run local_ydb_list_versions before choosing or trusting the target tag. If the source or target image must be pulled, call local_ydb_pull_image without confirm first to review the pull plan. For the upgrade target, pass image set to the exact target image from the upgrade preflight, not the current profile image. After explicit approval, repeat the same local_ydb_pull_image call with confirm=true; poll local_ydb_pull_status with the returned jobId until completed.",
         "Call local_ydb_upgrade_version without confirm using the exact version argument. Include dumpName only if the user supplied it. Review the returned plan for image preflight, dump, teardown, bootstrap, restore, auth reapply, extra-node recreation, image verification, and profile image persistence before asking for execution approval.",
         "Do not use this automatic upgrade path for bindMountPath profiles.",
       ].join("\n\n");
@@ -108,13 +108,23 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
         description: "Optional hardened config output path for prepare/apply auth tools.",
         required: false,
       },
+      {
+        name: "sid",
+        description: "Optional SID for the prepared config and dynamic-node auth token.",
+        required: false,
+      },
+      {
+        name: "tokenHostPath",
+        description: "Optional host path for the generated dynamic-node auth token file.",
+        required: false,
+      },
     ],
     render: (args) => [
       "Plan local-ydb native auth hardening.",
       argumentBlock(args),
       workflowSafety,
       "Run local_ydb_status_report first and note whether the profile already uses auth artifacts.",
-      "Call local_ydb_prepare_auth_config without confirm to review the hardened config plan. Call local_ydb_write_dynamic_auth_config without confirm to review the dynamic-node auth token plan. If the user approves the reviewed artifacts, call local_ydb_apply_auth_hardening without confirm first to review the restart plan.",
+      "Call local_ydb_prepare_auth_config without confirm to review the hardened config plan. Call local_ydb_write_dynamic_auth_config without confirm to review the dynamic-node auth token plan, passing sid and tokenHostPath when the selected profile does not provide them. If the user approves both artifact plans, execute local_ydb_prepare_auth_config with confirm=true and local_ydb_write_dynamic_auth_config with confirm=true to create the files. Then call local_ydb_apply_auth_hardening without confirm to review the restart plan, and execute it only after explicit approval.",
       "After approved execution, verify that anonymous viewer checks fail as expected while authenticated tenant checks still pass by using local_ydb_auth_check and local_ydb_status_report.",
     ].join("\n\n"),
   },
@@ -125,7 +135,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     arguments: [
       {
         name: "count",
-        description: "Target number of storage groups to keep; pass to tools as a number after validation.",
+        description: "Number of storage groups to remove from the current tenant pool (1-10); pass to tools as a number after validation.",
         required: true,
       },
       ...commonOptionalArguments,
@@ -143,11 +153,11 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     render: (args) => {
       const count = requiredIntegerArgument("local_ydb_reduce_storage_groups_workflow", args, "count", 1, 10);
       return [
-        `Plan storage group reduction to ${count} group(s).`,
+        `Plan removal of ${count} storage group(s).`,
         argumentBlock(args),
         workflowSafety,
         "Run local_ydb_status_report and local_ydb_storage_placement first to capture the current tenant and storage state.",
-        "Do not try to live-decrease NumGroups. Call local_ydb_reduce_storage_groups without confirm, passing count as a JSON number. Include poolName or dumpName only if the user supplied them.",
+        "Do not try to live-decrease NumGroups. Call local_ydb_reduce_storage_groups without confirm, passing count as the number of groups to remove as a JSON number. Include poolName or dumpName only if the user supplied them.",
         "Review the plan for tenant dump, stack teardown, rebuild with the smaller storagePoolCount, restore, verification, and auth reapply when needed before asking for execution approval.",
       ].join("\n\n");
     },
@@ -171,6 +181,7 @@ export function getLocalYdbPrompt(
   if (!definition) {
     throw new McpError(ErrorCode.InvalidParams, `Prompt ${name} not found`);
   }
+  const validatedArgs = validatePromptArguments(definition, args);
 
   return {
     description: definition.description,
@@ -179,11 +190,26 @@ export function getLocalYdbPrompt(
         role: "user",
         content: {
           type: "text",
-          text: definition.render(args),
+          text: definition.render(validatedArgs),
         },
       },
     ],
   };
+}
+
+function validatePromptArguments(
+  definition: LocalYdbPromptDefinition,
+  args: PromptArguments,
+): PromptArguments {
+  const allowed = new Set((definition.arguments ?? []).map((argument) => argument.name));
+  const unknown = Object.keys(args).filter((name) => !allowed.has(name));
+  if (unknown.length > 0) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `Unknown argument ${unknown.join(", ")} for prompt ${definition.name}`,
+    );
+  }
+  return args;
 }
 
 function requiredArgument(

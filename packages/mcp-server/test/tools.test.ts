@@ -50,14 +50,20 @@ class RecordingExecutor implements CommandExecutor {
 }
 
 function expectInvalidPromptRequest(run: () => unknown, message: string): void {
+  let threw = false;
+  let caughtError: unknown;
   try {
     run();
-    throw new Error("Expected prompt request to fail");
   } catch (error) {
-    expect(error).toMatchObject({ code: ErrorCode.InvalidParams });
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(message);
+    threw = true;
+    caughtError = error;
   }
+  if (!threw) {
+    throw new Error("Expected prompt request to fail");
+  }
+  expect(caughtError).toMatchObject({ code: ErrorCode.InvalidParams });
+  expect(caughtError).toBeInstanceOf(Error);
+  expect((caughtError as Error).message).toContain(message);
 }
 
 describe("mcp tools", () => {
@@ -113,15 +119,26 @@ describe("mcp tools", () => {
 
   it("marks required prompt arguments in metadata", () => {
     const upgrade = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_upgrade_version_workflow");
+    const auth = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_auth_hardening_workflow");
     const reduceStorage = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_reduce_storage_groups_workflow");
 
     expect(upgrade?.arguments).toContainEqual(expect.objectContaining({
       name: "version",
       required: true
     }));
+    expect(auth?.arguments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "configHostPath" }),
+      expect.objectContaining({ name: "sid" }),
+      expect.objectContaining({ name: "tokenHostPath" })
+    ]));
     expect(reduceStorage?.arguments).toContainEqual(expect.objectContaining({
       name: "count",
-      required: true
+      required: true,
+      description: expect.stringContaining("storage groups to remove")
+    }));
+    expect(reduceStorage?.arguments).toContainEqual(expect.objectContaining({
+      name: "count",
+      description: expect.stringContaining("1-10")
     }));
   });
 
@@ -143,10 +160,42 @@ describe("mcp tools", () => {
       ? result.messages[0].content.text
       : "";
     expect(text).toContain("local_ydb_list_versions");
+    expect(text).toContain("pass image set to the exact target image");
+    expect(text).toContain("repeat the same local_ydb_pull_image call with confirm=true");
+    expect(text).toContain("returned jobId");
     expect(text).toContain("local_ydb_upgrade_version");
     expect(text).toContain("Call mutating tools without confirm first");
     expect(text).toContain("confirm=true only after the user explicitly approves");
     expect(text).toContain("\"profile\": \"demo\"");
+  });
+
+  it("renders auth hardening artifact creation before apply", () => {
+    const result = getLocalYdbPrompt("local_ydb_auth_hardening_workflow", {
+      sid: "root@builtin",
+      tokenHostPath: "/tmp/dynamic-auth.txt"
+    });
+    const text = result.messages[0]?.content.type === "text"
+      ? result.messages[0].content.text
+      : "";
+
+    expect(text).toContain("local_ydb_prepare_auth_config with confirm=true");
+    expect(text).toContain("local_ydb_write_dynamic_auth_config with confirm=true");
+    expect(text).toContain("Then call local_ydb_apply_auth_hardening without confirm");
+    expect(text).toContain("\"sid\": \"root@builtin\"");
+    expect(text).toContain("\"tokenHostPath\": \"/tmp/dynamic-auth.txt\"");
+  });
+
+  it("renders storage reduction count as groups to remove", () => {
+    const result = getLocalYdbPrompt("local_ydb_reduce_storage_groups_workflow", {
+      count: "2"
+    });
+    const text = result.messages[0]?.content.type === "text"
+      ? result.messages[0].content.text
+      : "";
+
+    expect(text).toContain("Plan removal of 2 storage group(s).");
+    expect(text).toContain("count as the number of groups to remove");
+    expect(text).not.toContain("storage groups to keep");
   });
 
   it("renders every listed prompt", () => {
@@ -173,6 +222,12 @@ describe("mcp tools", () => {
         count: "11"
       }),
       "must be between 1 and 10",
+    );
+    expectInvalidPromptRequest(
+      () => getLocalYdbPrompt("local_ydb_diagnose_stack", {
+        confirm: "true"
+      }),
+      "Unknown argument confirm",
     );
   });
 
