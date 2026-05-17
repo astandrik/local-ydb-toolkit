@@ -50,7 +50,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
       argumentBlock(args),
       workflowSafety,
       "Use this workflow when the user asks for a generic local YDB database and did not explicitly ask for a CMS tenant, GraphShard, tenant storage, dump/restore, or dynamic-node testing.",
-      "Run local_ydb_check_prerequisites first. Then call local_ydb_bootstrap_root_database without confirm to return the plan. Review the planned Docker network, storage, static node, and scheme ls /local verification before asking for approval to execute.",
+      "Run local_ydb_check_prerequisites without confirm first. Then call local_ydb_bootstrap_root_database without confirm to return the plan. Review the planned Docker network, storage, static node, and scheme ls /local verification before asking for approval to execute.",
     ].join("\n\n"),
   },
   {
@@ -63,7 +63,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
       argumentBlock(args),
       workflowSafety,
       "Use this workflow only when the user needs /local/<tenant>, GraphShard, tenant storage workflows, tenant dump/restore, or dynamic-node behavior.",
-      "Run local_ydb_check_prerequisites first. Then call local_ydb_bootstrap without confirm to return the plan. Do not pass ad hoc tenant names; use the selected profile configuration unless the user updates the config outside this prompt.",
+      "Run local_ydb_check_prerequisites without confirm first. Then call local_ydb_bootstrap without confirm to return the plan. Do not pass ad hoc tenant names; use the selected profile configuration unless the user updates the config outside this prompt.",
       "After execution approval and completion, verify with local_ydb_database_status, local_ydb_tenant_check, local_ydb_nodes_check, and local_ydb_graphshard_check.",
     ].join("\n\n"),
   },
@@ -74,7 +74,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     arguments: [
       {
         name: "version",
-        description: "Target local-ydb image tag, for example 26.1.2.0.",
+        description: "Target local-ydb image tag, for example 25.2.1.7 or latest.",
         required: true,
       },
       ...commonOptionalArguments,
@@ -157,7 +157,8 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
         argumentBlock(args),
         workflowSafety,
         "Run local_ydb_status_report and local_ydb_storage_placement first to capture the current tenant and storage state.",
-        "Do not try to live-decrease NumGroups. Call local_ydb_reduce_storage_groups without confirm, passing count as the number of groups to remove as a JSON number. Include poolName or dumpName only if the user supplied them.",
+        "Do not try to live-decrease NumGroups. Call local_ydb_reduce_storage_groups without confirm, passing count as the number of groups to remove as a JSON number.",
+        "If local_ydb_storage_placement reports a concrete pool name such as dynamic_storage_pool:1, pass that exact value as poolName. Use poolName when the default pool lookup does not match the current stack. If local_ydb_reduce_storage_groups reports `Storage pool not found`, rerun it without confirm using the explicit poolName value from local_ydb_storage_placement. Include dumpName only if the user supplied it.",
         "Review the plan for tenant dump, stack teardown, rebuild with the smaller storagePoolCount, restore, verification, and auth reapply when needed before asking for execution approval.",
       ].join("\n\n");
     },

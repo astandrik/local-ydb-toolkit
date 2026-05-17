@@ -195,7 +195,35 @@ describe("mcp tools", () => {
 
     expect(text).toContain("Plan removal of 2 storage group(s).");
     expect(text).toContain("count as the number of groups to remove");
+    expect(text).toContain("poolName");
+    expect(text).toContain("dynamic_storage_pool:1");
+    expect(text).toContain("Storage pool not found");
+    expect(text).not.toContain("storage pool was not found");
     expect(text).not.toContain("storage groups to keep");
+  });
+
+  it("renders bootstrap prompts with plan-only prerequisites first", () => {
+    const root = getLocalYdbPrompt("local_ydb_bootstrap_root_workflow");
+    const tenant = getLocalYdbPrompt("local_ydb_bootstrap_tenant_workflow");
+    const rootText = root.messages[0]?.content.type === "text"
+      ? root.messages[0].content.text
+      : "";
+    const tenantText = tenant.messages[0]?.content.type === "text"
+      ? tenant.messages[0].content.text
+      : "";
+    const rootPrerequisitesIndex = rootText.indexOf("local_ydb_check_prerequisites without confirm first");
+    const rootBootstrapIndex = rootText.indexOf("local_ydb_bootstrap_root_database without confirm");
+    const tenantPrerequisitesIndex = tenantText.indexOf("local_ydb_check_prerequisites without confirm first");
+    const tenantBootstrapIndex = tenantText.indexOf("local_ydb_bootstrap without confirm");
+
+    expect(rootText).toContain("local_ydb_check_prerequisites without confirm first");
+    expect(tenantText).toContain("local_ydb_check_prerequisites without confirm first");
+    expect(rootPrerequisitesIndex).toBeGreaterThanOrEqual(0);
+    expect(rootBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(rootPrerequisitesIndex).toBeLessThan(rootBootstrapIndex);
+    expect(tenantPrerequisitesIndex).toBeGreaterThanOrEqual(0);
+    expect(tenantBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(tenantPrerequisitesIndex).toBeLessThan(tenantBootstrapIndex);
   });
 
   it("renders every listed prompt", () => {
