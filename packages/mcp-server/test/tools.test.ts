@@ -211,9 +211,19 @@ describe("mcp tools", () => {
     const tenantText = tenant.messages[0]?.content.type === "text"
       ? tenant.messages[0].content.text
       : "";
+    const rootPrerequisitesIndex = rootText.indexOf("local_ydb_check_prerequisites without confirm first");
+    const rootBootstrapIndex = rootText.indexOf("local_ydb_bootstrap_root_database without confirm");
+    const tenantPrerequisitesIndex = tenantText.indexOf("local_ydb_check_prerequisites without confirm first");
+    const tenantBootstrapIndex = tenantText.indexOf("local_ydb_bootstrap without confirm");
 
     expect(rootText).toContain("local_ydb_check_prerequisites without confirm first");
     expect(tenantText).toContain("local_ydb_check_prerequisites without confirm first");
+    expect(rootPrerequisitesIndex).toBeGreaterThanOrEqual(0);
+    expect(rootBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(rootPrerequisitesIndex).toBeLessThan(rootBootstrapIndex);
+    expect(tenantPrerequisitesIndex).toBeGreaterThanOrEqual(0);
+    expect(tenantBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(tenantPrerequisitesIndex).toBeLessThan(tenantBootstrapIndex);
   });
 
   it("renders every listed prompt", () => {
