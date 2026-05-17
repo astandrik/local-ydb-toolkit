@@ -158,7 +158,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
         workflowSafety,
         "Run local_ydb_status_report and local_ydb_storage_placement first to capture the current tenant and storage state.",
         "Do not try to live-decrease NumGroups. Call local_ydb_reduce_storage_groups without confirm, passing count as the number of groups to remove as a JSON number.",
-        "If local_ydb_storage_placement reports a concrete pool name such as dynamic_storage_pool:1, pass that exact value as poolName. Use poolName when the default pool lookup does not match the current stack or when local_ydb_reduce_storage_groups reports that the storage pool was not found. Include dumpName only if the user supplied it.",
+        "If local_ydb_storage_placement reports a concrete pool name such as dynamic_storage_pool:1, pass that exact value as poolName. Use poolName when the default pool lookup does not match the current stack or when local_ydb_reduce_storage_groups reports `Storage pool not found`. Include dumpName only if the user supplied it.",
         "Review the plan for tenant dump, stack teardown, rebuild with the smaller storagePoolCount, restore, verification, and auth reapply when needed before asking for execution approval.",
       ].join("\n\n");
     },

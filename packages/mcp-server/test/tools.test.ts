@@ -197,7 +197,8 @@ describe("mcp tools", () => {
     expect(text).toContain("count as the number of groups to remove");
     expect(text).toContain("poolName");
     expect(text).toContain("dynamic_storage_pool:1");
-    expect(text).toContain("storage pool was not found");
+    expect(text).toContain("Storage pool not found");
+    expect(text).not.toContain("storage pool was not found");
     expect(text).not.toContain("storage groups to keep");
   });
 
