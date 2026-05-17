@@ -120,6 +120,18 @@ Example MCP client config for a local checkout:
 
 Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH keys, password files, and backup paths outside committed config.
 
+### MCP Features
+
+The MCP server exposes tools for local-ydb operations and prompts for guided
+workflows. Prompt templates cover stack diagnosis, root database bootstrap,
+tenant topology bootstrap, version upgrades, auth hardening, and storage group
+reduction. Prompts do not execute commands; they return workflow instructions
+that guide the MCP client toward the existing `local_ydb_*` tools.
+
+Mutating tools remain plan-only unless called with `confirm: true`. Static MCP
+resources are intentionally left for a separate follow-up so the server does not
+expose private target configuration as context.
+
 ### Target Profiles
 
 Profiles are selected by tool argument:

@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import {
   commandToShell,
@@ -13,8 +14,10 @@ import {
 import {
   callLocalYdbToolForTest,
   createLocalYdbMcpServer,
+  getLocalYdbPrompt,
   localYdbInstructions,
   localYdbMcpServerVersion,
+  localYdbPrompts,
   localYdbTools
 } from "../src/index.js";
 import { toolDefinitions } from "../src/tools/registry.js";
@@ -43,6 +46,17 @@ class RecordingExecutor implements CommandExecutor {
       return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
     }
     return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+  }
+}
+
+function expectInvalidPromptRequest(run: () => unknown, message: string): void {
+  try {
+    run();
+    throw new Error("Expected prompt request to fail");
+  } catch (error) {
+    expect(error).toMatchObject({ code: ErrorCode.InvalidParams });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(message);
   }
 }
 
@@ -84,6 +98,89 @@ describe("mcp tools", () => {
       "local_ydb_upgrade_version",
       "local_ydb_write_dynamic_auth_config"
     ]);
+  });
+
+  it("registers stable public local-ydb prompts", () => {
+    expect(localYdbPrompts.map((prompt) => prompt.name)).toEqual([
+      "local_ydb_diagnose_stack",
+      "local_ydb_bootstrap_root_workflow",
+      "local_ydb_bootstrap_tenant_workflow",
+      "local_ydb_upgrade_version_workflow",
+      "local_ydb_auth_hardening_workflow",
+      "local_ydb_reduce_storage_groups_workflow"
+    ]);
+  });
+
+  it("marks required prompt arguments in metadata", () => {
+    const upgrade = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_upgrade_version_workflow");
+    const reduceStorage = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_reduce_storage_groups_workflow");
+
+    expect(upgrade?.arguments).toContainEqual(expect.objectContaining({
+      name: "version",
+      required: true
+    }));
+    expect(reduceStorage?.arguments).toContainEqual(expect.objectContaining({
+      name: "count",
+      required: true
+    }));
+  });
+
+  it("renders prompt messages for local-ydb workflows", () => {
+    const result = getLocalYdbPrompt("local_ydb_upgrade_version_workflow", {
+      version: "26.1.2.0",
+      profile: "demo",
+      configPath: "/path/to/local-ydb.config.json"
+    });
+
+    expect(result.description).toContain("version upgrade");
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      role: "user",
+      content: { type: "text" }
+    });
+
+    const text = result.messages[0]?.content.type === "text"
+      ? result.messages[0].content.text
+      : "";
+    expect(text).toContain("local_ydb_list_versions");
+    expect(text).toContain("local_ydb_upgrade_version");
+    expect(text).toContain("Call mutating tools without confirm first");
+    expect(text).toContain("confirm=true only after the user explicitly approves");
+    expect(text).toContain("\"profile\": \"demo\"");
+  });
+
+  it("renders every listed prompt", () => {
+    const promptArgs: Record<string, Record<string, string>> = {
+      local_ydb_upgrade_version_workflow: { version: "26.1.2.0" },
+      local_ydb_reduce_storage_groups_workflow: { count: "2" }
+    };
+
+    for (const prompt of localYdbPrompts) {
+      const result = getLocalYdbPrompt(prompt.name, promptArgs[prompt.name] ?? {});
+      expect(result.messages).toHaveLength(1);
+      expect(result.messages[0]?.role).toBe("user");
+      expect(result.messages[0]?.content.type).toBe("text");
+    }
+  });
+
+  it("validates required prompt arguments", () => {
+    expectInvalidPromptRequest(
+      () => getLocalYdbPrompt("local_ydb_upgrade_version_workflow", {}),
+      "Missing required argument version",
+    );
+    expectInvalidPromptRequest(
+      () => getLocalYdbPrompt("local_ydb_reduce_storage_groups_workflow", {
+        count: "11"
+      }),
+      "must be between 1 and 10",
+    );
+  });
+
+  it("rejects unknown prompt names", () => {
+    expectInvalidPromptRequest(
+      () => getLocalYdbPrompt("__proto__", {}),
+      "Prompt __proto__ not found",
+    );
   });
 
   it("returns plan-only output for mutating tools without confirm", async () => {
@@ -392,6 +489,14 @@ describe("mcp tools", () => {
     expect(server._instructions).toContain("local_ydb_check_prerequisites");
     expect(server._instructions).toContain("local_ydb_status_report");
     expect(server._instructions).toContain("PENDING_RESOURCES");
+  });
+
+  it("declares tools and static prompts capabilities", () => {
+    const server = createLocalYdbMcpServer() as unknown as {
+      _capabilities?: { tools?: object; prompts?: { listChanged?: boolean } };
+    };
+    expect(server._capabilities?.tools).toEqual({});
+    expect(server._capabilities?.prompts).toEqual({});
   });
 
   it("mentions every public local-ydb tool in server instructions", () => {
