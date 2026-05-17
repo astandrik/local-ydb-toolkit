@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.0...mcp-server-v0.9.1) (2026-05-17)
+
+
+### Bug Fixes
+
+* better storage prompts ([#50](https://github.com/astandrik/local-ydb-toolkit/issues/50)) ([47dca59](https://github.com/astandrik/local-ydb-toolkit/commit/47dca591842fbd8b404c77d91f39360b34a0f754))
+
 ## [0.9.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.8.0...mcp-server-v0.9.0) (2026-05-17)
 
 
