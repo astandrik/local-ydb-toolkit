@@ -1,5 +1,6 @@
 import { bash, shellQuote, type CommandSpec } from "../api-client.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
+import { generatedConfigDiscoveryLines } from "./generated-config.js";
 import { ensureImagePresentSpec } from "./images.js";
 import type { DynamicNodePlan } from "./types.js";
 
@@ -135,9 +136,10 @@ export function commandForDynamicNodeRun(profile: ResolvedLocalYdbProfile, node:
   const innerCommand = [
     "set -euo pipefail",
     "cfg=/tmp/local-ydb-dynamic-config.yaml",
-    "sed -e '/^  ca: \\/ydb_certs\\/ca\\.pem$/d' -e '/^  cert: \\/ydb_certs\\/cert\\.pem$/d' -e '/^  key: \\/ydb_certs\\/key\\.pem$/d' /ydb_data/cluster/kikimr_configs/config.yaml > \"$cfg\"",
+    ...generatedConfigDiscoveryLines("source_config"),
+    "sed -e '/^  ca: \\/ydb_certs\\/ca\\.pem$/d' -e '/^  cert: \\/ydb_certs\\/cert\\.pem$/d' -e '/^  key: \\/ydb_certs\\/key\\.pem$/d' \"$source_config\" > \"$cfg\"",
     `exec /ydbd server --yaml-config "$cfg" ${dynamicArgs}`
-  ].join("; ");
+  ].join("\n");
   return [
     "docker", "run", "-d",
     "--name", node.container,
@@ -216,31 +218,46 @@ export function createTenantSpec(profile: ResolvedLocalYdbProfile): CommandSpec 
   const statusCommand = dockerExecYdbd(profile, statusArgs);
   const createCommand = dockerExecYdbd(profile, createArgs);
   const retryableStatusErrors = "SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE";
+  const retryableCreateErrors = "Group fit error|failed to allocate group|no group options";
+  const failWithStatusOutput = [
+    "    cat \"$tmp\" >&2",
+    "    if [ \"$status_rc\" -eq 0 ]; then",
+    "      exit 1",
+    "    fi",
+    "    exit \"$status_rc\""
+  ];
   return bash([
     "set -euo pipefail",
     "tmp=$(mktemp)",
     "trap 'rm -f \"$tmp\"' EXIT",
-    "for attempt in $(seq 1 15); do",
-    `  if ${statusCommand} >"$tmp" 2>&1; then`,
-    "    cat \"$tmp\"",
-    "    exit 0",
-    "  elif grep -Eq 'State:[[:space:]]*(RUNNING|PENDING_RESOURCES)' \"$tmp\"; then",
+    "for attempt in $(seq 1 30); do",
+    "  status_rc=0",
+    `  ${statusCommand} >"$tmp" 2>&1 || status_rc=$?`,
+    "  if grep -Eq 'State:[[:space:]]*(RUNNING|PENDING_RESOURCES)' \"$tmp\"; then",
     "    cat \"$tmp\"",
     "    exit 0",
     "  elif grep -Eq 'Unknown tenant|NOT_FOUND' \"$tmp\"; then",
-    `    ${createCommand} >/dev/null 2>&1 || exit $?`,
+    "    create_rc=0",
+    `    ${createCommand} >"$tmp" 2>&1 || create_rc=$?`,
+    `    if grep -Eiq '${retryableCreateErrors}' "$tmp"; then`,
+    "      cat \"$tmp\" >&2",
+    "      sleep 2",
+    "    elif [ \"$create_rc\" -ne 0 ]; then",
+    "      cat \"$tmp\" >&2",
+    "      exit \"$create_rc\"",
+    "    else",
+    "      sleep 2",
+    "    fi",
     `  elif grep -Eq '${retryableStatusErrors}' "$tmp"; then`,
-    "    :",
+    "    sleep 2",
     "  else",
-    "    cat \"$tmp\" >&2",
-    "    exit 1",
+    ...failWithStatusOutput,
     "  fi",
-    "  sleep 2",
     "done",
     "cat \"$tmp\" >&2",
     "exit 1"
   ].join("\n"), {
-    timeoutMs: 60_000,
+    timeoutMs: 120_000,
     description: "Create CMS tenant if missing"
   });
 }

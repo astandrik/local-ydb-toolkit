@@ -3,6 +3,8 @@ import { createTenantSpec, helperContainer, ydbAuthArgs } from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
 import type { MutatingOptions, ToolkitContext } from "./types.js";
 
+const SYSTEM_PATH_EXCLUDE_PATTERN = "(^|/)\\.sys(/|$)";
+
 export async function createTenant(ctx: ToolkitContext, options: MutatingOptions = {}) {
   return runMutating(ctx, {
     summary: `Create CMS tenant ${ctx.profile.tenantPath}.`,
@@ -18,7 +20,7 @@ export async function dumpTenant(ctx: ToolkitContext, options: MutatingOptions &
   const dumpPath = `${ctx.profile.dumpHostPath}/${dumpName}`;
   const specs = [
     bash(`mkdir -p ${shellQuote(dumpPath)}`),
-    helperContainer(ctx.profile, `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools dump -p . -o ${shellQuote(`/dump/${dumpName}/tenant`)}`)
+    helperContainer(ctx.profile, `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools dump -p . --exclude ${shellQuote(SYSTEM_PATH_EXCLUDE_PATTERN)} -o ${shellQuote(`/dump/${dumpName}/tenant`)}`)
   ];
   return runMutating(ctx, {
     summary: `Dump ${ctx.profile.tenantPath} to ${dumpPath}.`,
