@@ -1289,10 +1289,13 @@ describe("mutating operations", () => {
 
   it("plans root password rotation without exposing the password", async () => {
     const executor = new RecordingExecutor();
+    const rawCommands: string[] = [];
     executor.display = (profile, spec) => {
       const password = "S3cr3t! rotate me";
       const escapedPassword = password.replace(/'/g, "''");
-      return redactCommand(commandToShell(spec), [
+      const rawCommand = commandToShell(spec);
+      rawCommands.push(rawCommand);
+      return redactCommand(rawCommand, [
         password,
         escapedPassword,
         profile.rootPasswordFile ?? "",
@@ -1317,6 +1320,12 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.some((command) => command.includes("mktemp /tmp/local-ydb-toolkit-password-rotate-XXXXXX.yql"))).toBe(true);
     expect(response.plannedCommands.some((command) => command.includes("docker cp \"$query_host\""))).toBe(true);
     expect(response.plannedCommands.some((command) => command.includes("yql -f"))).toBe(true);
+    const rotationPasswordFile = rawCommands[0].indexOf("password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX)");
+    const rotationTrap = rawCommands[0].indexOf("trap", rotationPasswordFile);
+    const rotationPasswordWrite = rawCommands[0].indexOf("cat >\"$password_file\"", rotationPasswordFile);
+    expect(rotationPasswordFile).toBeGreaterThan(-1);
+    expect(rotationTrap).toBeGreaterThan(rotationPasswordFile);
+    expect(rotationPasswordWrite).toBeGreaterThan(rotationTrap);
     expect(response.plannedCommands.some((command) => command.includes("yql -s \"ALTER USER root PASSWORD"))).toBe(false);
     expect(response.plannedCommands[0]).toContain("last_error=$(mktemp)");
     expect(response.plannedCommands[1]).toContain("target=$(docker exec ydb-local sh -lc");
@@ -1324,6 +1333,13 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[1]).toContain("docker exec ydb-local cat \"$target\"");
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(0);
     expect(response.plannedCommands.some((command) => command.includes("viewer/json/whoami"))).toBe(true);
+    const verifyCommand = rawCommands[2] ?? "";
+    const verifyPasswordFile = verifyCommand.indexOf("password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX)");
+    const verifyTrap = verifyCommand.indexOf("trap", verifyPasswordFile);
+    const verifyPasswordWrite = verifyCommand.indexOf("cat >\"$password_file\"", verifyPasswordFile);
+    expect(verifyPasswordFile).toBeGreaterThan(-1);
+    expect(verifyTrap).toBeGreaterThan(verifyPasswordFile);
+    expect(verifyPasswordWrite).toBeGreaterThan(verifyTrap);
   });
 
   it("keeps quoted and escaped passwords out of the planned rotation command", async () => {

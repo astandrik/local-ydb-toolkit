@@ -61,7 +61,7 @@ function waitForAuthenticatedTenantStatusSpec(ctx: ToolkitContext) {
   }
 
   const withPassword = (innerCommand: string) => {
-    const script = `password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX); umask 077; cat >"$password_file"; trap 'rm -f "$password_file"' EXIT; ${innerCommand.replaceAll("/tmp/root.password", '"$password_file"')}`;
+    const script = `umask 077; password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX); trap 'rm -f "$password_file"' EXIT; cat >"$password_file"; ${innerCommand.replaceAll("/tmp/root.password", '"$password_file"')}`;
     return `cat ${shellQuote(rootPasswordFile)} | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(script)}`;
   };
 
@@ -297,7 +297,7 @@ export async function setRootPassword(
     return 1
   fi
   set +e
-  cat "$file" | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(`query_file="$1"; password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX); umask 077; cat >"$password_file"; trap 'rm -f "$password_file" "$query_file"' EXIT; /ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} --user ${shellQuote(ctx.profile.rootUser)} --password-file "$password_file" yql -f "$query_file"`)} _ "$query_container" >"$last_error" 2>&1
+  cat "$file" | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(`query_file="$1"; umask 077; password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX); trap 'rm -f "$password_file" "$query_file"' EXIT; cat >"$password_file"; /ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} --user ${shellQuote(ctx.profile.rootUser)} --password-file "$password_file" yql -f "$query_file"`)} _ "$query_container" >"$last_error" 2>&1
   rc=$?
   set -e
   cleanup_query_container
