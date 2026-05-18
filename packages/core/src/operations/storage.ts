@@ -10,7 +10,7 @@ import {
 import { sanitizeTenantName } from "../validation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
 import { inventory } from "./checks.js";
-import { ydbCli, ydbdAdmin } from "./commands.js";
+import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { runMutating } from "./execution.js";
 import { assertPositiveInteger, assertSafeCleanupTarget, extraDynamicNodeTarget } from "./helpers.js";
@@ -272,11 +272,11 @@ export async function reduceStorageGroups(
     return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results);
   }
 
-  results.push(await finalCtx.client.run(ydbCli(
+  results.push(await finalCtx.client.run(waitForYdbCli(
     finalCtx.profile,
     ["scheme", "ls", finalCtx.profile.tenantPath],
     finalCtx.profile.tenantPath,
-    "Verify tenant metadata"
+    "Wait for tenant metadata"
   )));
 
   return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results);
@@ -292,7 +292,7 @@ export async function cleanupStorage(ctx: ToolkitContext, options: MutatingOptio
     assertSafeCleanupTarget(volume);
   }
   const specs = [
-    ...volumes.map((volume) => bash(`docker volume rm ${shellQuote(volume)}`)),
+    ...volumes.map((volume) => bash(`if docker volume inspect ${shellQuote(volume)} >/dev/null 2>&1; then docker volume rm ${shellQuote(volume)}; fi`)),
     ...paths.map((path) => bash(`rm -rf -- ${shellQuote(path)} || sudo -n rm -rf -- ${shellQuote(path)}`))
   ];
   return runMutating(ctx, {

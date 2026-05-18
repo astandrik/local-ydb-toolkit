@@ -108,6 +108,37 @@ describe("scheme inspection", () => {
     expect(response.command).toContain("scheme describe /local/example/users --stats");
   });
 
+  it("uses the root database endpoint for root database paths", async () => {
+    const executor = new RecordingExecutor(".sys\n");
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const response = await inspectScheme(ctx, {
+      path: "/local"
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      path: "/local",
+      stdout: ".sys\n"
+    });
+    expect(response.command).toContain("scheme ls /local");
+    expect(response.command).toContain("-e grpc://localhost:2136");
+    expect(response.command).toContain("-d /local");
+    expect(response.command).not.toContain("-d /local/example");
+  });
+
+  it("uses the root database endpoint for non-tenant children of the root database", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const response = await inspectScheme(ctx, {
+      path: "/local/other"
+    });
+
+    expect(response.command).toContain("scheme ls /local/other");
+    expect(response.command).toContain("-d /local");
+  });
+
   it("rejects unsupported flag combinations", async () => {
     const ctx = createContext(undefined, new RecordingExecutor(), ConfigSchema.parse({}));
 

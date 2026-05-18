@@ -1000,8 +1000,66 @@ describe("mutating operations", () => {
 
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
-    expect(response.summary).toContain("continuing past tenant removal auth failure");
+    expect(response.summary).toContain("continuing past tenant removal failure during teardown");
     expect(response.results?.[0]?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
+  });
+
+  it("continues docker teardown when tenant removal cannot reach the static gRPC endpoint", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example",
+          staticContainer: "ydb-local",
+          network: "ydb-net",
+          volume: "ydb-local-data"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker volume ls")) {
+        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+      }
+      if (command.includes("admin database /local/example remove --force")) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "Status: UNAVAILABLE\nEndpoint list is empty: connection refused\n",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await destroyStack(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.results?.[0]?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes("docker rm -f ydb-local"))).toBe(true);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
@@ -1131,6 +1189,7 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).not.toContain("S3cr3t! rotate me");
     expect(response.plannedCommands.some((command) => command.includes("ALTER USER root PASSWORD"))).toBe(true);
+    expect(response.plannedCommands[0]).toContain("last_error=$(mktemp)");
     expect(response.plannedCommands[1]).toContain("target=$(docker exec ydb-local sh -lc");
     expect(response.plannedCommands[1]).toContain("/ydb_data/kikimr_configs/config.yaml");
     expect(response.plannedCommands[1]).toContain("docker exec ydb-local cat \"$target\"");
@@ -1145,6 +1204,16 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.plannedCommands[0]).toContain("rm -rf -- /tmp/local-ydb-dump/mcp-smoke");
     expect(response.plannedCommands[0]).toContain("sudo -n rm -rf -- /tmp/local-ydb-dump/mcp-smoke");
+  });
+
+  it("skips absent cleanup volumes but fails if an existing volume cannot be removed", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await cleanupStorage(ctx, { volumes: ["local-ydb-toolkit-mcp-cleanup-smoke"] });
+    expect(response.executed).toBe(false);
+    expect(response.plannedCommands[0]).toContain("docker volume inspect local-ydb-toolkit-mcp-cleanup-smoke");
+    expect(response.plannedCommands[0]).toContain("then docker volume rm local-ydb-toolkit-mcp-cleanup-smoke");
+    expect(response.plannedCommands[0]).not.toContain("docker volume rm local-ydb-toolkit-mcp-cleanup-smoke || true");
   });
 
   it("prepares a hardened auth config and root password file from the running static config", async () => {

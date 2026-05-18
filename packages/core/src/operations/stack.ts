@@ -5,7 +5,7 @@ import {
   commandForStaticEnsureRun,
   createTenantSpec,
   removeTenantIfPresentSpec,
-  ydbCli,
+  waitForYdbCli,
   ydbRootCli
 } from "./commands.js";
 import { normalizeExpectedYdbResult, runMutating } from "./execution.js";
@@ -26,7 +26,7 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
     bash("sleep 5", { description: "Wait briefly for tenant creation" }),
     bash(commandForDynamicEnsureRun(ctx.profile), { timeoutMs: 60_000, description: "Start dynamic tenant node" }),
     bash("sleep 5", { description: "Wait briefly for dynamic node startup" }),
-    ydbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata"),
+    waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Wait for tenant metadata"),
     bash(`curl -fsSL ${shellQuote(`${ctx.profile.monitoringBaseUrl}/viewer/json/capabilities?database=${encodeURIComponent(ctx.profile.tenantPath)}`)} >/dev/null || true`, { allowFailure: true, description: "Verify viewer capabilities endpoint" })
   ];
   return runMutating(ctx, {
@@ -166,13 +166,13 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
   }
 
   const results: CommandResult[] = [];
-  let tenantRemoveSkippedDueToAuthFailure = false;
+  let tenantRemoveSkipped = false;
   for (const [index, spec] of specs.entries()) {
     const result = normalizeExpectedYdbResult(spec, await ctx.client.run(spec));
     results.push(result);
     if (!result.ok) {
-      if (index === 0 && canContinueAfterTenantRemoveFailure(ctx, options, result)) {
-        tenantRemoveSkippedDueToAuthFailure = true;
+      if (index === 0 && canContinueAfterTenantRemoveFailureDuringTeardown(ctx, options, result)) {
+        tenantRemoveSkipped = true;
         continue;
       }
       break;
@@ -180,8 +180,8 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
   }
 
   return {
-    summary: tenantRemoveSkippedDueToAuthFailure
-      ? `Destroy local-ydb stack for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands after continuing past tenant removal auth failure.`
+    summary: tenantRemoveSkipped
+      ? `Destroy local-ydb stack for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands after continuing past tenant removal failure during teardown.`
       : `Destroy local-ydb stack for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
     executed: true,
     risk: "high",
@@ -197,7 +197,7 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
   };
 }
 
-function canContinueAfterTenantRemoveFailure(
+function canContinueAfterTenantRemoveFailureDuringTeardown(
   ctx: ToolkitContext,
   options: DestroyStackOptions,
   result: CommandResult
@@ -207,7 +207,7 @@ function canContinueAfterTenantRemoveFailure(
     return false;
   }
   const output = `${result.stdout}\n${result.stderr}`;
-  return /UNAUTHORIZED|Invalid password|Access denied|login denied|too many failed password attempts|CLIENT_UNAUTHENTICATED/i.test(output);
+  return /UNAUTHORIZED|Invalid password|Access denied|login denied|too many failed password attempts|CLIENT_UNAUTHENTICATED|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|No such container/i.test(output);
 }
 
 export async function restartStack(ctx: ToolkitContext, options: MutatingOptions = {}) {

@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import { bash, shellQuote } from "../api-client.js";
-import { commandForDynamicRun, createTenantSpec } from "./commands.js";
+import { commandForDynamicRun, createTenantSpec, waitForYdbCli } from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
 import { commandForStaticGeneratedConfigPath } from "./generated-config.js";
 import { escapeTextProtoString, statusCommandFailureLines } from "./helpers.js";
@@ -41,7 +41,10 @@ export async function applyAuthHardening(ctx: ToolkitContext, options: MutatingO
       bash(`docker restart ${shellQuote(ctx.profile.staticContainer)}`),
       bash("sleep 5"),
       ctx.profile.rootPasswordFile ? waitForAuthenticatedTenantStatusSpec(ctx) : createTenantSpec(ctx.profile),
-      ...dynamicNodeRecreate
+      ...dynamicNodeRecreate,
+      ...(ctx.profile.rootPasswordFile
+        ? [waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Wait for authenticated tenant metadata")]
+        : [])
     ],
     rollback: [
       `target=$(${targetCommand}) && docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target.before-local-ydb-toolkit-auth" "$target"`,
@@ -251,11 +254,12 @@ export async function setRootPassword(
   const rotateSpec = bash([
     "set -euo pipefail",
     "candidate=$(mktemp)",
-    "trap 'rm -f \"$candidate\"' EXIT",
+    "last_error=$(mktemp)",
+    "trap 'rm -f \"$candidate\" \"$last_error\"' EXIT",
     `rotate_with_password_file() {
   local file="$1"
   [ -f "$file" ] || return 1
-  cat "$file" | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(`umask 077; cat >/tmp/root.password; /ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} --user ${shellQuote(ctx.profile.rootUser)} --password-file /tmp/root.password yql -s "ALTER USER ${ctx.profile.rootUser} PASSWORD '${escapedPassword}';"; rc=$?; rm -f /tmp/root.password; exit $rc`)} >/dev/null 2>&1
+  cat "$file" | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(`umask 077; cat >/tmp/root.password; /ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} --user ${shellQuote(ctx.profile.rootUser)} --password-file /tmp/root.password yql -s "ALTER USER ${ctx.profile.rootUser} PASSWORD '${escapedPassword}';"; rc=$?; rm -f /tmp/root.password; exit $rc`)} >"$last_error" 2>&1
 }`,
     `extract_password_from_config() {
   local file="$1"
@@ -271,7 +275,8 @@ export async function setRootPassword(
     `if rotate_with_password_file ${shellQuote(backupPassword)}; then exit 0; fi`,
     `if extract_password_from_config ${shellQuote(configHostPath)} && rotate_with_password_file "$candidate"; then exit 0; fi`,
     `if extract_password_from_config ${shellQuote(backupConfig)} && rotate_with_password_file "$candidate"; then exit 0; fi`,
-    "echo 'Unable to authenticate as root with any known password source' >&2",
+    "echo 'Unable to authenticate as root with any known password source or ALTER USER failed' >&2",
+    "cat \"$last_error\" >&2",
     "exit 1"
   ].join("\n"), {
     redactions: [password, escapedPassword, backupPassword, backupConfig],
