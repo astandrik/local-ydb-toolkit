@@ -1362,6 +1362,25 @@ describe("mutating operations", () => {
     expect(plan).toContain("cleanup_query_container");
   });
 
+  it("rejects passwords containing carriage returns or newlines", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          rootPasswordFile: "/tmp/local-ydb/root.password"
+        }
+      }
+    }));
+
+    const response = await setRootPassword(ctx, { password: "line1\nline2" });
+
+    expect(response.executed).toBe(false);
+    expect(response.summary).toContain("does not support passwords containing carriage returns or newlines");
+    expect(response.plannedCommands).toEqual([]);
+  });
+
   it("falls back to sudo when removing root-owned cleanup paths", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));

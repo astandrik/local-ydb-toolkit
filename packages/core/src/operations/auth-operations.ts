@@ -61,7 +61,7 @@ function waitForAuthenticatedTenantStatusSpec(ctx: ToolkitContext) {
   }
 
   const withPassword = (innerCommand: string) => {
-    const script = `umask 077; cat >/tmp/root.password; ${innerCommand}; rc=$?; rm -f /tmp/root.password; exit $rc`;
+    const script = `password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX); umask 077; cat >"$password_file"; trap 'rm -f "$password_file"' EXIT; ${innerCommand.replaceAll("/tmp/root.password", '"$password_file"')}`;
     return `cat ${shellQuote(rootPasswordFile)} | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(script)}`;
   };
 
@@ -236,6 +236,16 @@ export async function setRootPassword(
       ["Provide password and rerun."]
     );
   }
+  if (/[\r\n]/.test(password)) {
+    return planOnly(
+      ctx,
+      "Set root password does not support passwords containing carriage returns or newlines.",
+      "high",
+      [],
+      ["No changes."],
+      ["Provide a password without carriage returns or newlines and rerun."]
+    );
+  }
   if (!configHostPath || !rootPasswordFile) {
     return planOnly(
       ctx,
@@ -276,10 +286,13 @@ export async function setRootPassword(
     `rotate_with_password_file() {
   local file="$1"
   [ -f "$file" ] || return 1
-  query_container=$(docker exec ${shellQuote(ctx.profile.staticContainer)} mktemp /tmp/local-ydb-toolkit-password-rotate-XXXXXX.yql)
-  docker cp "$query_host" ${shellQuote(`${ctx.profile.staticContainer}:`)}"$query_container"
+  query_container=$(docker exec ${shellQuote(ctx.profile.staticContainer)} mktemp /tmp/local-ydb-toolkit-password-rotate-XXXXXX.yql) || return $?
+  if ! docker cp "$query_host" ${shellQuote(`${ctx.profile.staticContainer}:`)}"$query_container"; then
+    cleanup_query_container
+    return 1
+  fi
   set +e
-  cat "$file" | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(`query_file="$1"; umask 077; cat >/tmp/root.password; trap 'rm -f /tmp/root.password "$query_file"' EXIT; /ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} --user ${shellQuote(ctx.profile.rootUser)} --password-file /tmp/root.password yql -f "$query_file"`)} _ "$query_container" >"$last_error" 2>&1
+  cat "$file" | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(`query_file="$1"; password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX); umask 077; cat >"$password_file"; trap 'rm -f "$password_file" "$query_file"' EXIT; /ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} --user ${shellQuote(ctx.profile.rootUser)} --password-file "$password_file" yql -f "$query_file"`)} _ "$query_container" >"$last_error" 2>&1
   rc=$?
   set -e
   cleanup_query_container
@@ -310,17 +323,19 @@ export async function setRootPassword(
 
   const syncHostSpec = bash([
     "set -euo pipefail",
-    "password=$(cat)",
+    "password_host=$(mktemp)",
+    "trap 'rm -f \"$password_host\"' EXIT",
+    "cat > \"$password_host\"",
     `install -d -m 0700 ${shellQuote(dirname(configHostPath))}`,
     `install -d -m 0700 ${shellQuote(dirname(rootPasswordFile))}`,
     `if [ -f ${shellQuote(configHostPath)} ]; then cp ${shellQuote(configHostPath)} ${shellQuote(backupConfig)}; fi`,
     `if [ -f ${shellQuote(rootPasswordFile)} ]; then cp ${shellQuote(rootPasswordFile)} ${shellQuote(backupPassword)}; fi`,
     "cfg_tmp=$(mktemp)",
-    "trap 'rm -f \"$cfg_tmp\"' EXIT",
+    "trap 'rm -f \"$cfg_tmp\" \"$password_host\"' EXIT",
     `target=$(${targetCommand})`,
     `docker exec ${shellQuote(ctx.profile.staticContainer)} cat "$target" > "$cfg_tmp"`,
     [
-      "LOCAL_YDB_NEW_PASSWORD=\"$password\" ruby -ryaml -e",
+      "ruby -ryaml -e",
       shellQuote([
         "config = YAML.load_file(ARGV[0])",
         "domains = config.fetch(\"domains_config\")",
@@ -333,7 +348,7 @@ export async function setRootPassword(
         "security[\"register_dynamic_node_allowed_sids\"] = allowed_sids",
         "root = Array(security[\"default_users\"]).find { |user| user[\"name\"] == \"root\" }",
         "raise \"root password not found in security_config.default_users\" unless root",
-        "password = ENV.fetch(\"LOCAL_YDB_NEW_PASSWORD\")",
+        "password = File.binread(ARGV[5])",
         "root[\"password\"] = password",
         "File.write(ARGV[1], YAML.dump(config))",
         "File.chmod(0600, ARGV[1])",
@@ -344,7 +359,8 @@ export async function setRootPassword(
       shellQuote(configHostPath),
       shellQuote(sid),
       shellQuote(rootPasswordFile),
-      shellQuote(rootSid)
+      shellQuote(rootSid),
+      "\"$password_host\""
     ].join(" ")
   ].join("\n"), {
     stdin: password,
