@@ -1314,6 +1314,9 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).not.toContain("S3cr3t! rotate me");
     expect(response.plannedCommands.some((command) => command.includes("ALTER USER root PASSWORD"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("yql -f"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("local-ydb-toolkit-password-rotate.yql"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("yql -s \"ALTER USER root PASSWORD"))).toBe(false);
     expect(response.plannedCommands[0]).toContain("last_error=$(mktemp)");
     expect(response.plannedCommands[1]).toContain("target=$(docker exec ydb-local sh -lc");
     expect(response.plannedCommands[1]).toContain("/ydb_data/kikimr_configs/config.yaml");

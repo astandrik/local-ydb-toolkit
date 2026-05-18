@@ -202,6 +202,8 @@ Use it only when the caller needs `/local/<tenant>`, GraphShard, tenant storage 
 
 `local_ydb_set_root_password` rotates the runtime `root` password with `ALTER USER`, then updates the configured host-side `config.auth.yaml` and `root.password` files to match. The password value is redacted from the planned command text.
 
+Upstream YDB defaults to no password complexity requirements: even an empty password is accepted unless the cluster config defines `auth_config.password_complexity`. This toolkit's password-rotation tool still requires a non-empty `password` argument, and the selected YDB deployment may reject values that violate its configured policy. Official YDB docs describe the built-in special-character set as `!@#$%^&*()_+{}|<>?=`.
+
 `local_ydb_destroy_stack` tears down a profile end to end: it removes tenant metadata when the static node is reachable, removes extra and primary dynamic nodes, removes the static node, removes the Docker network, and removes the Docker volume for volume-backed profiles. Deleting bind-mounted data, auth artifacts, and dump directories is opt-in through explicit flags because those host paths may be shared.
 
 ## Publishing

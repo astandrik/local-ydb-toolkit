@@ -251,6 +251,8 @@ export async function setRootPassword(
   const backupPassword = `${rootPasswordFile}.before-local-ydb-toolkit-password-rotate`;
   const escapedPassword = password.replace(/'/g, "''");
   const rubyPasswordLiteral = `'${password.replace(/\\/g, "\\\\").replace(/'/g, "\\\\'")}'`;
+  const rotateQueryPath = "/tmp/local-ydb-toolkit-password-rotate.yql";
+  const rotateQuery = `ALTER USER ${ctx.profile.rootUser} PASSWORD '${escapedPassword}';`;
   const rotateSpec = bash([
     "set -euo pipefail",
     "candidate=$(mktemp)",
@@ -259,7 +261,7 @@ export async function setRootPassword(
     `rotate_with_password_file() {
   local file="$1"
   [ -f "$file" ] || return 1
-  cat "$file" | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(`umask 077; cat >/tmp/root.password; /ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} --user ${shellQuote(ctx.profile.rootUser)} --password-file /tmp/root.password yql -s "ALTER USER ${ctx.profile.rootUser} PASSWORD '${escapedPassword}';"; rc=$?; rm -f /tmp/root.password; exit $rc`)} >"$last_error" 2>&1
+  cat "$file" | docker exec -i ${shellQuote(ctx.profile.staticContainer)} bash -lc ${shellQuote(`umask 077; cat >/tmp/root.password; printf '%s\\n' ${shellQuote(rotateQuery)} > ${shellQuote(rotateQueryPath)}; /ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} --user ${shellQuote(ctx.profile.rootUser)} --password-file /tmp/root.password yql -f ${shellQuote(rotateQueryPath)}; rc=$?; rm -f /tmp/root.password ${shellQuote(rotateQueryPath)}; exit $rc`)} >"$last_error" 2>&1
 }`,
     `extract_password_from_config() {
   local file="$1"

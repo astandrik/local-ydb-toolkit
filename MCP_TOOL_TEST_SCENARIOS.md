@@ -505,11 +505,14 @@ Expected:
 - the generated host auth config and `root.password` file are updated after the runtime password change
 - post-change anonymous `viewer/json/whoami` should still return `401`
 - authenticated tenant checks should work with the new password
+- empty passwords are an upstream YDB capability, but this MCP tool requires a non-empty `password` argument
+- if the cluster config defines `auth_config.password_complexity`, password rotation can fail until the supplied value matches that policy
 
 Avoid:
 
 - storing the password directly in committed config
 - changing the password on a profile that lacks `authConfigPath` or `rootPasswordFile`
+- assuming every punctuation mark is portable across builds; prefer letters, digits, and documented YDB special characters `!@#$%^&*()_+{}|<>?=` unless the target image has already been rehearsed with a broader set
 
 ## Scenario 11: Add Extra Dynamic Nodes
 

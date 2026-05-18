@@ -35,6 +35,29 @@ Field-proven default-root behavior on `local-ydb` images:
 
 Because of that split identity, viewer/monitoring/admin/register-dynamic-node ACLs should usually include both `root` and `root@builtin` unless the deployed build proves a different SID mapping.
 
+## Password Policy
+
+Upstream YDB defaults to no password complexity requirements. In the default posture:
+
+- empty passwords are allowed by YDB itself through `PASSWORD NULL` or equivalent SQL
+- existing passwords keep working if a stricter policy is configured later
+- special-character guidance in YDB docs is based on `!@#$%^&*()_+{}|<>?=`
+
+Clusters can still tighten this through `auth_config.password_complexity`, for example:
+
+- `min_length`
+- `min_lower_case_count`
+- `min_upper_case_count`
+- `min_numbers_count`
+- `min_special_chars_count`
+- `special_chars`
+
+Operational guidance for this toolkit:
+
+- `local_ydb_set_root_password` requires a non-empty password value even though upstream YDB can allow an empty password
+- if rotation fails with a password-policy error, inspect the active `security_config.password_complexity` in the generated `config.yaml` before retrying
+- prefer letters, digits, and documented YDB special characters unless the target build has already been rehearsed with a wider character set
+
 ## Dynamic Node Auth
 
 For a mandatory-auth local-ydb dynamic node, `--auth-token-file` is a text protobuf for `NKikimrProto.TAuthConfig`, not a raw access-token file. Two fields matter during startup:
