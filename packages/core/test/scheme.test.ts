@@ -136,7 +136,8 @@ describe("scheme inspection", () => {
     });
 
     expect(response.command).toContain("scheme ls /local/other");
-    expect(response.command).toContain("-d /local");
+    expect(response.command).toMatch(/-d \/local(\s|$)/);
+    expect(response.command).not.toContain("-d /local/example");
   });
 
   it("rejects unsupported flag combinations", async () => {
