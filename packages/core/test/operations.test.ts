@@ -1141,7 +1141,7 @@ describe("mutating operations", () => {
           command,
           exitCode: 1,
           stdout: "",
-          stderr: "Status: UNAVAILABLE\nIssues:\n<main>: Error: Could not resolve redirected path\n",
+          stderr: "Status: UNAVAILABLE\n",
           ok: false,
           timedOut: false
         };

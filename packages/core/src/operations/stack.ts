@@ -207,7 +207,7 @@ function canContinueAfterTenantRemoveFailureDuringTeardown(
     return false;
   }
   const output = `${result.stdout}\n${result.stderr}`;
-  return /UNAUTHORIZED|Invalid password|Access denied|login denied|too many failed password attempts|CLIENT_UNAUTHENTICATED|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE|No such container/i.test(output);
+  return /UNAUTHORIZED|Invalid password|Access denied|login denied|too many failed password attempts|CLIENT_UNAUTHENTICATED|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:\s*UNAVAILABLE|No such container/i.test(output);
 }
 
 export async function restartStack(ctx: ToolkitContext, options: MutatingOptions = {}) {
