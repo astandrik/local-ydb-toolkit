@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.3](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.2...mcp-server-v0.9.3) (2026-05-18)
+
+
+### Bug Fixes
+
+* **core:** address post-merge review followups ([#56](https://github.com/astandrik/local-ydb-toolkit/issues/56)) ([9aeed9e](https://github.com/astandrik/local-ydb-toolkit/commit/9aeed9ef8d0edbf56fff298525a60703b0efaa3b))
+* **core:** harden local-ydb lifecycle readiness ([#54](https://github.com/astandrik/local-ydb-toolkit/issues/54)) ([aa32992](https://github.com/astandrik/local-ydb-toolkit/commit/aa3299288c7d54094acf88db4c8768eeacac892f))
+
 ## [0.9.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.1...mcp-server-v0.9.2) (2026-05-18)
 
 
