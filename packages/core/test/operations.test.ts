@@ -1289,9 +1289,11 @@ describe("mutating operations", () => {
 
   it("plans root password rotation without exposing the password", async () => {
     const executor = new RecordingExecutor();
+    const password = "S3cr3t! rotate me";
     const rawCommands: string[] = [];
+    const capturedSpecs: CommandSpec[] = [];
     executor.display = (profile, spec) => {
-      const password = "S3cr3t! rotate me";
+      capturedSpecs.push(spec);
       const escapedPassword = password.replace(/\\/g, "\\\\").replace(/'/g, "''");
       const rawCommand = commandToShell(spec);
       rawCommands.push(rawCommand);
@@ -1312,8 +1314,12 @@ describe("mutating operations", () => {
         }
       }
     }));
-    const response = await setRootPassword(ctx, { password: "S3cr3t! rotate me" });
+    const response = await setRootPassword(ctx, { password });
     expect(response.executed).toBe(false);
+    expect(capturedSpecs[0].description).toContain("Alter runtime root password");
+    expect(capturedSpecs[0].stdin).toBe(password);
+    expect(capturedSpecs[1].description).toBe("Sync host auth config and root password file with the new root password");
+    expect(capturedSpecs[1].stdin).toBe(password);
     expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).not.toContain("S3cr3t! rotate me");
     expect(response.plannedCommands.some((command) => command.includes("query_host=$(mktemp)"))).toBe(true);
