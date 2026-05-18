@@ -1,4 +1,4 @@
-import { ydbCli } from "./commands.js";
+import { ydbCli, ydbRootCli } from "./commands.js";
 import { capText, normalizeMaxOutputBytes } from "./output.js";
 import type { SchemeAction, SchemeOptions, SchemeResponse, ToolkitContext } from "./types.js";
 
@@ -17,12 +17,10 @@ export async function inspectScheme(
   }
   const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes);
   const args = schemeArgs(action, path, options);
-  const result = await ctx.client.run(ydbCli(
-    ctx.profile,
-    args,
-    ctx.profile.tenantPath,
-    action === "list" ? "List YDB scheme objects" : "Describe YDB scheme object"
-  ));
+  const description = action === "list" ? "List YDB scheme objects" : "Describe YDB scheme object";
+  const result = await ctx.client.run(usesRootDatabase(ctx, path)
+    ? ydbRootCli(ctx.profile, args, description)
+    : ydbCli(ctx.profile, args, ctx.profile.tenantPath, description));
   const stdout = capText(result.stdout, maxOutputBytes);
   const stderr = capText(result.stderr, maxOutputBytes);
 
@@ -40,6 +38,14 @@ export async function inspectScheme(
     stderrTruncated: stderr.truncated,
     maxOutputBytes
   };
+}
+
+function usesRootDatabase(ctx: ToolkitContext, path: string): boolean {
+  const { rootDatabase, tenantPath } = ctx.profile;
+  if (path === tenantPath || path.startsWith(`${tenantPath}/`)) {
+    return false;
+  }
+  return path === rootDatabase || path.startsWith(`${rootDatabase}/`);
 }
 
 function schemeArgs(action: SchemeAction, path: string, options: SchemeOptions): string[] {

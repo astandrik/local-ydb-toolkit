@@ -258,7 +258,11 @@ export function createTenantSpec(profile: ResolvedLocalYdbProfile): CommandSpec 
 
 export function ydbCli(profile: ResolvedLocalYdbProfile, args: string[], database: string, description: string): CommandSpec {
   if (profile.rootPasswordFile) {
-    return passwordPipedDockerExec(profile, `/ydb -e grpc://localhost:${profile.ports.dynamicGrpc} -d ${shellQuote(database)} --user ${shellQuote(profile.rootUser)} --password-file /tmp/root.password ${args.map(shellQuote).join(" ")}`, description);
+    return bash(commandForYdbCli(profile, args, database), {
+      allowFailure: true,
+      description,
+      redactions: [profile.rootPasswordFile]
+    });
   }
   return {
     command: "docker",
@@ -268,17 +272,80 @@ export function ydbCli(profile: ResolvedLocalYdbProfile, args: string[], databas
   };
 }
 
-export function ydbRootCli(profile: ResolvedLocalYdbProfile, args: string[], description: string): CommandSpec {
-  const endpoint = `grpc://localhost:${profile.ports.staticGrpc}`;
+export function waitForCommand(
+  command: string,
+  description: string,
+  retryableErrors: string,
+  options: { redactions?: string[]; timeoutMs?: number; maxAttempts?: number; retryDelaySeconds?: number } = {}
+): CommandSpec {
+  const maxAttempts = options.maxAttempts ?? 30;
+  const retryDelaySeconds = options.retryDelaySeconds ?? 2;
+  return bash([
+    "set -euo pipefail",
+    "tmp=$(mktemp)",
+    "trap 'rm -f \"$tmp\"' EXIT",
+    `for attempt in $(seq 1 ${maxAttempts}); do`,
+    "  rc=0",
+    `  ( ${command} ) >"$tmp" 2>&1 || rc=$?`,
+    "  if [ \"$rc\" -eq 0 ]; then",
+    "    cat \"$tmp\"",
+    "    exit 0",
+    "  fi",
+    `  if grep -Eiq '${retryableErrors}' "$tmp"; then`,
+    `    sleep ${retryDelaySeconds}`,
+    "  else",
+    "    cat \"$tmp\" >&2",
+    "    exit \"$rc\"",
+    "  fi",
+    "done",
+    "cat \"$tmp\" >&2",
+    "exit \"$rc\""
+  ].join("\n"), {
+    allowFailure: true,
+    timeoutMs: options.timeoutMs ?? 120_000,
+    description,
+    redactions: options.redactions
+  });
+}
+
+export function waitForYdbCli(profile: ResolvedLocalYdbProfile, args: string[], database: string, description: string): CommandSpec {
+  const command = commandForYdbCli(profile, args, database);
+  const retryableErrors = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
+  return waitForCommand(command, description, retryableErrors, {
+    redactions: [profile.rootPasswordFile ?? ""]
+  });
+}
+
+function commandForYdbCli(profile: ResolvedLocalYdbProfile, args: string[], database: string): string {
   if (profile.rootPasswordFile) {
-    return passwordPipedDockerExec(profile, `/ydb -e ${shellQuote(endpoint)} -d ${shellQuote(profile.rootDatabase)} --user ${shellQuote(profile.rootUser)} --password-file /tmp/root.password ${args.map(shellQuote).join(" ")}`, description);
+    return commandForPasswordPipedDockerExec(profile, `/ydb -e grpc://localhost:${profile.ports.dynamicGrpc} -d ${shellQuote(database)} --user ${shellQuote(profile.rootUser)} --password-file /tmp/root.password ${args.map(shellQuote).join(" ")}`);
   }
+  return ["docker", "exec", profile.staticContainer, "/ydb", "-e", `grpc://localhost:${profile.ports.dynamicGrpc}`, "-d", database, ...args].map(shellQuote).join(" ");
+}
+
+export function ydbRootCli(profile: ResolvedLocalYdbProfile, args: string[], description: string): CommandSpec {
+  if (profile.rootPasswordFile) {
+    return bash(commandForYdbRootCli(profile, args), {
+      allowFailure: true,
+      description,
+      redactions: [profile.rootPasswordFile]
+    });
+  }
+  const endpoint = `grpc://localhost:${profile.ports.staticGrpc}`;
   return {
     command: "docker",
     args: ["exec", profile.staticContainer, "/ydb", "-e", endpoint, "-d", profile.rootDatabase, ...args],
     allowFailure: true,
     description
   };
+}
+
+function commandForYdbRootCli(profile: ResolvedLocalYdbProfile, args: string[]): string {
+  const endpoint = `grpc://localhost:${profile.ports.staticGrpc}`;
+  if (profile.rootPasswordFile) {
+    return commandForPasswordPipedDockerExec(profile, `/ydb -e ${shellQuote(endpoint)} -d ${shellQuote(profile.rootDatabase)} --user ${shellQuote(profile.rootUser)} --password-file /tmp/root.password ${args.map(shellQuote).join(" ")}`);
+  }
+  return ["docker", "exec", profile.staticContainer, "/ydb", "-e", endpoint, "-d", profile.rootDatabase, ...args].map(shellQuote).join(" ");
 }
 
 export function ydbdAdmin(profile: ResolvedLocalYdbProfile, args: string[], description: string): CommandSpec {
