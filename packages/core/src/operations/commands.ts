@@ -272,35 +272,46 @@ export function ydbCli(profile: ResolvedLocalYdbProfile, args: string[], databas
   };
 }
 
-export function waitForYdbCli(profile: ResolvedLocalYdbProfile, args: string[], database: string, description: string, options: { root?: boolean } = {}): CommandSpec {
-  const command = options.root
-    ? commandForYdbRootCli(profile, args)
-    : commandForYdbCli(profile, args, database);
-  const retryableErrors = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|UNAVAILABLE";
+export function waitForCommand(
+  command: string,
+  description: string,
+  retryableErrors: string,
+  options: { redactions?: string[]; timeoutMs?: number; maxAttempts?: number; retryDelaySeconds?: number } = {}
+): CommandSpec {
+  const maxAttempts = options.maxAttempts ?? 30;
+  const retryDelaySeconds = options.retryDelaySeconds ?? 2;
   return bash([
     "set -euo pipefail",
     "tmp=$(mktemp)",
     "trap 'rm -f \"$tmp\"' EXIT",
-    "for attempt in $(seq 1 30); do",
+    `for attempt in $(seq 1 ${maxAttempts}); do`,
     "  rc=0",
-    `  ${command} >"$tmp" 2>&1 || rc=$?`,
+    `  ( ${command} ) >"$tmp" 2>&1 || rc=$?`,
     "  if [ \"$rc\" -eq 0 ]; then",
     "    cat \"$tmp\"",
     "    exit 0",
     "  fi",
     `  if grep -Eiq '${retryableErrors}' "$tmp"; then`,
-    "    sleep 2",
+    `    sleep ${retryDelaySeconds}`,
     "  else",
     "    cat \"$tmp\" >&2",
     "    exit \"$rc\"",
     "  fi",
     "done",
     "cat \"$tmp\" >&2",
-    "exit 1"
+    "exit \"$rc\""
   ].join("\n"), {
     allowFailure: true,
-    timeoutMs: 120_000,
+    timeoutMs: options.timeoutMs ?? 120_000,
     description,
+    redactions: options.redactions
+  });
+}
+
+export function waitForYdbCli(profile: ResolvedLocalYdbProfile, args: string[], database: string, description: string): CommandSpec {
+  const command = commandForYdbCli(profile, args, database);
+  const retryableErrors = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
+  return waitForCommand(command, description, retryableErrors, {
     redactions: [profile.rootPasswordFile ?? ""]
   });
 }

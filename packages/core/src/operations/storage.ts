@@ -292,7 +292,7 @@ export async function cleanupStorage(ctx: ToolkitContext, options: MutatingOptio
     assertSafeCleanupTarget(volume);
   }
   const specs = [
-    ...volumes.map((volume) => bash(`if docker volume inspect ${shellQuote(volume)} >/dev/null 2>&1; then docker volume rm ${shellQuote(volume)}; fi`)),
+    ...volumes.map((volume) => removeVolumeIfPresentSpec(volume)),
     ...paths.map((path) => bash(`rm -rf -- ${shellQuote(path)} || sudo -n rm -rf -- ${shellQuote(path)}`))
   ];
   return runMutating(ctx, {
@@ -302,6 +302,38 @@ export async function cleanupStorage(ctx: ToolkitContext, options: MutatingOptio
     rollback: ["No automatic rollback after deletion; restore from backups/dumps."],
     verification: ["local_ydb_storage_leftovers no longer reports the removed targets"]
   }, options);
+}
+
+function removeVolumeIfPresentSpec(volume: string) {
+  return bash([
+    "set -euo pipefail",
+    "tmp=$(mktemp)",
+    "trap 'rm -f \"$tmp\"' EXIT",
+    "inspect_rc=0",
+    `docker volume inspect ${shellQuote(volume)} >"$tmp" 2>&1 || inspect_rc=$?`,
+    "if [ \"$inspect_rc\" -eq 0 ]; then",
+    "  rm_rc=0",
+    `  docker volume rm ${shellQuote(volume)} >"$tmp" 2>&1 || rm_rc=$?`,
+    "  if [ \"$rm_rc\" -eq 0 ]; then",
+    "    cat \"$tmp\"",
+    "    exit 0",
+    "  elif grep -Eiq 'no such volume' \"$tmp\"; then",
+    "    cat \"$tmp\"",
+    "    exit 0",
+    "  else",
+    "    cat \"$tmp\" >&2",
+    "    exit \"$rm_rc\"",
+    "  fi",
+    "elif grep -Eiq 'no such volume' \"$tmp\"; then",
+    "  cat \"$tmp\"",
+    "  exit 0",
+    "else",
+    "  cat \"$tmp\" >&2",
+    "  exit \"$inspect_rc\"",
+    "fi"
+  ].join("\n"), {
+    description: `Remove Docker volume ${volume} if present`
+  });
 }
 
 async function readTargetStoragePool(ctx: ToolkitContext, poolName?: string): Promise<ResolvedStoragePoolSummary> {

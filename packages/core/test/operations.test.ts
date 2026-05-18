@@ -1212,7 +1212,8 @@ describe("mutating operations", () => {
     const response = await cleanupStorage(ctx, { volumes: ["local-ydb-toolkit-mcp-cleanup-smoke"] });
     expect(response.executed).toBe(false);
     expect(response.plannedCommands[0]).toContain("docker volume inspect local-ydb-toolkit-mcp-cleanup-smoke");
-    expect(response.plannedCommands[0]).toContain("then docker volume rm local-ydb-toolkit-mcp-cleanup-smoke");
+    expect(response.plannedCommands[0]).toContain("docker volume rm local-ydb-toolkit-mcp-cleanup-smoke");
+    expect(response.plannedCommands[0]).toContain("no such volume");
     expect(response.plannedCommands[0]).not.toContain("docker volume rm local-ydb-toolkit-mcp-cleanup-smoke || true");
   });
 
