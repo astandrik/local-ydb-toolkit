@@ -1,6 +1,7 @@
 import { bash, shellQuote, type CommandSpec } from "../api-client.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { generatedConfigDiscoveryLines } from "./generated-config.js";
+import { statusCommandFailureLines } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
 import type { DynamicNodePlan } from "./types.js";
 
@@ -219,13 +220,6 @@ export function createTenantSpec(profile: ResolvedLocalYdbProfile): CommandSpec 
   const createCommand = dockerExecYdbd(profile, createArgs);
   const retryableStatusErrors = "SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE";
   const retryableCreateErrors = "Group fit error|failed to allocate group|no group options";
-  const failWithStatusOutput = [
-    "    cat \"$tmp\" >&2",
-    "    if [ \"$status_rc\" -eq 0 ]; then",
-    "      exit 1",
-    "    fi",
-    "    exit \"$status_rc\""
-  ];
   return bash([
     "set -euo pipefail",
     "tmp=$(mktemp)",
@@ -251,7 +245,7 @@ export function createTenantSpec(profile: ResolvedLocalYdbProfile): CommandSpec 
     `  elif grep -Eq '${retryableStatusErrors}' "$tmp"; then`,
     "    sleep 2",
     "  else",
-    ...failWithStatusOutput,
+    ...statusCommandFailureLines,
     "  fi",
     "done",
     "cat \"$tmp\" >&2",

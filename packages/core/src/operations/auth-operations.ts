@@ -3,7 +3,7 @@ import { bash, shellQuote } from "../api-client.js";
 import { commandForDynamicRun, createTenantSpec } from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
 import { commandForStaticGeneratedConfigPath } from "./generated-config.js";
-import { escapeTextProtoString } from "./helpers.js";
+import { escapeTextProtoString, statusCommandFailureLines } from "./helpers.js";
 import type { MutatingOptions, OperationResponse, SetRootPasswordOptions, ToolkitContext } from "./types.js";
 
 export async function applyAuthHardening(ctx: ToolkitContext, options: MutatingOptions & { configHostPath?: string } = {}) {
@@ -44,7 +44,7 @@ export async function applyAuthHardening(ctx: ToolkitContext, options: MutatingO
       ...dynamicNodeRecreate
     ],
     rollback: [
-      `target=$(${targetCommand}); docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target.before-local-ydb-toolkit-auth" "$target"`,
+      `target=$(${targetCommand}) && docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target.before-local-ydb-toolkit-auth" "$target"`,
       `docker restart ${shellQuote(ctx.profile.staticContainer)}`
     ],
     verification: ["anonymous viewer/json returns 401", "authenticated tenant checks pass", "dynamic node reaches nodelist"]
@@ -70,13 +70,6 @@ function waitForAuthenticatedTenantStatusSpec(ctx: ToolkitContext) {
   );
   const retryableStatusErrors = "UNAUTHORIZED|Invalid password|Access denied|CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE";
   const retryableCreateErrors = "Group fit error|failed to allocate group|no group options";
-  const failWithStatusOutput = [
-    "    cat \"$tmp\" >&2",
-    "    if [ \"$status_rc\" -eq 0 ]; then",
-    "      exit 1",
-    "    fi",
-    "    exit \"$status_rc\""
-  ];
 
   return bash([
     "set -euo pipefail",
@@ -103,7 +96,7 @@ function waitForAuthenticatedTenantStatusSpec(ctx: ToolkitContext) {
     `  elif grep -Eq '${retryableStatusErrors}' "$tmp"; then`,
     "    sleep 2",
     "  else",
-    ...failWithStatusOutput,
+    ...statusCommandFailureLines,
     "  fi",
     "done",
     "cat \"$tmp\" >&2",
