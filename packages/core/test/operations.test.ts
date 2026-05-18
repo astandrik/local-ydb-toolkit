@@ -323,6 +323,8 @@ describe("mutating operations", () => {
     const response = await dumpTenant(ctx, { dumpName: "mcp-smoke" });
     expect(response.executed).toBe(false);
     expect(response.plannedCommands[0]).toContain("mkdir -p /tmp/local-ydb-dump/mcp-smoke");
+    expect(response.plannedCommands[1]).toContain("tools dump -p . --exclude");
+    expect(response.plannedCommands[1]).toContain("'(^|/)\\.sys(/|$)'");
     expect(response.plannedCommands[1]).toContain("-o /dump/mcp-smoke/tenant");
   });
 
@@ -331,10 +333,15 @@ describe("mutating operations", () => {
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
     const response = await createTenant(ctx, {});
     expect(response.executed).toBe(false);
+    expect(response.plannedCommands[0]).toContain("status_rc=0");
+    expect(response.plannedCommands[0]).toContain("status_rc=$?");
+    expect(response.plannedCommands[0]).toContain("create_rc=0");
     expect(response.plannedCommands[0]).toContain("Unknown tenant|NOT_FOUND");
     expect(response.plannedCommands[0]).toContain("State:[[:space:]]*(RUNNING|PENDING_RESOURCES)");
     expect(response.plannedCommands[0]).toContain("SCHEME_ERROR|No database found");
+    expect(response.plannedCommands[0]).toContain("Group fit error|failed to allocate group|no group options");
     expect(response.plannedCommands[0]).toContain("sleep 2");
+    expect(response.plannedCommands[0]).not.toContain("if docker exec ydb-local /ydbd --server localhost:2136 --no-password admin database /local/example status >\"$tmp\" 2>&1; then");
   });
 
   it("treats readable tenant status as success when ydbd returns non-zero", async () => {
@@ -387,6 +394,10 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[1]).toContain("-e GRPC_TLS_PORT=");
     expect(response.plannedCommands[1]).toContain("-e YDB_GRPC_ENABLE_TLS=0");
     expect(response.plannedCommands[1]).toContain("local-ydb-dynamic-config.yaml");
+    expect(response.plannedCommands[1]).toContain("/ydb_data/cluster/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[1]).toContain("/ydb_data/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[1]).toContain("\"$source_config\"");
+    expect(response.plannedCommands[1]).not.toContain("sed -e '/^  ca: \\/ydb_certs\\/ca\\.pem$/d' -e '/^  cert: \\/ydb_certs\\/cert\\.pem$/d' -e '/^  key: \\/ydb_certs\\/key\\.pem$/d' /ydb_data/cluster/kikimr_configs/config.yaml");
     expect(response.plannedCommands[1]).toContain("/tmp/local-ydb-auth.pb:/run/local-ydb/dynamic-node-auth.pb:ro");
     expect(response.plannedCommands[1]).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
   });
@@ -857,12 +868,12 @@ describe("mutating operations", () => {
     expect(commands.some((command) => command.includes("/dump/shrink-smoke/tenant"))).toBe(true);
     expect(commands.some((command) => command.includes("admin database /local/example create hdd:1"))).toBe(true);
     expect(commands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(2);
-    expect(commands.some((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml /ydb_data/cluster/kikimr_configs/config.yaml"))).toBe(true);
+    expect(commands.some((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""))).toBe(true);
     expect(commands.some((command) => command.includes("StaffApiUserToken: \"root@builtin\""))).toBe(true);
     expect(commands.some((command) => command.includes("--name ydb-dyn-example-2"))).toBe(true);
 
     const firstRestartIndex = commands.findIndex((command) => command.includes("docker restart ydb-local"));
-    const recopyIndex = commands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml /ydb_data/cluster/kikimr_configs/config.yaml"));
+    const recopyIndex = commands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""));
     const secondRestartIndex = commands.findIndex((command, index) => index > firstRestartIndex && command.includes("docker restart ydb-local"));
     const readdExtraNodeIndex = commands.findIndex((command) => command.includes("--name ydb-dyn-example-2"));
     expect(firstRestartIndex).toBeGreaterThan(-1);
@@ -1085,11 +1096,12 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(2);
     expect(response.plannedCommands.join("\n")).toContain("State:[[:space:]]*(RUNNING|PENDING_RESOURCES)");
     const firstRestartIndex = response.plannedCommands.findIndex((command) => command.includes("docker restart ydb-local"));
-    const recopyIndex = response.plannedCommands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml /ydb_data/cluster/kikimr_configs/config.yaml"));
+    const recopyIndex = response.plannedCommands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""));
     expect(recopyIndex).toBeGreaterThan(firstRestartIndex);
     expect(response.plannedCommands.some((command) => command.includes("docker rm -f ydb-dyn-example"))).toBe(true);
     expect(response.plannedCommands.some((command) => command.includes("--auth-token-file /run/local-ydb/dynamic-node-auth.pb"))).toBe(true);
     expect(response.plannedCommands.join("\n")).toContain("SCHEME_ERROR|No database found");
+    expect(response.plannedCommands.join("\n")).toContain("Group fit error|failed to allocate group|no group options");
   });
 
   it("plans root password rotation without exposing the password", async () => {
@@ -1119,6 +1131,9 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).not.toContain("S3cr3t! rotate me");
     expect(response.plannedCommands.some((command) => command.includes("ALTER USER root PASSWORD"))).toBe(true);
+    expect(response.plannedCommands[1]).toContain("target=$(docker exec ydb-local sh -lc");
+    expect(response.plannedCommands[1]).toContain("/ydb_data/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[1]).toContain("docker exec ydb-local cat \"$target\"");
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(0);
     expect(response.plannedCommands.some((command) => command.includes("viewer/json/whoami"))).toBe(true);
   });
@@ -1145,7 +1160,11 @@ describe("mutating operations", () => {
     }));
     const response = await prepareAuthConfig(ctx, {});
     expect(response.executed).toBe(false);
-    expect(response.plannedCommands[0]).toContain("docker exec ydb-local cat /ydb_data/cluster/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[0]).toContain("target=$(docker exec ydb-local sh -lc");
+    expect(response.plannedCommands[0]).toContain("/ydb_data/cluster/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[0]).toContain("/ydb_data/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[0]).toContain("docker exec ydb-local cat \"$target\"");
+    expect(response.plannedCommands[0]).not.toContain("docker exec ydb-local cat /ydb_data/cluster/kikimr_configs/config.yaml");
     expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/config.auth.yaml");
     expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/root.password");
     expect(response.plannedCommands[0]).toContain("register_dynamic_node_allowed_sids");

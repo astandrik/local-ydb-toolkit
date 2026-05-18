@@ -62,6 +62,14 @@ export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export const statusCommandFailureLines = [
+  "    cat \"$tmp\" >&2",
+  "    if [ \"$status_rc\" -eq 0 ]; then",
+  "      exit 1",
+  "    fi",
+  "    exit \"$status_rc\""
+];
+
 export function observedNodePorts(nodes: unknown[]): number[] {
   return nodes
     .map((node) => node && typeof node === "object" ? (node as Record<string, unknown>).Port : undefined)

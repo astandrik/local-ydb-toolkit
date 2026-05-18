@@ -2,7 +2,8 @@ import { dirname } from "node:path";
 import { bash, shellQuote } from "../api-client.js";
 import { commandForDynamicRun, createTenantSpec } from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
-import { escapeTextProtoString } from "./helpers.js";
+import { commandForStaticGeneratedConfigPath } from "./generated-config.js";
+import { escapeTextProtoString, statusCommandFailureLines } from "./helpers.js";
 import type { MutatingOptions, OperationResponse, SetRootPasswordOptions, ToolkitContext } from "./types.js";
 
 export async function applyAuthHardening(ctx: ToolkitContext, options: MutatingOptions & { configHostPath?: string } = {}) {
@@ -10,7 +11,7 @@ export async function applyAuthHardening(ctx: ToolkitContext, options: MutatingO
   if (!configHostPath) {
     return planOnly(ctx, "Auth hardening requires configHostPath for the prepared YDB config.", "high", [], ["No changes."], ["Provide a reviewed configHostPath."]);
   }
-  const target = "/ydb_data/cluster/kikimr_configs/config.yaml";
+  const targetCommand = commandForStaticGeneratedConfigPath(ctx.profile.staticContainer);
   const dynamicNodeRecreate = ctx.profile.dynamicNodeAuthTokenFile
     ? [
         bash(`docker rm -f ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`),
@@ -24,19 +25,27 @@ export async function applyAuthHardening(ctx: ToolkitContext, options: MutatingO
     risk: "high",
     specs: [
       bash(`docker cp ${shellQuote(configHostPath)} ${shellQuote(`${ctx.profile.staticContainer}:/tmp/local-ydb-toolkit-config.yaml`)}`),
-      ctx.client.dockerExec(ctx.profile.staticContainer, ["cp", target, `${target}.before-local-ydb-toolkit-auth`]),
+      bash([
+        "set -euo pipefail",
+        `target=$(${targetCommand})`,
+        `docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target" "$target.before-local-ydb-toolkit-auth"`
+      ].join("\n")),
       bash(`docker stop ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`),
       bash(`docker restart ${shellQuote(ctx.profile.staticContainer)}`),
       bash("sleep 5"),
-      ctx.client.dockerExec(ctx.profile.staticContainer, ["cp", "/tmp/local-ydb-toolkit-config.yaml", target]),
+      bash([
+        "set -euo pipefail",
+        `target=$(${targetCommand})`,
+        `docker exec ${shellQuote(ctx.profile.staticContainer)} cp /tmp/local-ydb-toolkit-config.yaml "$target"`
+      ].join("\n")),
       bash(`docker restart ${shellQuote(ctx.profile.staticContainer)}`),
       bash("sleep 5"),
       ctx.profile.rootPasswordFile ? waitForAuthenticatedTenantStatusSpec(ctx) : createTenantSpec(ctx.profile),
       ...dynamicNodeRecreate
     ],
     rollback: [
-      `docker exec ${ctx.profile.staticContainer} cp ${target}.before-local-ydb-toolkit-auth ${target}`,
-      `docker restart ${ctx.profile.staticContainer}`
+      `target=$(${targetCommand}) && docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target.before-local-ydb-toolkit-auth" "$target"`,
+      `docker restart ${shellQuote(ctx.profile.staticContainer)}`
     ],
     verification: ["anonymous viewer/json returns 401", "authenticated tenant checks pass", "dynamic node reaches nodelist"]
   }, options);
@@ -60,31 +69,40 @@ function waitForAuthenticatedTenantStatusSpec(ctx: ToolkitContext) {
     `/ydbd --server localhost:${ctx.profile.ports.staticGrpc} --user ${shellQuote(ctx.profile.rootUser)} --password-file /tmp/root.password admin database ${shellQuote(ctx.profile.tenantPath)} create ${shellQuote(`${ctx.profile.storagePoolKind}:${ctx.profile.storagePoolCount}`)}`
   );
   const retryableStatusErrors = "UNAUTHORIZED|Invalid password|Access denied|CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE";
+  const retryableCreateErrors = "Group fit error|failed to allocate group|no group options";
 
   return bash([
     "set -euo pipefail",
     "tmp=$(mktemp)",
     "trap 'rm -f \"$tmp\"' EXIT",
-    "for attempt in $(seq 1 15); do",
-    `  if ${statusCommand} >"$tmp" 2>&1; then`,
-    "    cat \"$tmp\"",
-    "    exit 0",
-    "  elif grep -Eq 'State:[[:space:]]*(RUNNING|PENDING_RESOURCES)' \"$tmp\"; then",
+    "for attempt in $(seq 1 30); do",
+    "  status_rc=0",
+    `  ${statusCommand} >"$tmp" 2>&1 || status_rc=$?`,
+    "  if grep -Eq 'State:[[:space:]]*(RUNNING|PENDING_RESOURCES)' \"$tmp\"; then",
     "    cat \"$tmp\"",
     "    exit 0",
     "  elif grep -Eq 'Unknown tenant|NOT_FOUND' \"$tmp\"; then",
-    `    ${createCommand} >/dev/null 2>&1 || exit $?`,
+    "    create_rc=0",
+    `    ${createCommand} >"$tmp" 2>&1 || create_rc=$?`,
+    `    if grep -Eiq '${retryableCreateErrors}' "$tmp"; then`,
+    "      cat \"$tmp\" >&2",
+    "      sleep 2",
+    "    elif [ \"$create_rc\" -ne 0 ]; then",
+    "      cat \"$tmp\" >&2",
+    "      exit \"$create_rc\"",
+    "    else",
+    "      sleep 2",
+    "    fi",
     `  elif grep -Eq '${retryableStatusErrors}' "$tmp"; then`,
     "    sleep 2",
     "  else",
-    "    cat \"$tmp\" >&2",
-    "    exit 1",
+    ...statusCommandFailureLines,
     "  fi",
     "done",
     "cat \"$tmp\" >&2",
     "exit 1"
   ].join("\n"), {
-    timeoutMs: 60_000,
+    timeoutMs: 120_000,
     redactions: [rootPasswordFile],
     description: `Wait for authenticated tenant status for ${ctx.profile.tenantPath}`
   });
@@ -109,14 +127,15 @@ export async function prepareAuthConfig(
   }
 
   const rootPasswordFile = ctx.profile.rootPasswordFile ?? "";
-  const target = "/ydb_data/cluster/kikimr_configs/config.yaml";
+  const targetCommand = commandForStaticGeneratedConfigPath(ctx.profile.staticContainer);
   const script = [
     "set -euo pipefail",
     `install -d -m 0700 ${shellQuote(dirname(configHostPath))}`,
     rootPasswordFile ? `install -d -m 0700 ${shellQuote(dirname(rootPasswordFile))}` : ":",
     "tmp=$(mktemp)",
     "trap 'rm -f \"$tmp\"' EXIT",
-    `docker exec ${shellQuote(ctx.profile.staticContainer)} cat ${shellQuote(target)} > \"$tmp\"`,
+    `target=$(${targetCommand})`,
+    `docker exec ${shellQuote(ctx.profile.staticContainer)} cat "$target" > "$tmp"`,
     [
       "ruby -ryaml -e",
       shellQuote([
@@ -202,7 +221,7 @@ export async function setRootPassword(
   const password = options.password;
   const sid = ctx.profile.dynamicNodeAuthSid ?? "root@builtin";
   const rootSid = ctx.profile.rootUser;
-  const target = "/ydb_data/cluster/kikimr_configs/config.yaml";
+  const targetCommand = commandForStaticGeneratedConfigPath(ctx.profile.staticContainer);
 
   if (!password) {
     return planOnly(
@@ -267,7 +286,8 @@ export async function setRootPassword(
     `if [ -f ${shellQuote(rootPasswordFile)} ]; then cp ${shellQuote(rootPasswordFile)} ${shellQuote(backupPassword)}; fi`,
     "cfg_tmp=$(mktemp)",
     "trap 'rm -f \"$cfg_tmp\"' EXIT",
-    `docker exec ${shellQuote(ctx.profile.staticContainer)} cat ${shellQuote(target)} > \"$cfg_tmp\"`,
+    `target=$(${targetCommand})`,
+    `docker exec ${shellQuote(ctx.profile.staticContainer)} cat "$target" > "$cfg_tmp"`,
     [
       "ruby -ryaml -e",
       shellQuote([
