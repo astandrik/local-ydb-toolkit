@@ -1313,9 +1313,10 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).not.toContain("S3cr3t! rotate me");
-    expect(response.plannedCommands.some((command) => command.includes("ALTER USER root PASSWORD"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("query_host=$(mktemp)"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("mktemp /tmp/local-ydb-toolkit-password-rotate-XXXXXX.yql"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("docker cp \"$query_host\""))).toBe(true);
     expect(response.plannedCommands.some((command) => command.includes("yql -f"))).toBe(true);
-    expect(response.plannedCommands.some((command) => command.includes("local-ydb-toolkit-password-rotate.yql"))).toBe(true);
     expect(response.plannedCommands.some((command) => command.includes("yql -s \"ALTER USER root PASSWORD"))).toBe(false);
     expect(response.plannedCommands[0]).toContain("last_error=$(mktemp)");
     expect(response.plannedCommands[1]).toContain("target=$(docker exec ydb-local sh -lc");
@@ -1323,6 +1324,42 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[1]).toContain("docker exec ydb-local cat \"$target\"");
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(0);
     expect(response.plannedCommands.some((command) => command.includes("viewer/json/whoami"))).toBe(true);
+  });
+
+  it("keeps quoted and escaped passwords out of the planned rotation command", async () => {
+    const executor = new RecordingExecutor();
+    const password = "pa'ss\\word";
+    executor.display = (profile, spec) => {
+      const escapedPassword = password.replace(/'/g, "''");
+      return redactCommand(commandToShell(spec), [
+        password,
+        escapedPassword,
+        shellQuote(password),
+        shellQuote(escapedPassword),
+        profile.rootPasswordFile ?? "",
+        `${profile.rootPasswordFile ?? ""}.before-local-ydb-toolkit-password-rotate`,
+        `${profile.authConfigPath ?? ""}.before-local-ydb-toolkit-password-rotate`
+      ]);
+    };
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          rootPasswordFile: "/tmp/local-ydb/root.password"
+        }
+      }
+    }));
+
+    const response = await setRootPassword(ctx, { password });
+    const plan = response.plannedCommands.join("\n");
+    const escapedPassword = password.replace(/'/g, "''");
+
+    expect(plan).not.toContain(password);
+    expect(plan).not.toContain(shellQuote(password));
+    expect(plan).not.toContain(shellQuote(escapedPassword));
+    expect(plan).toContain("docker cp \"$query_host\"");
+    expect(plan).toContain("cleanup_query_container");
   });
 
   it("falls back to sudo when removing root-owned cleanup paths", async () => {

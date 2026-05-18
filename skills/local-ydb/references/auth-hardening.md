@@ -55,7 +55,7 @@ Clusters can still tighten this through `auth_config.password_complexity`, for e
 Operational guidance for this toolkit:
 
 - `local_ydb_set_root_password` requires a non-empty password value even though upstream YDB can allow an empty password
-- if rotation fails with a password-policy error, inspect the active `security_config.password_complexity` in the generated `config.yaml` before retrying
+- if rotation fails with a password-policy error, inspect the active `auth_config.password_complexity` in the generated `config.yaml` before retrying
 - prefer letters, digits, and documented YDB special characters unless the target build has already been rehearsed with a wider character set
 
 ## Dynamic Node Auth
