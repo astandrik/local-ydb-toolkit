@@ -1289,10 +1289,15 @@ describe("mutating operations", () => {
 
   it("plans root password rotation without exposing the password", async () => {
     const executor = new RecordingExecutor();
+    const password = "S3cr3t! rotate me";
+    const rawCommands: string[] = [];
+    const capturedSpecs: CommandSpec[] = [];
     executor.display = (profile, spec) => {
-      const password = "S3cr3t! rotate me";
-      const escapedPassword = password.replace(/'/g, "''");
-      return redactCommand(commandToShell(spec), [
+      capturedSpecs.push(spec);
+      const escapedPassword = password.replace(/\\/g, "\\\\").replace(/'/g, "''");
+      const rawCommand = commandToShell(spec);
+      rawCommands.push(rawCommand);
+      return redactCommand(rawCommand, [
         password,
         escapedPassword,
         profile.rootPasswordFile ?? "",
@@ -1309,17 +1314,128 @@ describe("mutating operations", () => {
         }
       }
     }));
-    const response = await setRootPassword(ctx, { password: "S3cr3t! rotate me" });
+    const response = await setRootPassword(ctx, { password });
     expect(response.executed).toBe(false);
+    expect(capturedSpecs[0].description).toContain("Alter runtime root password");
+    expect(capturedSpecs[0].stdin).toBe(password);
+    expect(capturedSpecs[1].description).toBe("Sync host auth config and root password file with the new root password");
+    expect(capturedSpecs[1].stdin).toBe(password);
     expect(response.plannedCommands[0]).toContain("/tmp/local-ydb/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).not.toContain("S3cr3t! rotate me");
-    expect(response.plannedCommands.some((command) => command.includes("ALTER USER root PASSWORD"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("query_host=$(mktemp)"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("mktemp /tmp/local-ydb-toolkit-password-rotate-XXXXXX.yql"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("docker cp \"$query_host\""))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("yql -f"))).toBe(true);
+    const rotationPasswordFile = rawCommands[0].indexOf("password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX)");
+    const rotationTrap = rawCommands[0].indexOf("trap", rotationPasswordFile);
+    const rotationPasswordWrite = rawCommands[0].indexOf("cat >\"$password_file\"", rotationPasswordFile);
+    expect(rotationPasswordFile).toBeGreaterThan(-1);
+    expect(rotationTrap).toBeGreaterThan(rotationPasswordFile);
+    expect(rotationPasswordWrite).toBeGreaterThan(rotationTrap);
+    expect(rawCommands[0]).toContain("EXIT HUP INT TERM");
+    expect(rawCommands[0]).toContain("set -e; query_file=");
+    expect(rawCommands[0]).toContain("rm -f \"$candidate\" \"$last_error\" \"$query_host\"; cleanup_query_container; trap - EXIT HUP INT TERM");
+    expect(rawCommands[0]).toContain("sql_escaped = password.gsub");
+    expect(rawCommands[0]).toContain("{ \"\\\\\\\\\" }.gsub");
+    expect(response.plannedCommands.some((command) => command.includes("yql -s \"ALTER USER root PASSWORD"))).toBe(false);
     expect(response.plannedCommands[0]).toContain("last_error=$(mktemp)");
     expect(response.plannedCommands[1]).toContain("target=$(docker exec ydb-local sh -lc");
     expect(response.plannedCommands[1]).toContain("/ydb_data/kikimr_configs/config.yaml");
     expect(response.plannedCommands[1]).toContain("docker exec ydb-local cat \"$target\"");
+    expect(rawCommands[1]).toContain("rm -f \"$password_host\"; trap - EXIT HUP INT TERM");
+    expect(rawCommands[1]).toContain("rm -f \"$cfg_tmp\" \"$password_host\"; trap - EXIT HUP INT TERM");
+    expect(rawCommands[1]).toContain("File.read(ARGV[5], mode: \"r:UTF-8\")");
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(0);
     expect(response.plannedCommands.some((command) => command.includes("viewer/json/whoami"))).toBe(true);
+    const verifyCommand = rawCommands[2] ?? "";
+    const verifyPasswordFile = verifyCommand.indexOf("password_file=$(mktemp /tmp/local-ydb-toolkit-root-password-XXXXXX)");
+    const verifyTrap = verifyCommand.indexOf("trap", verifyPasswordFile);
+    const verifyPasswordWrite = verifyCommand.indexOf("cat >\"$password_file\"", verifyPasswordFile);
+    expect(verifyPasswordFile).toBeGreaterThan(-1);
+    expect(verifyTrap).toBeGreaterThan(verifyPasswordFile);
+    expect(verifyPasswordWrite).toBeGreaterThan(verifyTrap);
+    expect(verifyCommand).toContain("EXIT HUP INT TERM");
+    expect(verifyCommand).toContain("set -e; umask 077");
+  });
+
+  it("keeps quoted and escaped passwords out of the planned rotation command", async () => {
+    const executor = new RecordingExecutor();
+    const password = "pa'ss\\word";
+    executor.display = (profile, spec) => {
+      const escapedPassword = password.replace(/\\/g, "\\\\").replace(/'/g, "''");
+      return redactCommand(commandToShell(spec), [
+        password,
+        escapedPassword,
+        shellQuote(password),
+        shellQuote(escapedPassword),
+        profile.rootPasswordFile ?? "",
+        `${profile.rootPasswordFile ?? ""}.before-local-ydb-toolkit-password-rotate`,
+        `${profile.authConfigPath ?? ""}.before-local-ydb-toolkit-password-rotate`
+      ]);
+    };
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          rootPasswordFile: "/tmp/local-ydb/root.password"
+        }
+      }
+    }));
+
+    const response = await setRootPassword(ctx, { password });
+    const plan = response.plannedCommands.join("\n");
+    const escapedPassword = password.replace(/\\/g, "\\\\").replace(/'/g, "''");
+
+    expect(plan).not.toContain(password);
+    expect(plan).not.toContain(shellQuote(password));
+    expect(plan).not.toContain(shellQuote(escapedPassword));
+    expect(plan).toContain("docker cp \"$query_host\"");
+    expect(plan).toContain("cleanup_query_container");
+  });
+
+  it("passes the root user to the rotation query generator as data", async () => {
+    const executor = new RecordingExecutor();
+    const rootUser = "root`; raise 'boom'; #";
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          rootPasswordFile: "/tmp/local-ydb/root.password",
+          rootUser
+        }
+      }
+    }));
+
+    const response = await setRootPassword(ctx, { password: "S3cr3t!" });
+    const plan = response.plannedCommands.join("\n");
+
+    expect(plan).toContain("ARGV.fetch(1)");
+    expect(plan).toContain("yql_identifier");
+    expect(plan).not.toContain(`ALTER USER ${rootUser}`);
+  });
+
+  it.each([
+    ["carriage return", "line1\rline2"],
+    ["newline", "line1\nline2"]
+  ])("rejects passwords containing %s", async (_label, password) => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          rootPasswordFile: "/tmp/local-ydb/root.password"
+        }
+      }
+    }));
+
+    const response = await setRootPassword(ctx, { password });
+
+    expect(response.executed).toBe(false);
+    expect(response.summary).toContain("does not support passwords containing carriage returns or newlines");
+    expect(response.plannedCommands).toEqual([]);
   });
 
   it("falls back to sudo when removing root-owned cleanup paths", async () => {

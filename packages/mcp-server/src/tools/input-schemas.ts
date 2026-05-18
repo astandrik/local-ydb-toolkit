@@ -570,8 +570,10 @@ export function setRootPasswordSchema(): Tool["inputSchema"] {
       },
       password: {
         type: "string",
+        minLength: 1,
+        pattern: "^(?!.*[\\r\\n]).+$",
         description:
-          "New root password to apply to the runtime root user and then persist into the host auth config and root password file.",
+          "New non-empty root password without carriage returns or newlines to apply to the runtime root user and then persist into the host auth config and root password file. YDB defaults to no password complexity requirements, but the selected cluster may still reject the value when auth_config.password_complexity is configured.",
       },
     },
     additionalProperties: false,

@@ -434,7 +434,7 @@ export const toolDefinitions = [
     group: "auth",
     name: "local_ydb_set_root_password",
     description:
-      "Rotate the runtime root password with ALTER USER and sync the host auth config and root password file to match.",
+      "Rotate the runtime root password with ALTER USER and sync the host auth config and root password file to match. YDB may reject passwords that violate auth_config.password_complexity; this tool requires a non-empty password value.",
     inputSchema: setRootPasswordSchema(),
     handler: withContext(SetRootPasswordArgs, (context, parsed) =>
       setRootPassword(context, parsed),

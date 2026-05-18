@@ -98,7 +98,7 @@ export const DynamicAuthConfigArgs = MutatingArgs.extend({
 });
 
 export const SetRootPasswordArgs = MutatingArgs.extend({
-  password: z.string().min(1),
+  password: z.string().min(1).refine((value) => !/[\r\n]/.test(value), "password must not contain carriage returns or newlines"),
 });
 
 export const CleanupArgs = MutatingArgs.extend({
