@@ -1362,7 +1362,32 @@ describe("mutating operations", () => {
     expect(plan).toContain("cleanup_query_container");
   });
 
-  it("rejects passwords containing carriage returns or newlines", async () => {
+  it("passes the root user to the rotation query generator as data", async () => {
+    const executor = new RecordingExecutor();
+    const rootUser = "root`; raise 'boom'; #";
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          rootPasswordFile: "/tmp/local-ydb/root.password",
+          rootUser
+        }
+      }
+    }));
+
+    const response = await setRootPassword(ctx, { password: "S3cr3t!" });
+    const plan = response.plannedCommands.join("\n");
+
+    expect(plan).toContain("ARGV.fetch(1)");
+    expect(plan).toContain("yql_identifier");
+    expect(plan).not.toContain(`ALTER USER ${rootUser}`);
+  });
+
+  it.each([
+    ["carriage return", "line1\rline2"],
+    ["newline", "line1\nline2"]
+  ])("rejects passwords containing %s", async (_label, password) => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
       profiles: {
@@ -1374,7 +1399,7 @@ describe("mutating operations", () => {
       }
     }));
 
-    const response = await setRootPassword(ctx, { password: "line1\nline2" });
+    const response = await setRootPassword(ctx, { password });
 
     expect(response.executed).toBe(false);
     expect(response.summary).toContain("does not support passwords containing carriage returns or newlines");

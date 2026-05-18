@@ -276,12 +276,17 @@ export async function setRootPassword(
     [
       "ruby -e",
       shellQuote([
+        "def yql_identifier(value)",
+        "escaped = value.gsub(\"\\\\\") { \"\\\\\\\\\" }.gsub(\"`\") { \"\\\\`\" }",
+        "\"`#{escaped}`\"",
+        "end",
         "password = STDIN.read",
-        "password = password.sub(/\\n\\z/, \"\")",
+        "user = yql_identifier(ARGV.fetch(1))",
         "sql_escaped = password.gsub(\"'\", \"''\")",
-        `File.write(ARGV[0], "ALTER USER ${ctx.profile.rootUser} PASSWORD '#{sql_escaped}';\\n")`
+        "File.write(ARGV[0], \"ALTER USER #{user} PASSWORD '#{sql_escaped}';\\n\")"
       ].join("; ")),
-      "\"$query_host\""
+      "\"$query_host\"",
+      shellQuote(ctx.profile.rootUser)
     ].join(" "),
     `rotate_with_password_file() {
   local file="$1"

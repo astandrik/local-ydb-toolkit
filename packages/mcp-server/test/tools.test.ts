@@ -408,6 +408,34 @@ describe("mcp tools", () => {
     });
   });
 
+  it("exposes root password constraints in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_set_root_password");
+    const password = tool?.inputSchema.properties?.password as { pattern?: string } | undefined;
+    const pattern = new RegExp(password?.pattern ?? "");
+
+    expect(tool?.inputSchema.required).toContain("password");
+    expect(password).toMatchObject({
+      type: "string",
+      minLength: 1,
+      pattern: "^(?!.*[\\r\\n]).+$"
+    });
+    expect(pattern.test("S3cr3t!")).toBe(true);
+    expect(pattern.test("S3cr3t!\n")).toBe(false);
+    expect(pattern.test("S3cr3t!\r")).toBe(false);
+  });
+
+  it("rejects invalid root password arguments through Zod", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_set_root_password", {
+      password: ""
+    })).rejects.toThrow();
+    await expect(callLocalYdbToolForTest("local_ydb_set_root_password", {
+      password: "line1\nline2"
+    })).rejects.toThrow("password must not contain carriage returns or newlines");
+    await expect(callLocalYdbToolForTest("local_ydb_set_root_password", {
+      password: "line1\rline2"
+    })).rejects.toThrow("password must not contain carriage returns or newlines");
+  });
+
   it("exposes scheme inspection options in the tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_scheme");
     expect(tool?.inputSchema.properties?.action).toMatchObject({
