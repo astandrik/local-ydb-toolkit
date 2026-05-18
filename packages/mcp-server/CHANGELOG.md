@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.3...mcp-server-v0.9.4) (2026-05-18)
+
+
+### Bug Fixes
+
+* **local-ydb:** fix root password rotation ([#57](https://github.com/astandrik/local-ydb-toolkit/issues/57)) ([f9425eb](https://github.com/astandrik/local-ydb-toolkit/commit/f9425eb4295daf31b958efe9e43cfff685f3e1e5))
+
 ## [0.9.3](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.2...mcp-server-v0.9.3) (2026-05-18)
 
 
