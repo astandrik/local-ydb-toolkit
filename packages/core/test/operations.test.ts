@@ -68,17 +68,18 @@ function createTempExecutableDir(files: Record<string, string>): { path: string;
   };
 }
 
-class ScriptRewritingShellExecutor extends ShellCommandExecutor {
+class ScriptRewritingShellExecutor implements CommandExecutor {
+  private readonly executor = new ShellCommandExecutor();
+
   constructor(private readonly rewrite: (script: string) => string) {
-    super();
   }
 
-  override display(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
-    return super.display(profile, this.rewriteSpec(spec));
+  display(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
+    return this.executor.display(profile, this.rewriteSpec(spec));
   }
 
-  override run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
-    return super.run(profile, this.rewriteSpec(spec));
+  run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+    return this.executor.run(profile, this.rewriteSpec(spec));
   }
 
   private rewriteSpec(spec: CommandSpec): CommandSpec {
@@ -1370,6 +1371,7 @@ exit 99
         ok: false,
         exitCode: 3
       });
+      expect(response.results?.[0]?.command).not.toContain(`${fakeBin.path}/${fakeBin.path}`);
       expect(response.results?.[0]?.stderr).toContain("permission denied");
     } finally {
       fakeBin.cleanup();
