@@ -1292,7 +1292,7 @@ describe("mutating operations", () => {
     const rawCommands: string[] = [];
     executor.display = (profile, spec) => {
       const password = "S3cr3t! rotate me";
-      const escapedPassword = password.replace(/'/g, "''");
+      const escapedPassword = password.replace(/\\/g, "\\\\").replace(/'/g, "''");
       const rawCommand = commandToShell(spec);
       rawCommands.push(rawCommand);
       return redactCommand(rawCommand, [
@@ -1328,11 +1328,17 @@ describe("mutating operations", () => {
     expect(rotationPasswordWrite).toBeGreaterThan(rotationTrap);
     expect(rawCommands[0]).toContain("EXIT HUP INT TERM");
     expect(rawCommands[0]).toContain("set -e; query_file=");
+    expect(rawCommands[0]).toContain("rm -f \"$candidate\" \"$last_error\" \"$query_host\"; cleanup_query_container; trap - EXIT HUP INT TERM");
+    expect(rawCommands[0]).toContain("sql_escaped = password.gsub");
+    expect(rawCommands[0]).toContain("{ \"\\\\\\\\\" }.gsub");
     expect(response.plannedCommands.some((command) => command.includes("yql -s \"ALTER USER root PASSWORD"))).toBe(false);
     expect(response.plannedCommands[0]).toContain("last_error=$(mktemp)");
     expect(response.plannedCommands[1]).toContain("target=$(docker exec ydb-local sh -lc");
     expect(response.plannedCommands[1]).toContain("/ydb_data/kikimr_configs/config.yaml");
     expect(response.plannedCommands[1]).toContain("docker exec ydb-local cat \"$target\"");
+    expect(rawCommands[1]).toContain("rm -f \"$password_host\"; trap - EXIT HUP INT TERM");
+    expect(rawCommands[1]).toContain("rm -f \"$cfg_tmp\" \"$password_host\"; trap - EXIT HUP INT TERM");
+    expect(rawCommands[1]).toContain("File.read(ARGV[5], mode: \"r:UTF-8\")");
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(0);
     expect(response.plannedCommands.some((command) => command.includes("viewer/json/whoami"))).toBe(true);
     const verifyCommand = rawCommands[2] ?? "";
@@ -1350,7 +1356,7 @@ describe("mutating operations", () => {
     const executor = new RecordingExecutor();
     const password = "pa'ss\\word";
     executor.display = (profile, spec) => {
-      const escapedPassword = password.replace(/'/g, "''");
+      const escapedPassword = password.replace(/\\/g, "\\\\").replace(/'/g, "''");
       return redactCommand(commandToShell(spec), [
         password,
         escapedPassword,
@@ -1373,7 +1379,7 @@ describe("mutating operations", () => {
 
     const response = await setRootPassword(ctx, { password });
     const plan = response.plannedCommands.join("\n");
-    const escapedPassword = password.replace(/'/g, "''");
+    const escapedPassword = password.replace(/\\/g, "\\\\").replace(/'/g, "''");
 
     expect(plan).not.toContain(password);
     expect(plan).not.toContain(shellQuote(password));
