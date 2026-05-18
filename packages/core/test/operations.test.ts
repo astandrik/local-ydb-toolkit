@@ -1326,6 +1326,8 @@ describe("mutating operations", () => {
     expect(rotationPasswordFile).toBeGreaterThan(-1);
     expect(rotationTrap).toBeGreaterThan(rotationPasswordFile);
     expect(rotationPasswordWrite).toBeGreaterThan(rotationTrap);
+    expect(rawCommands[0]).toContain("EXIT HUP INT TERM");
+    expect(rawCommands[0]).toContain("set -e; query_file=");
     expect(response.plannedCommands.some((command) => command.includes("yql -s \"ALTER USER root PASSWORD"))).toBe(false);
     expect(response.plannedCommands[0]).toContain("last_error=$(mktemp)");
     expect(response.plannedCommands[1]).toContain("target=$(docker exec ydb-local sh -lc");
@@ -1340,6 +1342,8 @@ describe("mutating operations", () => {
     expect(verifyPasswordFile).toBeGreaterThan(-1);
     expect(verifyTrap).toBeGreaterThan(verifyPasswordFile);
     expect(verifyPasswordWrite).toBeGreaterThan(verifyTrap);
+    expect(verifyCommand).toContain("EXIT HUP INT TERM");
+    expect(verifyCommand).toContain("set -e; umask 077");
   });
 
   it("keeps quoted and escaped passwords out of the planned rotation command", async () => {
