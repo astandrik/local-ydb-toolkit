@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   addStorageGroups,
@@ -19,6 +22,8 @@ import {
   reduceStorageGroups,
   removeDynamicNodes,
   restartStack,
+  ShellCommandExecutor,
+  shellQuote,
   startDynamicNode,
   setRootPassword,
   writeDynamicNodeAuthConfig,
@@ -46,6 +51,43 @@ class RecordingExecutor implements CommandExecutor {
       stderr: "",
       ok: true,
       timedOut: false
+    };
+  }
+}
+
+function createTempExecutableDir(files: Record<string, string>): { path: string; cleanup: () => void } {
+  const path = mkdtempSync(join(tmpdir(), "local-ydb-test-bin-"));
+  for (const [name, content] of Object.entries(files)) {
+    const fullPath = join(path, name);
+    writeFileSync(fullPath, content, "utf8");
+    chmodSync(fullPath, 0o755);
+  }
+  return {
+    path,
+    cleanup: () => rmSync(path, { recursive: true, force: true })
+  };
+}
+
+class ScriptRewritingShellExecutor extends ShellCommandExecutor {
+  constructor(private readonly rewrite: (script: string) => string) {
+    super();
+  }
+
+  override display(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
+    return super.display(profile, this.rewriteSpec(spec));
+  }
+
+  override run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+    return super.run(profile, this.rewriteSpec(spec));
+  }
+
+  private rewriteSpec(spec: CommandSpec): CommandSpec {
+    if (spec.command !== "bash" || spec.args?.[0] !== "-lc" || typeof spec.args[1] !== "string") {
+      return spec;
+    }
+    return {
+      ...spec,
+      args: ["-lc", this.rewrite(spec.args[1])]
     };
   }
 }
@@ -1063,6 +1105,64 @@ describe("mutating operations", () => {
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
+  it("continues docker teardown when tenant removal returns only Status: UNAVAILABLE", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example",
+          staticContainer: "ydb-local",
+          network: "ydb-net",
+          volume: "ydb-local-data"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker volume ls")) {
+        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+      }
+      if (command.includes("admin database /local/example remove --force")) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "Status: UNAVAILABLE\nIssues:\n<main>: Error: Could not resolve redirected path\n",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await destroyStack(ctx, { confirm: true });
+    expect(response.executed).toBe(true);
+    expect(response.results?.[0]?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes("docker rm -f ydb-local"))).toBe(true);
+    expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
+  });
+
   it("continues docker teardown when tenant removal is already complete", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
@@ -1162,6 +1262,30 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("Group fit error|failed to allocate group|no group options");
   });
 
+  it("adds an authenticated tenant metadata wait for auth-hardening profiles with rootPasswordFile", async () => {
+    const executor = new RecordingExecutor();
+    executor.display = (profile, spec) => redactCommand(commandToShell(spec), [profile.rootPasswordFile ?? ""]);
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          rootPasswordFile: "/tmp/local-ydb/root.password"
+        }
+      }
+    }));
+
+    const response = await applyAuthHardening(ctx, {});
+
+    expect(response.executed).toBe(false);
+    expect(response.plannedCommands.join("\n")).not.toContain("/tmp/local-ydb/root.password");
+    expect(response.plannedCommands.some((command) => command.includes("<redacted> | docker exec -i"))).toBe(true);
+    const dynamicRecreateIndex = response.plannedCommands.findIndex((command) => command.includes("docker run -d --name ydb-dyn-example"));
+    const waitIndex = response.plannedCommands.findIndex((command) => command.includes("scheme ls /local/example"));
+    expect(dynamicRecreateIndex).toBeGreaterThanOrEqual(0);
+    expect(waitIndex).toBeGreaterThan(dynamicRecreateIndex);
+  });
+
   it("plans root password rotation without exposing the password", async () => {
     const executor = new RecordingExecutor();
     executor.display = (profile, spec) => {
@@ -1215,6 +1339,41 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[0]).toContain("docker volume rm local-ydb-toolkit-mcp-cleanup-smoke");
     expect(response.plannedCommands[0]).toContain("no such volume");
     expect(response.plannedCommands[0]).not.toContain("docker volume rm local-ydb-toolkit-mcp-cleanup-smoke || true");
+  });
+
+  it("fails confirmed cleanup when an existing volume cannot be removed", async () => {
+    const fakeBin = createTempExecutableDir({
+      docker: `#!/bin/bash
+set -euo pipefail
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ] && [ "$3" = "local-ydb-present-volume" ]; then
+  printf '%s\\n' 'local-ydb-present-volume'
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ] && [ "$3" = "local-ydb-present-volume" ]; then
+  printf '%s\\n' 'permission denied' >&2
+  exit 3
+fi
+printf '%s\\n' "unexpected docker invocation: $*" >&2
+exit 99
+`
+    });
+
+    try {
+      const executor = new ScriptRewritingShellExecutor((script) =>
+        script.replace(/\bdocker\b/g, shellQuote(join(fakeBin.path, "docker")))
+      );
+      const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+      const response = await cleanupStorage(ctx, { confirm: true, volumes: ["local-ydb-present-volume"] });
+      expect(response.executed).toBe(true);
+      expect(response.results).toHaveLength(1);
+      expect(response.results?.[0]).toMatchObject({
+        ok: false,
+        exitCode: 3
+      });
+      expect(response.results?.[0]?.stderr).toContain("permission denied");
+    } finally {
+      fakeBin.cleanup();
+    }
   });
 
   it("prepares a hardened auth config and root password file from the running static config", async () => {
