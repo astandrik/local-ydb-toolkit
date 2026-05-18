@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.1...mcp-server-v0.9.2) (2026-05-18)
+
+
+### Bug Fixes
+
+* local-ydb upstream layout handling ([#52](https://github.com/astandrik/local-ydb-toolkit/issues/52)) ([27e4a92](https://github.com/astandrik/local-ydb-toolkit/commit/27e4a925df89239b72d65b4b3fb58eef1909ba64))
+
 ## [0.9.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.0...mcp-server-v0.9.1) (2026-05-17)
 
 
