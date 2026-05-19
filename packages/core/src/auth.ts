@@ -32,6 +32,7 @@ const SSH_OPTIONS_WITH_VALUE = new Set([
   "-W",
   "-w"
 ]);
+const OPENSSH_COMMANDS_WITH_IDENTITY_FILE = new Set(["ssh", "scp", "sftp"]);
 
 export function redactText(input: string, extraRedactions: string[] = []): string {
   let output = input;
@@ -57,7 +58,7 @@ export function redactCommand(command: string, extraRedactions: string[] = []): 
       return "<redacted>";
     }
     const flag = part.text.includes("=") ? part.text.slice(0, part.text.indexOf("=")) : part.text;
-    const isSensitiveFlag = SENSITIVE_FLAG_SET.has(flag) || (isSshCommandName(commandName) && flag === "-i");
+    const isSensitiveFlag = SENSITIVE_FLAG_SET.has(flag) || (isOpenSshCommandName(commandName) && flag === "-i");
     if (isSensitiveFlag) {
       if (part.text.includes("=")) {
         return `${flag}=<redacted>`;
@@ -116,14 +117,14 @@ function collectSshIdentityRanges(input: string, start: number, end: number, ran
       break;
     }
     const sshEnd = findSshWordEnd(input, sshStart);
-    if (!isSshCommandName(input.slice(sshStart, sshEnd))) {
+    if (!isOpenSshCommandName(input.slice(sshStart, sshEnd))) {
       cursor = sshEnd;
       continue;
     }
     cursor = sshEnd;
     for (;;) {
       const wordStart = skipShellWhitespace(input, cursor);
-      if (wordStart >= input.length || isShellCommandBoundary(input[wordStart])) {
+      if (wordStart >= end || isShellCommandBoundary(input[wordStart])) {
         break;
       }
       const wordEnd = findShellWordEnd(input, wordStart);
@@ -149,7 +150,11 @@ function collectSshIdentityRanges(input: string, start: number, end: number, ran
       if (!word.startsWith("-") || word === "-") {
         break;
       }
-      if (SSH_OPTIONS_WITH_VALUE.has(word)) {
+      const attachedValueStart = getAttachedSshOptionValueStart(word);
+      if (attachedValueStart !== undefined) {
+        collectSshIdentityRanges(input, wordStart + attachedValueStart, wordEnd, ranges);
+        cursor = wordEnd;
+      } else if (SSH_OPTIONS_WITH_VALUE.has(word)) {
         const valueStart = skipShellWhitespace(input, wordEnd);
         const valueEnd = Math.min(findShellWordEnd(input, valueStart), end);
         collectSshIdentityRanges(input, valueStart, valueEnd, ranges);
@@ -178,8 +183,20 @@ function redactRanges(input: string, ranges: Array<{ start: number; end: number 
   return output + input.slice(cursor);
 }
 
-function isSshCommandName(commandName: string | undefined): boolean {
-  return commandName === "ssh" || commandName?.endsWith("/ssh") === true;
+function getAttachedSshOptionValueStart(word: string): number | undefined {
+  if (word.length <= 2 || !word.startsWith("-") || word.startsWith("--")) {
+    return undefined;
+  }
+  const option = word.slice(0, 2);
+  return SSH_OPTIONS_WITH_VALUE.has(option) ? 2 : undefined;
+}
+
+function isOpenSshCommandName(commandName: string | undefined): boolean {
+  if (!commandName) {
+    return false;
+  }
+  const basename = commandName.slice(commandName.lastIndexOf("/") + 1);
+  return OPENSSH_COMMANDS_WITH_IDENTITY_FILE.has(basename);
 }
 
 function findNextSshWordStart(input: string, start: number): number {
@@ -258,6 +275,7 @@ function findCommandValueEnd(input: string, start: number): number {
 function findShellWordEnd(input: string, start: number): number {
   let quote: "'" | "\"" | undefined;
   let escaped = false;
+  let substitutionDepth = 0;
 
   for (let index = start; index < input.length; index += 1) {
     const char = input[index];
@@ -269,8 +287,17 @@ function findShellWordEnd(input: string, start: number): number {
       escaped = true;
       continue;
     }
-    if (!quote && /\s/.test(char)) {
+    if (!quote && substitutionDepth === 0 && /\s/.test(char)) {
       return index;
+    }
+    if (!quote && isShellSubstitutionStart(input, index)) {
+      substitutionDepth += 1;
+      index += 1;
+      continue;
+    }
+    if (!quote && substitutionDepth > 0 && char === ")") {
+      substitutionDepth -= 1;
+      continue;
     }
     if (!quote && (char === "'" || char === "\"")) {
       quote = char;
@@ -283,6 +310,13 @@ function findShellWordEnd(input: string, start: number): number {
   }
 
   return input.length;
+}
+
+function isShellSubstitutionStart(input: string, index: number): boolean {
+  if (input[index + 1] !== "(") {
+    return false;
+  }
+  return input[index] === "<" || input[index] === ">" || input[index] === "$";
 }
 
 function splitTopLevelShellParts(input: string): Array<{ text: string; isWord: boolean }> {
