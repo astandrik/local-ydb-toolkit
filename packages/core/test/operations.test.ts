@@ -1021,9 +1021,9 @@ describe("mutating operations", () => {
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
       profiles: {
         default: {
-          authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
-          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
-          rootPasswordFile: "/tmp/local-ydb-auth/root.password"
+          authConfigPath: "/tmp/local-ydb-auth/quote'd/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/quote'd/dynamic-node-auth.pb",
+          rootPasswordFile: "/tmp/local-ydb-auth/quote'd/root.password"
         }
       }
     }));
@@ -1034,9 +1034,9 @@ describe("mutating operations", () => {
 
     expect(artifactCleanupCommands).toHaveLength(3);
     expect(artifactCleanupCommands.every((command) => command.endsWith("'"))).toBe(true);
-    expect(plan).not.toContain("/tmp/local-ydb-auth/config.auth.yaml");
-    expect(plan).not.toContain("/tmp/local-ydb-auth/dynamic-node-auth.pb");
-    expect(plan).not.toContain("/tmp/local-ydb-auth/root.password");
+    expect(plan).not.toContain("/tmp/local-ydb-auth");
+    expect(plan).not.toContain("quote");
+    expect(artifactCleanupCommands.join("\n")).not.toContain("\\''");
     expect(plan).not.toContain("rm -f <redacted>\n");
   });
 

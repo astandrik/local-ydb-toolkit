@@ -48,11 +48,12 @@ export function bash(script: string, options: Omit<CommandSpec, "command" | "arg
 export class ShellCommandExecutor implements CommandExecutor {
   display(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
     const redactions = collectRedactions(profile, spec);
+    const displaySpec = redactCommandSpec(spec, redactions);
     if (profile.mode === "ssh") {
-      const args = sshArgs(profile, commandToShell(spec));
+      const args = sshArgs(profile, commandToShell(displaySpec));
       return redactCommand(["ssh", ...args].map(shellQuote).join(" "), redactions);
     }
-    return redactCommand(commandToShell(spec), redactions);
+    return redactCommand(commandToShell(displaySpec), redactions);
   }
 
   run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
@@ -119,13 +120,27 @@ function sshArgs(profile: ResolvedLocalYdbProfile, remoteCommand: string): strin
 }
 
 function collectRedactions(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string[] {
-  return [
+  return dedupeRedactions([
     profile.authConfigPath,
     profile.dynamicNodeAuthTokenFile,
     profile.rootPasswordFile,
     profile.ssh?.identityFile,
     ...(spec.redactions ?? [])
-  ].filter((value): value is string => Boolean(value));
+  ]);
+}
+
+function dedupeRedactions(values: Array<string | undefined>): string[] {
+  return [...new Set(values
+    .filter((value): value is string => Boolean(value))
+    .flatMap((value) => [value, shellQuote(value)]))];
+}
+
+function redactCommandSpec(spec: CommandSpec, redactions: string[]): CommandSpec {
+  return {
+    ...spec,
+    command: redactText(spec.command, redactions),
+    args: spec.args?.map((arg) => redactText(arg, redactions))
+  };
 }
 
 export interface DockerContainerSummary {

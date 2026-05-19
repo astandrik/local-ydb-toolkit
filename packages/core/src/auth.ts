@@ -22,7 +22,7 @@ export function redactCommand(command: string, extraRedactions: string[] = []): 
   const parts = splitTopLevelShellParts(command);
   let redactNext = false;
   let commandName: string | undefined;
-  return redactText(parts.map((part) => {
+  const topLevelRedacted = parts.map((part) => {
     if (!part.isWord) {
       return part.text;
     }
@@ -40,7 +40,66 @@ export function redactCommand(command: string, extraRedactions: string[] = []): 
       redactNext = true;
     }
     return part.text;
-  }).join(""), extraRedactions);
+  }).join("");
+  return redactText(redactSensitiveFlagValues(topLevelRedacted), extraRedactions);
+}
+
+function redactSensitiveFlagValues(input: string): string {
+  const flagPattern = /--(?:password-file|auth-token-file|token-file|access-token|private-key|sa-key-file|password)(?:=|\s+)/g;
+  let output = "";
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = flagPattern.exec(input)) !== null) {
+    const valueStart = match.index + match[0].length;
+    if (valueStart >= input.length) {
+      continue;
+    }
+    const valueEnd = findShellWordEnd(input, valueStart);
+    output += input.slice(lastIndex, valueStart);
+    output += "<redacted>";
+    lastIndex = valueEnd;
+    flagPattern.lastIndex = valueEnd;
+  }
+
+  return output + input.slice(lastIndex);
+}
+
+function findShellWordEnd(input: string, start: number): number {
+  let quote: "'" | "\"" | undefined;
+  let escaped = false;
+  let sawUnquoted = false;
+
+  for (let index = start; index < input.length; index += 1) {
+    const char = input[index];
+    if (escaped) {
+      escaped = false;
+      sawUnquoted = true;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      sawUnquoted = true;
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      return index;
+    }
+    if (!quote && (char === "'" || char === "\"")) {
+      if (sawUnquoted) {
+        return index;
+      }
+      quote = char;
+      continue;
+    }
+    if (quote && char === quote) {
+      quote = undefined;
+      continue;
+    }
+    sawUnquoted = true;
+  }
+
+  return input.length;
 }
 
 function splitTopLevelShellParts(input: string): Array<{ text: string; isWord: boolean }> {
@@ -66,6 +125,13 @@ function splitTopLevelShellParts(input: string): Array<{ text: string; isWord: b
   }
 
   for (const char of input) {
+    if (escaped) {
+      pushWhitespace();
+      current += char;
+      escaped = false;
+      continue;
+    }
+
     if (!inSingleQuote && !inDoubleQuote && /\s/.test(char)) {
       pushWord();
       whitespace += char;
@@ -74,11 +140,6 @@ function splitTopLevelShellParts(input: string): Array<{ text: string; isWord: b
 
     pushWhitespace();
     current += char;
-
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
 
     if (char === "\\" && !inSingleQuote) {
       escaped = true;

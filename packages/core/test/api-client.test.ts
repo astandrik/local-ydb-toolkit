@@ -6,6 +6,7 @@ import {
   parseReadStoragePools,
   redactCommand,
   ShellCommandExecutor,
+  shellQuote,
   type CommandExecutor,
   type CommandResult,
   type CommandSpec
@@ -55,6 +56,29 @@ Status {
     expect(redactCommand("docker exec -i ydb-local true")).toBe("docker exec -i ydb-local true");
     expect(redactCommand("ssh -i /secret/key host true")).toBe("ssh -i <redacted> host true");
     expect(redactCommand("bash -lc 'rm -f /tmp/secret'", ["/tmp/secret"])).toBe("bash -lc 'rm -f <redacted>'");
+    expect(redactCommand("bash -lc 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
+    expect(redactCommand("bash -lc\\ 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc\\ 'ydb --token-file <redacted> scheme ls'");
+    expect(redactCommand("bash -lc\\ 'rm -f /tmp/secret path'", ["/tmp/secret path"])).toBe("bash -lc\\ 'rm -f <redacted>'");
+  });
+
+  it("redacts shell-quoted profile paths before rendering display commands", () => {
+    const authConfigPath = "/tmp/local-ydb-auth/quote'd/config.auth.yaml";
+    const profile = resolveProfile(ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath
+        }
+      }
+    }));
+
+    const command = new ShellCommandExecutor().display(profile, {
+      command: "bash",
+      args: ["-lc", `rm -f ${shellQuote(authConfigPath)}`]
+    });
+
+    expect(command).toBe("bash -lc 'rm -f <redacted>'");
+    expect(command).not.toContain("/tmp/local-ydb-auth");
+    expect(command).not.toContain("quote");
   });
 
   it("formats ssh commands with safe defaults", () => {
