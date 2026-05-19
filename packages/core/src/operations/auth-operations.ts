@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
 import { bash, shellQuote } from "../api-client.js";
+import { pathRedactions } from "../redactions.js";
 import { commandForDynamicRun, createTenantSpec, waitForYdbCli } from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
 import { commandForStaticGeneratedConfigPath } from "./generated-config.js";
@@ -24,7 +25,9 @@ export async function applyAuthHardening(ctx: ToolkitContext, options: MutatingO
     summary: `Apply reviewed YDB auth config from ${configHostPath}.`,
     risk: "high",
     specs: [
-      bash(`docker cp ${shellQuote(configHostPath)} ${shellQuote(`${ctx.profile.staticContainer}:/tmp/local-ydb-toolkit-config.yaml`)}`),
+      bash(`docker cp ${shellQuote(configHostPath)} ${shellQuote(`${ctx.profile.staticContainer}:/tmp/local-ydb-toolkit-config.yaml`)}`, {
+        redactions: pathRedactions(configHostPath)
+      }),
       bash([
         "set -euo pipefail",
         `target=$(${targetCommand})`,
@@ -171,7 +174,9 @@ export async function prepareAuthConfig(
   return runMutating(ctx, {
     summary: `Prepare hardened auth config at ${configHostPath}.`,
     risk: "medium",
-    specs: [bash(script)],
+    specs: [bash(script, {
+      redactions: pathRedactions(configHostPath, rootPasswordFile)
+    })],
     rollback: [
       `rm -f ${configHostPath}`,
       ...(rootPasswordFile ? [`rm -f ${rootPasswordFile}`] : [])
@@ -207,7 +212,8 @@ export async function writeDynamicNodeAuthConfig(
     risk: "medium",
     specs: [
       bash(
-        `install -d -m 0700 ${shellQuote(dirname(tokenHostPath))} && printf '%s\n' ${shellQuote(staffToken)} ${shellQuote(registrationToken)} > ${shellQuote(tokenHostPath)} && chmod 600 ${shellQuote(tokenHostPath)}`
+        `install -d -m 0700 ${shellQuote(dirname(tokenHostPath))} && printf '%s\n' ${shellQuote(staffToken)} ${shellQuote(registrationToken)} > ${shellQuote(tokenHostPath)} && chmod 600 ${shellQuote(tokenHostPath)}`,
+        { redactions: pathRedactions(tokenHostPath) }
       )
     ],
     rollback: [`rm -f ${tokenHostPath}`],

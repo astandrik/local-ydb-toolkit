@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { redactCommand, redactText } from "./auth.js";
+import { pathRedactions } from "./redactions.js";
 import type { ResolvedLocalYdbProfile } from "./validation.js";
 
 export interface CommandSpec {
@@ -48,11 +49,12 @@ export function bash(script: string, options: Omit<CommandSpec, "command" | "arg
 export class ShellCommandExecutor implements CommandExecutor {
   display(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
     const redactions = collectRedactions(profile, spec);
+    const displaySpec = redactCommandSpec(spec, redactions);
     if (profile.mode === "ssh") {
-      const args = sshArgs(profile, commandToShell(spec));
+      const args = sshArgs(profile, commandToShell(displaySpec));
       return redactCommand(["ssh", ...args].map(shellQuote).join(" "), redactions);
     }
-    return redactCommand(commandToShell(spec), redactions);
+    return redactCommand(commandToShell(displaySpec), redactions);
   }
 
   run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
@@ -119,11 +121,38 @@ function sshArgs(profile: ResolvedLocalYdbProfile, remoteCommand: string): strin
 }
 
 function collectRedactions(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string[] {
-  return [
+  const profilePathRedactions = pathRedactions(
+    profile.authConfigPath,
+    profile.dynamicNodeAuthTokenFile,
     profile.rootPasswordFile,
-    profile.ssh?.identityFile,
+    profile.ssh?.identityFile
+  );
+  return dedupeRedactions([
+    ...profilePathRedactions,
     ...(spec.redactions ?? [])
-  ].filter((value): value is string => Boolean(value));
+  ]);
+}
+
+function dedupeRedactions(values: Array<string | undefined>): string[] {
+  const redactions: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values.filter((value): value is string => Boolean(value))) {
+    for (const candidate of [value, shellQuote(value)]) {
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        redactions.push(candidate);
+      }
+    }
+  }
+  return redactions.sort((left, right) => right.length - left.length);
+}
+
+function redactCommandSpec(spec: CommandSpec, redactions: string[]): CommandSpec {
+  return {
+    ...spec,
+    command: redactText(spec.command, redactions),
+    args: spec.args?.map((arg) => redactText(arg, redactions))
+  };
 }
 
 export interface DockerContainerSummary {

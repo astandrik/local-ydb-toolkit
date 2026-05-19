@@ -445,6 +445,25 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[1]).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
   });
 
+  it("redacts custom dynamic auth token file and parent directory in planned commands", async () => {
+    const shellDisplay = new ShellCommandExecutor();
+    const executor = new RecordingExecutor();
+    executor.display = (profile, spec) => shellDisplay.display(profile, spec);
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await writeDynamicNodeAuthConfig(ctx, {
+      sid: "root@builtin",
+      tokenHostPath: "/tmp/local-ydb-auth/quote'd/dynamic-node-auth.pb"
+    });
+
+    expect(response.executed).toBe(false);
+    expect(response.plannedCommands[0]).toContain("install -d -m 0700 <redacted>");
+    expect(response.plannedCommands[0]).toContain("> <redacted>");
+    expect(response.plannedCommands[0]).not.toContain("<redacted>/dynamic-node-auth.pb");
+    expect(response.plannedCommands[0]).toContain("chmod 600 <redacted>");
+    expect(response.plannedCommands[0]).not.toContain("/tmp/local-ydb-auth");
+    expect(response.plannedCommands[0]).not.toContain("quote");
+  });
+
   it("plans additional dynamic nodes with unique containers and ports", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
@@ -984,6 +1003,60 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("docker volume rm ydb-local-data");
     expect(response.removesAuthArtifacts).toBe(false);
     expect(response.removesDumpHostPath).toBe(false);
+  });
+
+  it("redacts auth artifact cleanup paths without malformed shell quotes", async () => {
+    const shellDisplay = new ShellCommandExecutor();
+    const executor = new RecordingExecutor();
+    executor.display = (profile, spec) => shellDisplay.display(profile, spec);
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker volume ls")) {
+        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb-auth/quote'd/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/quote'd/dynamic-node-auth.pb",
+          rootPasswordFile: "/tmp/local-ydb-auth/quote'd/root.password"
+        }
+      }
+    }));
+
+    const response = await destroyStack(ctx, { removeAuthArtifacts: true });
+    const plan = response.plannedCommands.join("\n");
+    const artifactCleanupCommands = response.plannedCommands.filter((command) => command.includes("rm -f <redacted>"));
+
+    expect(artifactCleanupCommands).toHaveLength(3);
+    expect(artifactCleanupCommands.every((command) => command.endsWith("'"))).toBe(true);
+    expect(plan).not.toContain("/tmp/local-ydb-auth");
+    expect(plan).not.toContain("quote");
+    expect(artifactCleanupCommands.join("\n")).not.toContain("\\''");
+    expect(plan).not.toContain("rm -f <redacted>\n");
   });
 
   it("continues docker teardown when tenant removal is blocked by auth failure", async () => {
