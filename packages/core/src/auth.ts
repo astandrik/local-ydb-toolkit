@@ -9,30 +9,40 @@ const SENSITIVE_FLAGS = [
 ] as const;
 const SENSITIVE_FLAG_SET = new Set<string>(SENSITIVE_FLAGS);
 const SENSITIVE_FLAG_PATTERN = buildSensitiveFlagPattern(SENSITIVE_FLAGS);
-const SSH_OPTIONS_WITH_VALUE = new Set([
-  "-B",
-  "-b",
-  "-c",
-  "-D",
-  "-E",
-  "-e",
-  "-F",
-  "-I",
-  "-J",
-  "-L",
-  "-l",
-  "-m",
-  "-O",
-  "-o",
-  "-P",
-  "-p",
-  "-Q",
-  "-R",
-  "-S",
-  "-W",
-  "-w"
-]);
-const OPENSSH_COMMANDS_WITH_IDENTITY_FILE = new Set(["ssh", "scp", "sftp"]);
+const OPENSSH_COMMAND_OPTIONS_WITH_VALUE = {
+  ssh: new Set([
+    "-B",
+    "-b",
+    "-c",
+    "-D",
+    "-E",
+    "-e",
+    "-F",
+    "-I",
+    "-J",
+    "-L",
+    "-l",
+    "-m",
+    "-O",
+    "-o",
+    "-P",
+    "-p",
+    "-Q",
+    "-R",
+    "-S",
+    "-W",
+    "-w"
+  ]),
+  scp: new Set(["-c", "-D", "-F", "-J", "-l", "-o", "-P", "-S", "-X"]),
+  sftp: new Set(["-B", "-b", "-c", "-D", "-F", "-J", "-l", "-o", "-P", "-R", "-S", "-s", "-X"])
+};
+type OpenSshCommand = keyof typeof OPENSSH_COMMAND_OPTIONS_WITH_VALUE;
+type OpenSshOptionAction =
+  | { kind: "flag" }
+  | { kind: "identity-next" }
+  | { kind: "identity-attached"; valueStart: number }
+  | { kind: "value-next" }
+  | { kind: "value-attached"; valueStart: number };
 
 export function redactText(input: string, extraRedactions: string[] = []): string {
   let output = input;
@@ -58,7 +68,7 @@ export function redactCommand(command: string, extraRedactions: string[] = []): 
       return "<redacted>";
     }
     const flag = part.text.includes("=") ? part.text.slice(0, part.text.indexOf("=")) : part.text;
-    const isSensitiveFlag = SENSITIVE_FLAG_SET.has(flag) || (isOpenSshCommandName(commandName) && flag === "-i");
+    const isSensitiveFlag = SENSITIVE_FLAG_SET.has(flag) || (getOpenSshCommandName(commandName) !== undefined && flag === "-i");
     if (isSensitiveFlag) {
       if (part.text.includes("=")) {
         return `${flag}=<redacted>`;
@@ -117,10 +127,12 @@ function collectSshIdentityRanges(input: string, start: number, end: number, ran
       break;
     }
     const sshEnd = findSshWordEnd(input, sshStart);
-    if (!isOpenSshCommandName(input.slice(sshStart, sshEnd))) {
+    const commandName = getOpenSshCommandName(input.slice(sshStart, sshEnd));
+    if (!commandName) {
       cursor = sshEnd;
       continue;
     }
+    const optionsWithValue = OPENSSH_COMMAND_OPTIONS_WITH_VALUE[commandName];
     cursor = sshEnd;
     for (;;) {
       const wordStart = skipShellWhitespace(input, cursor);
@@ -132,7 +144,11 @@ function collectSshIdentityRanges(input: string, start: number, end: number, ran
       if (word === "--") {
         break;
       }
-      if (word === "-i") {
+      if (!word.startsWith("-") || word === "-") {
+        break;
+      }
+      const optionAction = classifyOpenSshOptionWord(word, optionsWithValue);
+      if (optionAction.kind === "identity-next") {
         const valueStart = skipShellWhitespace(input, wordEnd);
         if (valueStart >= end) {
           break;
@@ -142,19 +158,15 @@ function collectSshIdentityRanges(input: string, start: number, end: number, ran
         cursor = valueEnd;
         continue;
       }
-      if (word.startsWith("-i") && word.length > 2) {
-        ranges.push({ start: wordStart + 2, end: wordEnd });
+      if (optionAction.kind === "identity-attached") {
+        ranges.push({ start: wordStart + optionAction.valueStart, end: wordEnd });
         cursor = wordEnd;
         continue;
       }
-      if (!word.startsWith("-") || word === "-") {
-        break;
-      }
-      const attachedValueStart = getAttachedSshOptionValueStart(word);
-      if (attachedValueStart !== undefined) {
-        collectSshIdentityRanges(input, wordStart + attachedValueStart, wordEnd, ranges);
+      if (optionAction.kind === "value-attached") {
+        collectSshIdentityRanges(input, wordStart + optionAction.valueStart, wordEnd, ranges);
         cursor = wordEnd;
-      } else if (SSH_OPTIONS_WITH_VALUE.has(word)) {
+      } else if (optionAction.kind === "value-next") {
         const valueStart = skipShellWhitespace(input, wordEnd);
         const valueEnd = Math.min(findShellWordEnd(input, valueStart), end);
         collectSshIdentityRanges(input, valueStart, valueEnd, ranges);
@@ -183,20 +195,28 @@ function redactRanges(input: string, ranges: Array<{ start: number; end: number 
   return output + input.slice(cursor);
 }
 
-function getAttachedSshOptionValueStart(word: string): number | undefined {
-  if (word.length <= 2 || !word.startsWith("-") || word.startsWith("--")) {
-    return undefined;
+function classifyOpenSshOptionWord(word: string, optionsWithValue: Set<string>): OpenSshOptionAction {
+  if (word.length < 2 || !word.startsWith("-") || word.startsWith("--")) {
+    return { kind: "flag" };
   }
-  const option = word.slice(0, 2);
-  return SSH_OPTIONS_WITH_VALUE.has(option) ? 2 : undefined;
+  for (let index = 1; index < word.length; index += 1) {
+    const option = `-${word[index]}`;
+    if (option === "-i") {
+      return index === word.length - 1 ? { kind: "identity-next" } : { kind: "identity-attached", valueStart: index + 1 };
+    }
+    if (optionsWithValue.has(option)) {
+      return index === word.length - 1 ? { kind: "value-next" } : { kind: "value-attached", valueStart: index + 1 };
+    }
+  }
+  return { kind: "flag" };
 }
 
-function isOpenSshCommandName(commandName: string | undefined): boolean {
+function getOpenSshCommandName(commandName: string | undefined): OpenSshCommand | undefined {
   if (!commandName) {
-    return false;
+    return undefined;
   }
   const basename = commandName.slice(commandName.lastIndexOf("/") + 1);
-  return OPENSSH_COMMANDS_WITH_IDENTITY_FILE.has(basename);
+  return basename in OPENSSH_COMMAND_OPTIONS_WITH_VALUE ? basename as OpenSshCommand : undefined;
 }
 
 function findNextSshWordStart(input: string, start: number): number {

@@ -63,10 +63,15 @@ Status {
     expect(redactCommand("scp -i /secret/key file host:/tmp")).toBe("scp -i <redacted> file host:/tmp");
     expect(redactCommand("sftp -i /secret/key host")).toBe("sftp -i <redacted> host");
     expect(redactCommand("bash -lc 'ssh -i /secret/key host true'")).toBe("bash -lc 'ssh -i <redacted> host true'");
+    expect(redactCommand("bash -lc 'ssh -vi /secret/key host true'")).toBe("bash -lc 'ssh -vi <redacted> host true'");
     expect(redactCommand("bash -lc '/usr/bin/ssh -B eth0 -P tag -i /secret/key host true'")).toBe("bash -lc '/usr/bin/ssh -B eth0 -P tag -i <redacted> host true'");
     expect(redactCommand("bash -lc 'ssh -o ProxyCommand=\"ssh -i /secret/key jump\" host true'")).toBe("bash -lc 'ssh -o ProxyCommand=\"ssh -i <redacted> jump\" host true'");
     expect(redactCommand("bash -lc 'ssh -oProxyCommand=\"ssh -i /secret/key jump\" host true'")).toBe("bash -lc 'ssh -oProxyCommand=\"ssh -i <redacted> jump\" host true'");
     expect(redactCommand("bash -lc 'ssh -F <(printf x) -i /secret/key host'")).toBe("bash -lc 'ssh -F <(printf x) -i <redacted> host'");
+    expect(redactCommand("bash -lc 'scp -X nrequests=64 -i /secret/key file host:/tmp'")).toBe("bash -lc 'scp -X nrequests=64 -i <redacted> file host:/tmp'");
+    expect(redactCommand("bash -lc 'sftp -s subsystem -i /secret/key host'")).toBe("bash -lc 'sftp -s subsystem -i <redacted> host'");
+    expect(redactCommand("bash -lc 'scp -p -i /secret/key file host:/tmp'")).toBe("bash -lc 'scp -p -i <redacted> file host:/tmp'");
+    expect(redactCommand("bash -lc 'sftp -p -i /secret/key host'")).toBe("bash -lc 'sftp -p -i <redacted> host'");
     expect(redactCommand("env ssh -i /secret/key host true")).toBe("env ssh -i <redacted> host true");
     expect(redactCommand("bash -lc 'out=$(ssh -i /secret/key host true)'")).toBe("bash -lc 'out=$(ssh -i <redacted> host true)'");
     expect(redactCommand(`bash -lc 'ssh ${lineContinuation} -i /secret/key host true'`)).toBe(`bash -lc 'ssh ${lineContinuation} -i <redacted> host true'`);
