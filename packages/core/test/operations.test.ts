@@ -445,6 +445,24 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[1]).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
   });
 
+  it("redacts custom dynamic auth token file and parent directory in planned commands", async () => {
+    const shellDisplay = new ShellCommandExecutor();
+    const executor = new RecordingExecutor();
+    executor.display = (profile, spec) => shellDisplay.display(profile, spec);
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await writeDynamicNodeAuthConfig(ctx, {
+      sid: "root@builtin",
+      tokenHostPath: "/tmp/local-ydb-auth/quote'd/dynamic-node-auth.pb"
+    });
+
+    expect(response.executed).toBe(false);
+    expect(response.plannedCommands[0]).toContain("install -d -m 0700 <redacted>");
+    expect(response.plannedCommands[0]).toContain("> <redacted>");
+    expect(response.plannedCommands[0]).toContain("chmod 600 <redacted>");
+    expect(response.plannedCommands[0]).not.toContain("/tmp/local-ydb-auth");
+    expect(response.plannedCommands[0]).not.toContain("quote");
+  });
+
   it("plans additional dynamic nodes with unique containers and ports", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({

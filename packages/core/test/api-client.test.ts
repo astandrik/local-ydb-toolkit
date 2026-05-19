@@ -62,8 +62,15 @@ Status {
     expect(redactCommand(`bash -lc 'ydb --token-file ${shellQuote("/tmp/quote'd/token file")} scheme ls'`)).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
   });
 
+  it("redacts every long sensitive flag inside quoted shell scripts", () => {
+    for (const flag of ["--password", "--password-file", "--token-file", "--auth-token-file", "--access-token", "--private-key", "--sa-key-file"]) {
+      expect(redactCommand(`bash -lc 'tool ${flag} /secrets/value done'`)).toBe(`bash -lc 'tool ${flag} <redacted> done'`);
+    }
+  });
+
   it("redacts shell-quoted profile paths before rendering display commands", () => {
-    const authConfigPath = "/tmp/local-ydb-auth/quote'd/config.auth.yaml";
+    const authDir = "/tmp/local-ydb-auth/quote'd";
+    const authConfigPath = `${authDir}/config.auth.yaml`;
     const profile = resolveProfile(ConfigSchema.parse({
       profiles: {
         default: {
@@ -74,10 +81,10 @@ Status {
 
     const command = new ShellCommandExecutor().display(profile, {
       command: "bash",
-      args: ["-lc", `rm -f ${shellQuote(authConfigPath)}`]
+      args: ["-lc", `install -d -m 0700 ${shellQuote(authDir)} && rm -f ${shellQuote(authConfigPath)}`]
     });
 
-    expect(command).toBe("bash -lc 'rm -f <redacted>'");
+    expect(command).toBe("bash -lc 'install -d -m 0700 <redacted> && rm -f <redacted>'");
     expect(command).not.toContain("/tmp/local-ydb-auth");
     expect(command).not.toContain("quote");
   });

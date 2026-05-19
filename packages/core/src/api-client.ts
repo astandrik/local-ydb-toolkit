@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 import { redactCommand, redactText } from "./auth.js";
 import type { ResolvedLocalYdbProfile } from "./validation.js";
 
@@ -120,13 +121,26 @@ function sshArgs(profile: ResolvedLocalYdbProfile, remoteCommand: string): strin
 }
 
 function collectRedactions(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string[] {
-  return dedupeRedactions([
+  const profilePathRedactions = pathRedactions(
     profile.authConfigPath,
     profile.dynamicNodeAuthTokenFile,
     profile.rootPasswordFile,
-    profile.ssh?.identityFile,
+    profile.ssh?.identityFile
+  );
+  return dedupeRedactions([
+    ...profilePathRedactions,
     ...(spec.redactions ?? [])
   ]);
+}
+
+function pathRedactions(...values: Array<string | undefined>): string[] {
+  return values.flatMap((value) => {
+    if (!value) {
+      return [];
+    }
+    const parent = dirname(value);
+    return parent === "." || parent === "/" || parent === value ? [value] : [value, parent];
+  });
 }
 
 function dedupeRedactions(values: Array<string | undefined>): string[] {
