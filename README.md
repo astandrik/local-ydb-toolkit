@@ -2,8 +2,11 @@
 
 [![Listed on CuratedMCP](https://www.curatedmcp.com/api/badge/local-ydb-unofficial-mcp-server)](https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server)
 [![MCP Badge](https://lobehub.com/badge/mcp/astandrik-local-ydb-toolkit)](https://lobehub.com/mcp/astandrik-local-ydb-toolkit)
+[![local-ydb-toolkit MCP server](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit/badges/score.svg)](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit)
 
 Reusable Codex skill for operating `local-ydb` deployments.
+
+Directory listing: [Local YDB MCP on Skiln](https://skiln.co/mcp/mcp-io-github-astandrik-local-ydb-mcp).
 
 ## Quick Start
 
