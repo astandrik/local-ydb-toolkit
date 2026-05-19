@@ -106,6 +106,75 @@ describe("mcp tools", () => {
     ]);
   });
 
+  it("describes every top-level tool input parameter", () => {
+    for (const tool of localYdbTools) {
+      for (const [propertyName, schema] of Object.entries(tool.inputSchema.properties ?? {})) {
+        expect(schema, `${tool.name}.${propertyName}`).toMatchObject({
+          description: expect.any(String)
+        });
+        expect((schema as { description?: string }).description?.trim().length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("annotates tools with behavioral hints", () => {
+    const readOnlyTools = new Set([
+      "local_ydb_auth_check",
+      "local_ydb_container_logs",
+      "local_ydb_database_status",
+      "local_ydb_graphshard_check",
+      "local_ydb_inventory",
+      "local_ydb_list_versions",
+      "local_ydb_nodes_check",
+      "local_ydb_pull_status",
+      "local_ydb_scheme",
+      "local_ydb_status_report",
+      "local_ydb_storage_leftovers",
+      "local_ydb_storage_placement",
+      "local_ydb_tenant_check"
+    ]);
+    const destructiveTools = new Set([
+      "local_ydb_cleanup_storage",
+      "local_ydb_destroy_stack",
+      "local_ydb_permissions",
+      "local_ydb_reduce_storage_groups",
+      "local_ydb_remove_dynamic_nodes",
+      "local_ydb_restore_tenant",
+      "local_ydb_upgrade_version"
+    ]);
+
+    for (const tool of localYdbTools) {
+      expect(tool.annotations, tool.name).toMatchObject({
+        readOnlyHint: readOnlyTools.has(tool.name),
+        destructiveHint: destructiveTools.has(tool.name),
+        openWorldHint: true
+      });
+      expect(typeof tool.annotations?.idempotentHint).toBe("boolean");
+    }
+  });
+
+  it("documents usage and safety cues for Glama low-scoring tools", () => {
+    const qualityTargets = [
+      "local_ydb_apply_auth_hardening",
+      "local_ydb_auth_check",
+      "local_ydb_cleanup_storage",
+      "local_ydb_nodes_check",
+      "local_ydb_permissions",
+      "local_ydb_prepare_auth_config",
+      "local_ydb_restart_stack",
+      "local_ydb_restore_tenant",
+      "local_ydb_start_dynamic_node",
+      "local_ydb_storage_placement",
+      "local_ydb_tenant_check",
+      "local_ydb_write_dynamic_auth_config"
+    ];
+
+    for (const toolName of qualityTargets) {
+      const tool = localYdbTools.find((candidate) => candidate.name === toolName);
+      expect(tool?.description, toolName).toMatch(/Use|read-only|Without confirm=true/);
+    }
+  });
+
   it("registers stable public local-ydb prompts", () => {
     expect(localYdbPrompts.map((prompt) => prompt.name)).toEqual([
       "local_ydb_diagnose_stack",
