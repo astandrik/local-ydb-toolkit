@@ -155,23 +155,39 @@ describe("mcp tools", () => {
 
   it("documents usage and safety cues for Glama low-scoring tools", () => {
     const qualityTargets = [
+      "local_ydb_add_dynamic_nodes",
+      "local_ydb_add_storage_groups",
       "local_ydb_apply_auth_hardening",
       "local_ydb_auth_check",
+      "local_ydb_bootstrap",
+      "local_ydb_bootstrap_root_database",
+      "local_ydb_check_prerequisites",
       "local_ydb_cleanup_storage",
+      "local_ydb_container_logs",
+      "local_ydb_database_status",
+      "local_ydb_dump_tenant",
+      "local_ydb_graphshard_check",
+      "local_ydb_inventory",
+      "local_ydb_list_versions",
       "local_ydb_nodes_check",
       "local_ydb_permissions",
       "local_ydb_prepare_auth_config",
+      "local_ydb_pull_image",
       "local_ydb_restart_stack",
       "local_ydb_restore_tenant",
+      "local_ydb_scheme",
       "local_ydb_start_dynamic_node",
+      "local_ydb_status_report",
+      "local_ydb_storage_leftovers",
       "local_ydb_storage_placement",
       "local_ydb_tenant_check",
+      "local_ydb_upgrade_version",
       "local_ydb_write_dynamic_auth_config"
     ];
 
     for (const toolName of qualityTargets) {
       const tool = localYdbTools.find((candidate) => candidate.name === toolName);
-      expect(tool?.description, toolName).toMatch(/Use|read-only|Without confirm=true/);
+      expect(tool?.description, toolName).toMatch(/use|read-only|without confirm=true/i);
     }
   });
 
