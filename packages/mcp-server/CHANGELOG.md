@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.7](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.6...mcp-server-v0.9.7) (2026-05-19)
+
+
+### Bug Fixes
+
+* **mcp-server:** clarify tool behavior descriptions ([#63](https://github.com/astandrik/local-ydb-toolkit/issues/63)) ([871dfb8](https://github.com/astandrik/local-ydb-toolkit/commit/871dfb86102be23e4355081e151517917ff82c3d))
+
 ## [0.9.6](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.5...mcp-server-v0.9.6) (2026-05-19)
 
 
