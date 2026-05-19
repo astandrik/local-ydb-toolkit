@@ -58,14 +58,17 @@ Status {
     expect(redactCommand("docker rm -f ydb-local")).toBe("docker rm -f ydb-local");
     expect(redactCommand("docker exec -i ydb-local true")).toBe("docker exec -i ydb-local true");
     expect(redactCommand("ssh -i /secret/key host true")).toBe("ssh -i <redacted> host true");
+    expect(redactCommand("ssh -i/secret/key host true")).toBe("ssh -i<redacted> host true");
     expect(redactCommand("/usr/bin/ssh -i /secret/key host true")).toBe("/usr/bin/ssh -i <redacted> host true");
     expect(redactCommand("bash -lc 'ssh -i /secret/key host true'")).toBe("bash -lc 'ssh -i <redacted> host true'");
     expect(redactCommand("bash -lc '/usr/bin/ssh -B eth0 -P tag -i /secret/key host true'")).toBe("bash -lc '/usr/bin/ssh -B eth0 -P tag -i <redacted> host true'");
+    expect(redactCommand("bash -lc 'ssh -o ProxyCommand=\"ssh -i /secret/key jump\" host true'")).toBe("bash -lc 'ssh -o ProxyCommand=\"ssh -i <redacted> jump\" host true'");
     expect(redactCommand("env ssh -i /secret/key host true")).toBe("env ssh -i <redacted> host true");
     expect(redactCommand("bash -lc 'out=$(ssh -i /secret/key host true)'")).toBe("bash -lc 'out=$(ssh -i <redacted> host true)'");
     expect(redactCommand(`bash -lc 'ssh ${lineContinuation} -i /secret/key host true'`)).toBe(`bash -lc 'ssh ${lineContinuation} -i <redacted> host true'`);
     expect(redactCommand("bash -lc 'rm -f /tmp/secret'", ["/tmp/secret"])).toBe("bash -lc 'rm -f <redacted>'");
     expect(redactCommand("bash -lc 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
+    expect(redactCommand("bash -lc 'cmd=\"ydb --token-file /secret/token\"; echo ok'")).toBe("bash -lc 'cmd=\"ydb --token-file <redacted>\"; echo ok'");
     expect(redactCommand(`bash -lc 'ydb --token-file ${lineContinuation} /secret/token scheme ls'`)).toBe(`bash -lc 'ydb --token-file ${lineContinuation} <redacted> scheme ls'`);
     expect(redactCommand("bash -lc\\ 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc\\ 'ydb --token-file <redacted> scheme ls'");
     expect(redactCommand("bash -lc\\ 'rm -f /tmp/secret path'", ["/tmp/secret path"])).toBe("bash -lc\\ 'rm -f <redacted>'");

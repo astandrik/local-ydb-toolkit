@@ -80,7 +80,7 @@ function redactSensitiveFlagValues(input: string): string {
     if (valueStart >= input.length) {
       continue;
     }
-    const valueEnd = findShellWordEnd(input, valueStart);
+    const valueEnd = findCommandValueEnd(input, valueStart);
     output += input.slice(lastIndex, valueStart);
     output += "<redacted>";
     lastIndex = valueEnd;
@@ -103,13 +103,16 @@ function escapeRegExp(value: string): string {
 }
 
 function redactSshIdentityValues(input: string): string {
-  let output = "";
-  let lastIndex = 0;
-  let cursor = 0;
+  const ranges: Array<{ start: number; end: number }> = [];
+  collectSshIdentityRanges(input, 0, input.length, ranges);
+  return redactRanges(input, ranges);
+}
 
+function collectSshIdentityRanges(input: string, start: number, end: number, ranges: Array<{ start: number; end: number }>): void {
+  let cursor = start;
   while (cursor < input.length) {
     const sshStart = findNextSshWordStart(input, cursor);
-    if (sshStart >= input.length) {
+    if (sshStart >= end) {
       break;
     }
     const sshEnd = findSshWordEnd(input, sshStart);
@@ -130,24 +133,49 @@ function redactSshIdentityValues(input: string): string {
       }
       if (word === "-i") {
         const valueStart = skipShellWhitespace(input, wordEnd);
-        if (valueStart >= input.length) {
+        if (valueStart >= end) {
           break;
         }
-        const valueEnd = findShellWordEnd(input, valueStart);
-        output += input.slice(lastIndex, valueStart);
-        output += "<redacted>";
-        lastIndex = valueEnd;
+        const valueEnd = Math.min(findCommandValueEnd(input, valueStart), end);
+        ranges.push({ start: valueStart, end: valueEnd });
         cursor = valueEnd;
+        continue;
+      }
+      if (word.startsWith("-i") && word.length > 2) {
+        ranges.push({ start: wordStart + 2, end: wordEnd });
+        cursor = wordEnd;
         continue;
       }
       if (!word.startsWith("-") || word === "-") {
         break;
       }
-      cursor = SSH_OPTIONS_WITH_VALUE.has(word) ? findShellWordEnd(input, skipShellWhitespace(input, wordEnd)) : wordEnd;
+      if (SSH_OPTIONS_WITH_VALUE.has(word)) {
+        const valueStart = skipShellWhitespace(input, wordEnd);
+        const valueEnd = Math.min(findShellWordEnd(input, valueStart), end);
+        collectSshIdentityRanges(input, valueStart, valueEnd, ranges);
+        cursor = valueEnd;
+      } else {
+        cursor = wordEnd;
+      }
     }
   }
+}
 
-  return output + input.slice(lastIndex);
+function redactRanges(input: string, ranges: Array<{ start: number; end: number }>): string {
+  const sorted = ranges
+    .filter((range) => range.start < range.end)
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  let output = "";
+  let cursor = 0;
+  for (const range of sorted) {
+    if (range.end <= cursor) {
+      continue;
+    }
+    output += input.slice(cursor, Math.max(range.start, cursor));
+    output += "<redacted>";
+    cursor = range.end;
+  }
+  return output + input.slice(cursor);
 }
 
 function isSshCommandName(commandName: string | undefined): boolean {
@@ -203,6 +231,28 @@ function shellLineContinuationLength(input: string, index: number): number {
 
 function isShellCommandBoundary(char: string): boolean {
   return char === ";" || char === "&" || char === "|" || char === "(" || char === ")";
+}
+
+function findCommandValueEnd(input: string, start: number): number {
+  if (input[start] === "'" || input[start] === "\"") {
+    return findShellWordEnd(input, start);
+  }
+  let escaped = false;
+  for (let index = start; index < input.length; index += 1) {
+    const char = input[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (/\s/.test(char) || char === "'" || char === "\"" || char === "`" || isShellCommandBoundary(char)) {
+      return index;
+    }
+  }
+  return input.length;
 }
 
 function findShellWordEnd(input: string, start: number): number {
