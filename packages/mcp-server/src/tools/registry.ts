@@ -241,7 +241,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_auth_check",
     description:
-      "Read-only auth audit that checks whether anonymous viewer access is denied and authenticated YDB CLI access still works. Use after auth hardening or password rotation to verify the expected posture.",
+      "Read-only auth audit that checks anonymous viewer whoami status and configured YDB CLI tenant access, using root credentials when rootPasswordFile is configured. Use after auth hardening or password rotation to verify the expected posture.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => authCheck(context)),
@@ -250,7 +250,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_storage_placement",
     description:
-      "Read-only storage inspection that reports tenant storage pools and BSC physical placement. Use before adding or reducing storage groups to confirm the exact pool shape.",
+      "Read-only storage inspection that returns ReadStoragePool output and BSC physical placement. Use before adding or reducing storage groups to confirm the exact pool shape.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => storagePlacement(context)),
@@ -374,7 +374,7 @@ export const toolDefinitions = [
     instructionOrder: 3,
     name: "local_ydb_create_tenant",
     description:
-      "Create the configured CMS tenant when the static node is already running. Use before local_ydb_start_dynamic_node for tenant topologies; without confirm=true this returns the planned YDB admin command only.",
+      "Create the configured CMS tenant when the static node is already running. Use before local_ydb_start_dynamic_node for tenant topologies; without confirm=true this returns the planned status/create command and creates nothing.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -408,7 +408,7 @@ export const toolDefinitions = [
     group: "dynamic nodes",
     name: "local_ydb_remove_dynamic_nodes",
     description:
-      "Remove extra dynamic tenant nodes one at a time and verify each disappears from nodelist.",
+      "Remove extra dynamic tenant nodes one at a time and verify nodelist disappearance when the node IC port can be resolved.",
     inputSchema: removeDynamicNodesSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: withContext(RemoveDynamicNodesArgs, (context, parsed) =>
@@ -420,7 +420,7 @@ export const toolDefinitions = [
     instructionOrder: 5,
     name: "local_ydb_restart_stack",
     description:
-      "Restart the static and dynamic local-ydb containers for the selected profile. Use after config or runtime changes that require restart; without confirm=true this returns the restart plan and does not disrupt containers.",
+      "Restart the selected profile by stopping dynamic and static containers, starting the static node, ensuring the configured tenant, then starting the dynamic node. Use after config or runtime changes; without confirm=true this returns the restart plan only.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(MutatingArgs, (context, parsed) =>
