@@ -75,18 +75,30 @@ describe("scheme inspection", () => {
     expect(response.command).toContain("-d /local/example");
   });
 
-  it("adds list flags in the documented CLI order", async () => {
+  it("adds long recursive list flags in the documented CLI order", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
 
     const response = await inspectScheme(ctx, {
       path: "/local/example/dir",
       long: true,
+      recursive: true
+    });
+
+    expect(response.command).toContain("scheme ls /local/example/dir -l -R");
+  });
+
+  it("adds recursive one-per-line list flags in the documented CLI order", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const response = await inspectScheme(ctx, {
+      path: "/local/example/dir",
       recursive: true,
       onePerLine: true
     });
 
-    expect(response.command).toContain("scheme ls /local/example/dir -l -R -1");
+    expect(response.command).toContain("scheme ls /local/example/dir -R -1");
   });
 
   it("describes a scheme object with stats", async () => {
@@ -141,7 +153,8 @@ describe("scheme inspection", () => {
   });
 
   it("rejects unsupported flag combinations", async () => {
-    const ctx = createContext(undefined, new RecordingExecutor(), ConfigSchema.parse({}));
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
 
     await expect(inspectScheme(ctx, {
       action: "list",
@@ -152,6 +165,14 @@ describe("scheme inspection", () => {
       action: "describe",
       recursive: true
     })).rejects.toThrow(/only supported when action is list/);
+
+    await expect(inspectScheme(ctx, {
+      action: "list",
+      long: true,
+      onePerLine: true
+    })).rejects.toThrow(/flags -l and -1 are incompatible/);
+
+    expect(executor.commands).toEqual([]);
   });
 
   it("caps stdout and stderr independently", async () => {

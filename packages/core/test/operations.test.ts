@@ -986,6 +986,60 @@ describe("mutating operations", () => {
     expect(response.removesDumpHostPath).toBe(false);
   });
 
+  it("redacts auth artifact cleanup paths without malformed shell quotes", async () => {
+    const shellDisplay = new ShellCommandExecutor();
+    const executor = new RecordingExecutor();
+    executor.display = (profile, spec) => shellDisplay.display(profile, spec);
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker volume ls")) {
+        return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
+          rootPasswordFile: "/tmp/local-ydb-auth/root.password"
+        }
+      }
+    }));
+
+    const response = await destroyStack(ctx, { removeAuthArtifacts: true });
+    const plan = response.plannedCommands.join("\n");
+    const artifactCleanupCommands = response.plannedCommands.filter((command) => command.includes("rm -f <redacted>"));
+
+    expect(artifactCleanupCommands).toHaveLength(3);
+    expect(artifactCleanupCommands.every((command) => command.endsWith("'"))).toBe(true);
+    expect(plan).not.toContain("/tmp/local-ydb-auth/config.auth.yaml");
+    expect(plan).not.toContain("/tmp/local-ydb-auth/dynamic-node-auth.pb");
+    expect(plan).not.toContain("/tmp/local-ydb-auth/root.password");
+    expect(plan).not.toContain("rm -f <redacted>\n");
+  });
+
   it("continues docker teardown when tenant removal is blocked by auth failure", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({

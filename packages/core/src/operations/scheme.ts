@@ -53,6 +53,9 @@ function schemeArgs(action: SchemeAction, path: string, options: SchemeOptions):
     if (options.stats) {
       throw new Error("stats is only supported when action is describe");
     }
+    if (options.long && options.onePerLine) {
+      throw new Error("long and onePerLine cannot be used together because YDB CLI flags -l and -1 are incompatible");
+    }
     return [
       "scheme",
       "ls",

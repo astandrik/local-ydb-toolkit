@@ -120,6 +120,8 @@ function sshArgs(profile: ResolvedLocalYdbProfile, remoteCommand: string): strin
 
 function collectRedactions(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string[] {
   return [
+    profile.authConfigPath,
+    profile.dynamicNodeAuthTokenFile,
     profile.rootPasswordFile,
     profile.ssh?.identityFile,
     ...(spec.redactions ?? [])

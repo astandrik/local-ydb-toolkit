@@ -534,7 +534,6 @@ describe("mcp tools", () => {
     const result = await callLocalYdbToolForTest("local_ydb_scheme", {
       path: "/local/example/dir",
       recursive: true,
-      long: true,
       onePerLine: true
     }, {
       config: ConfigSchema.parse({}),
@@ -544,7 +543,18 @@ describe("mcp tools", () => {
     expect(result.action).toBe("list");
     expect(result.path).toBe("/local/example/dir");
     expect(result.maxOutputBytes).toBe(65_536);
-    expect(result.command).toContain("scheme ls /local/example/dir -l -R -1");
+    expect(result.command).toContain("scheme ls /local/example/dir -R -1");
+  });
+
+  it("rejects incompatible scheme list flags through the MCP handler", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_scheme", {
+      path: "/local/example/dir",
+      long: true,
+      onePerLine: true
+    }, {
+      config: ConfigSchema.parse({}),
+      executor: new RecordingExecutor()
+    })).rejects.toThrow(/flags -l and -1 are incompatible/);
   });
 
   it("can describe scheme objects with stats through the MCP handler", async () => {

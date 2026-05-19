@@ -51,6 +51,10 @@ Status {
 
   it("redacts sensitive command flags and profile values", () => {
     expect(redactCommand("ydb --password-file /secret/root.password --token-file abc")).toContain("--password-file <redacted>");
+    expect(redactCommand("docker rm -f ydb-local")).toBe("docker rm -f ydb-local");
+    expect(redactCommand("docker exec -i ydb-local true")).toBe("docker exec -i ydb-local true");
+    expect(redactCommand("ssh -i /secret/key host true")).toBe("ssh -i <redacted> host true");
+    expect(redactCommand("bash -lc 'rm -f /tmp/secret'", ["/tmp/secret"])).toBe("bash -lc 'rm -f <redacted>'");
   });
 
   it("formats ssh commands with safe defaults", () => {
