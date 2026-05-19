@@ -52,6 +52,8 @@ Status {
   });
 
   it("redacts sensitive command flags and profile values", () => {
+    const lineContinuation = "\\\n";
+
     expect(redactCommand("ydb --password-file /secret/root.password --token-file abc")).toContain("--password-file <redacted>");
     expect(redactCommand("docker rm -f ydb-local")).toBe("docker rm -f ydb-local");
     expect(redactCommand("docker exec -i ydb-local true")).toBe("docker exec -i ydb-local true");
@@ -60,8 +62,11 @@ Status {
     expect(redactCommand("bash -lc 'ssh -i /secret/key host true'")).toBe("bash -lc 'ssh -i <redacted> host true'");
     expect(redactCommand("bash -lc '/usr/bin/ssh -B eth0 -P tag -i /secret/key host true'")).toBe("bash -lc '/usr/bin/ssh -B eth0 -P tag -i <redacted> host true'");
     expect(redactCommand("env ssh -i /secret/key host true")).toBe("env ssh -i <redacted> host true");
+    expect(redactCommand("bash -lc 'out=$(ssh -i /secret/key host true)'")).toBe("bash -lc 'out=$(ssh -i <redacted> host true)'");
+    expect(redactCommand(`bash -lc 'ssh ${lineContinuation} -i /secret/key host true'`)).toBe(`bash -lc 'ssh ${lineContinuation} -i <redacted> host true'`);
     expect(redactCommand("bash -lc 'rm -f /tmp/secret'", ["/tmp/secret"])).toBe("bash -lc 'rm -f <redacted>'");
     expect(redactCommand("bash -lc 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
+    expect(redactCommand(`bash -lc 'ydb --token-file ${lineContinuation} /secret/token scheme ls'`)).toBe(`bash -lc 'ydb --token-file ${lineContinuation} <redacted> scheme ls'`);
     expect(redactCommand("bash -lc\\ 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc\\ 'ydb --token-file <redacted> scheme ls'");
     expect(redactCommand("bash -lc\\ 'rm -f /tmp/secret path'", ["/tmp/secret path"])).toBe("bash -lc\\ 'rm -f <redacted>'");
     expect(redactCommand(`bash -lc 'ydb --token-file ${shellQuote("/tmp/quote'd/token file")} scheme ls'`)).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");

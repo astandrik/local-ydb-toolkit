@@ -76,7 +76,7 @@ function redactSensitiveFlagValues(input: string): string {
 
   SENSITIVE_FLAG_PATTERN.lastIndex = 0;
   while ((match = SENSITIVE_FLAG_PATTERN.exec(input)) !== null) {
-    const valueStart = match.index + match[0].length;
+    const valueStart = skipShellWhitespace(input, match.index + match[0].length);
     if (valueStart >= input.length) {
       continue;
     }
@@ -119,7 +119,7 @@ function redactSshIdentityValues(input: string): string {
     }
     cursor = sshEnd;
     for (;;) {
-      const wordStart = skipWhitespace(input, cursor);
+      const wordStart = skipShellWhitespace(input, cursor);
       if (wordStart >= input.length || isShellCommandBoundary(input[wordStart])) {
         break;
       }
@@ -129,7 +129,7 @@ function redactSshIdentityValues(input: string): string {
         break;
       }
       if (word === "-i") {
-        const valueStart = skipWhitespace(input, wordEnd);
+        const valueStart = skipShellWhitespace(input, wordEnd);
         if (valueStart >= input.length) {
           break;
         }
@@ -143,7 +143,7 @@ function redactSshIdentityValues(input: string): string {
       if (!word.startsWith("-") || word === "-") {
         break;
       }
-      cursor = SSH_OPTIONS_WITH_VALUE.has(word) ? findShellWordEnd(input, skipWhitespace(input, wordEnd)) : wordEnd;
+      cursor = SSH_OPTIONS_WITH_VALUE.has(word) ? findShellWordEnd(input, skipShellWhitespace(input, wordEnd)) : wordEnd;
     }
   }
 
@@ -174,16 +174,35 @@ function isSshScanBoundary(char: string): boolean {
   return /\s/.test(char) || char === "'" || char === "\"" || char === "`" || isShellCommandBoundary(char);
 }
 
-function skipWhitespace(input: string, start: number): number {
+function skipShellWhitespace(input: string, start: number): number {
   let index = start;
-  while (index < input.length && /\s/.test(input[index])) {
-    index += 1;
+  for (;;) {
+    while (index < input.length && /\s/.test(input[index])) {
+      index += 1;
+    }
+    const continuationLength = shellLineContinuationLength(input, index);
+    if (continuationLength === 0) {
+      return index;
+    }
+    index += continuationLength;
   }
-  return index;
+}
+
+function shellLineContinuationLength(input: string, index: number): number {
+  if (input[index] !== "\\") {
+    return 0;
+  }
+  if (input[index + 1] === "\n") {
+    return 2;
+  }
+  if (input[index + 1] === "\r") {
+    return input[index + 2] === "\n" ? 3 : 2;
+  }
+  return 0;
 }
 
 function isShellCommandBoundary(char: string): boolean {
-  return char === ";" || char === "&" || char === "|" || char === ")";
+  return char === ";" || char === "&" || char === "|" || char === "(" || char === ")";
 }
 
 function findShellWordEnd(input: string, start: number): number {
