@@ -55,6 +55,8 @@ Status {
     expect(redactCommand("docker rm -f ydb-local")).toBe("docker rm -f ydb-local");
     expect(redactCommand("docker exec -i ydb-local true")).toBe("docker exec -i ydb-local true");
     expect(redactCommand("ssh -i /secret/key host true")).toBe("ssh -i <redacted> host true");
+    expect(redactCommand("bash -lc 'ssh -i /secret/key host true'")).toBe("bash -lc 'ssh -i <redacted> host true'");
+    expect(redactCommand("env ssh -i /secret/key host true")).toBe("env ssh -i <redacted> host true");
     expect(redactCommand("bash -lc 'rm -f /tmp/secret'", ["/tmp/secret"])).toBe("bash -lc 'rm -f <redacted>'");
     expect(redactCommand("bash -lc 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
     expect(redactCommand("bash -lc\\ 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc\\ 'ydb --token-file <redacted> scheme ls'");
@@ -71,22 +73,33 @@ Status {
   it("redacts shell-quoted profile paths before rendering display commands", () => {
     const authDir = "/tmp/local-ydb-auth/quote'd";
     const authConfigPath = `${authDir}/config.auth.yaml`;
+    const dynamicNodeAuthTokenFile = `${authDir}/dynamic-node-auth.pb`;
     const profile = resolveProfile(ConfigSchema.parse({
       profiles: {
         default: {
-          authConfigPath
+          authConfigPath,
+          dynamicNodeAuthTokenFile
         }
       }
     }));
 
-    const command = new ShellCommandExecutor().display(profile, {
+    const executor = new ShellCommandExecutor();
+    const command = executor.display(profile, {
       command: "bash",
       args: ["-lc", `install -d -m 0700 ${shellQuote(authDir)} && rm -f ${shellQuote(authConfigPath)}`]
     });
+    const mountCommand = executor.display(profile, {
+      command: "docker",
+      args: ["run", "-v", `${dynamicNodeAuthTokenFile}:/run/local-ydb/dynamic-node-auth.pb:ro`]
+    });
 
     expect(command).toBe("bash -lc 'install -d -m 0700 <redacted> && rm -f <redacted>'");
+    expect(mountCommand).toContain("'<redacted>:/run/local-ydb/dynamic-node-auth.pb:ro'");
+    expect(mountCommand).not.toContain("<redacted>/dynamic-node-auth.pb");
     expect(command).not.toContain("/tmp/local-ydb-auth");
+    expect(mountCommand).not.toContain("/tmp/local-ydb-auth");
     expect(command).not.toContain("quote");
+    expect(mountCommand).not.toContain("quote");
   });
 
   it("formats ssh commands with safe defaults", () => {

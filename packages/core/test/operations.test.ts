@@ -458,6 +458,7 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.plannedCommands[0]).toContain("install -d -m 0700 <redacted>");
     expect(response.plannedCommands[0]).toContain("> <redacted>");
+    expect(response.plannedCommands[0]).not.toContain("<redacted>/dynamic-node-auth.pb");
     expect(response.plannedCommands[0]).toContain("chmod 600 <redacted>");
     expect(response.plannedCommands[0]).not.toContain("/tmp/local-ydb-auth");
     expect(response.plannedCommands[0]).not.toContain("quote");

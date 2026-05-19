@@ -9,6 +9,28 @@ const SENSITIVE_FLAGS = [
 ] as const;
 const SENSITIVE_FLAG_SET = new Set<string>(SENSITIVE_FLAGS);
 const SENSITIVE_FLAG_PATTERN = buildSensitiveFlagPattern(SENSITIVE_FLAGS);
+const SSH_COMMAND_PATTERN = /(^|[\s'"`;&|()])ssh(?=$|[\s'"`;&|()])/g;
+const SSH_OPTIONS_WITH_VALUE = new Set([
+  "-b",
+  "-c",
+  "-D",
+  "-E",
+  "-e",
+  "-F",
+  "-I",
+  "-J",
+  "-L",
+  "-l",
+  "-m",
+  "-O",
+  "-o",
+  "-p",
+  "-Q",
+  "-R",
+  "-S",
+  "-W",
+  "-w"
+]);
 
 export function redactText(input: string, extraRedactions: string[] = []): string {
   let output = input;
@@ -43,7 +65,7 @@ export function redactCommand(command: string, extraRedactions: string[] = []): 
     }
     return part.text;
   }).join("");
-  return redactText(redactSensitiveFlagValues(topLevelRedacted), extraRedactions);
+  return redactText(redactSshIdentityValues(redactSensitiveFlagValues(topLevelRedacted)), extraRedactions);
 }
 
 function redactSensitiveFlagValues(input: string): string {
@@ -77,6 +99,62 @@ function buildSensitiveFlagPattern(flags: readonly string[]): RegExp {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function redactSshIdentityValues(input: string): string {
+  let output = "";
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  SSH_COMMAND_PATTERN.lastIndex = 0;
+  while ((match = SSH_COMMAND_PATTERN.exec(input)) !== null) {
+    const sshStart = match.index + match[1].length;
+    if (sshStart < lastIndex) {
+      continue;
+    }
+    let cursor = sshStart + "ssh".length;
+    for (;;) {
+      const wordStart = skipWhitespace(input, cursor);
+      if (wordStart >= input.length || isShellCommandBoundary(input[wordStart])) {
+        break;
+      }
+      const wordEnd = findShellWordEnd(input, wordStart);
+      const word = input.slice(wordStart, wordEnd);
+      if (word === "--") {
+        break;
+      }
+      if (word === "-i") {
+        const valueStart = skipWhitespace(input, wordEnd);
+        if (valueStart >= input.length) {
+          break;
+        }
+        const valueEnd = findShellWordEnd(input, valueStart);
+        output += input.slice(lastIndex, valueStart);
+        output += "<redacted>";
+        lastIndex = valueEnd;
+        cursor = valueEnd;
+        continue;
+      }
+      if (!word.startsWith("-") || word === "-") {
+        break;
+      }
+      cursor = SSH_OPTIONS_WITH_VALUE.has(word) ? findShellWordEnd(input, skipWhitespace(input, wordEnd)) : wordEnd;
+    }
+  }
+
+  return output + input.slice(lastIndex);
+}
+
+function skipWhitespace(input: string, start: number): number {
+  let index = start;
+  while (index < input.length && /\s/.test(input[index])) {
+    index += 1;
+  }
+  return index;
+}
+
+function isShellCommandBoundary(char: string): boolean {
+  return char === ";" || char === "&" || char === "|" || char === ")";
 }
 
 function findShellWordEnd(input: string, start: number): number {

@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
 import { bash, shellQuote } from "../api-client.js";
+import { pathRedactions } from "../redactions.js";
 import { commandForDynamicRun, createTenantSpec, waitForYdbCli } from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
 import { commandForStaticGeneratedConfigPath } from "./generated-config.js";
@@ -448,14 +449,4 @@ export async function setRootPassword(
     verification,
     results
   };
-}
-
-function pathRedactions(...paths: Array<string | undefined>): string[] {
-  return paths.flatMap((path) => {
-    if (!path) {
-      return [];
-    }
-    const parent = dirname(path);
-    return parent === "." || parent === "/" || parent === path ? [path] : [path, parent];
-  });
 }

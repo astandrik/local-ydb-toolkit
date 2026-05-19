@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { dirname } from "node:path";
 import { redactCommand, redactText } from "./auth.js";
+import { pathRedactions } from "./redactions.js";
 import type { ResolvedLocalYdbProfile } from "./validation.js";
 
 export interface CommandSpec {
@@ -133,20 +133,18 @@ function collectRedactions(profile: ResolvedLocalYdbProfile, spec: CommandSpec):
   ]);
 }
 
-function pathRedactions(...values: Array<string | undefined>): string[] {
-  return values.flatMap((value) => {
-    if (!value) {
-      return [];
-    }
-    const parent = dirname(value);
-    return parent === "." || parent === "/" || parent === value ? [value] : [value, parent];
-  });
-}
-
 function dedupeRedactions(values: Array<string | undefined>): string[] {
-  return [...new Set(values
-    .filter((value): value is string => Boolean(value))
-    .flatMap((value) => [value, shellQuote(value)]))];
+  const redactions: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values.filter((value): value is string => Boolean(value))) {
+    for (const candidate of [value, shellQuote(value)]) {
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        redactions.push(candidate);
+      }
+    }
+  }
+  return redactions.sort((left, right) => right.length - left.length);
 }
 
 function redactCommandSpec(spec: CommandSpec, redactions: string[]): CommandSpec {
