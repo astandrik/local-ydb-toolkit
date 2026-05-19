@@ -1,19 +1,38 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
+function profileProperty(): { type: "string"; description: string } {
+  return {
+    type: "string",
+    description:
+      "Named profile from local-ydb.config.json. Defaults to config.defaultProfile.",
+  };
+}
+
+function configPathProperty(): { type: "string"; description: string } {
+  return {
+    type: "string",
+    description:
+      "Explicit local-ydb config file path to load for this tool call. Useful when the MCP server should pick up a different config without restart.",
+  };
+}
+
+function confirmProperty(action = "execute planned commands"): {
+  type: "boolean";
+  description: string;
+} {
+  return {
+    type: "boolean",
+    description:
+      `Must be true to ${action}. Omit or false for plan-only output.`,
+  };
+}
+
 export function profileSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: {
-        type: "string",
-        description:
-          "Named profile from local-ydb.config.json. Defaults to config.defaultProfile.",
-      },
-      configPath: {
-        type: "string",
-        description:
-          "Explicit local-ydb config file path to load for this tool call. Useful when the MCP server should pick up a different config without restart.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
     },
     additionalProperties: false,
   };
@@ -24,9 +43,13 @@ export function logsSchema(): Tool["inputSchema"] {
     type: "object",
     required: ["target"],
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      target: { type: "string", enum: ["static", "dynamic"] },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      target: {
+        type: "string",
+        enum: ["static", "dynamic"],
+        description: "Container role to read logs from: static node or primary dynamic tenant node.",
+      },
       lines: {
         type: "integer",
         minimum: 1,
@@ -41,16 +64,8 @@ export function schemeSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: {
-        type: "string",
-        description:
-          "Named profile from local-ydb.config.json. Defaults to config.defaultProfile.",
-      },
-      configPath: {
-        type: "string",
-        description:
-          "Explicit local-ydb config file path to load for this tool call.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
       action: {
         type: "string",
         enum: ["list", "describe"],
@@ -93,16 +108,8 @@ export function permissionsSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: {
-        type: "string",
-        description:
-          "Named profile from local-ydb.config.json. Defaults to config.defaultProfile.",
-      },
-      configPath: {
-        type: "string",
-        description:
-          "Explicit local-ydb config file path to load for this tool call.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
       action: {
         type: "string",
         enum: [
@@ -187,17 +194,9 @@ export function pullImageSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: {
-        type: "string",
-        description:
-          "Explicit local-ydb config file path to load for this tool call.",
-      },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to start the background Docker pull. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("start the background Docker pull"),
       image: {
         type: "string",
         description:
@@ -227,17 +226,9 @@ export function mutatingSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: {
-        type: "string",
-        description:
-          "Explicit local-ydb config file path to load for this tool call.",
-      },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty(),
     },
     additionalProperties: false,
   };
@@ -247,13 +238,9 @@ export function addDynamicNodesSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty(),
       count: {
         type: "integer",
         minimum: 1,
@@ -297,13 +284,9 @@ export function addStorageGroupsSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty(),
       count: {
         type: "integer",
         minimum: 1,
@@ -324,13 +307,9 @@ export function reduceStorageGroupsSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty(),
       count: {
         type: "integer",
         minimum: 1,
@@ -357,13 +336,9 @@ export function destroyStackSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty(),
       removeBindMountPath: {
         type: "boolean",
         description:
@@ -388,13 +363,9 @@ export function removeDynamicNodesSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty(),
       count: {
         type: "integer",
         minimum: 1,
@@ -427,9 +398,9 @@ export function dumpSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: { type: "boolean" },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("dump the tenant"),
       dumpName: {
         type: "string",
         description: "Optional dump directory name under profile.dumpHostPath.",
@@ -444,17 +415,9 @@ export function upgradeVersionSchema(): Tool["inputSchema"] {
     type: "object",
     required: ["version"],
     properties: {
-      profile: { type: "string" },
-      configPath: {
-        type: "string",
-        description:
-          "Explicit local-ydb config file path to load for this tool call.",
-      },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("execute the version upgrade plan"),
       version: {
         type: "string",
         description:
@@ -475,9 +438,9 @@ export function restoreSchema(): Tool["inputSchema"] {
     type: "object",
     required: ["dumpName"],
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: { type: "boolean" },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("restore the tenant from the selected dump"),
       dumpName: {
         type: "string",
         description: "Dump directory name under profile.dumpHostPath.",
@@ -491,9 +454,9 @@ export function authHardeningSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: { type: "boolean" },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("apply the auth hardening config and restart local-ydb"),
       configHostPath: {
         type: "string",
         description:
@@ -508,13 +471,9 @@ export function prepareAuthConfigSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("write the hardened config file"),
       configHostPath: {
         type: "string",
         description:
@@ -534,13 +493,9 @@ export function dynamicAuthConfigSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("write the dynamic-node auth token file"),
       sid: {
         type: "string",
         description:
@@ -561,13 +516,9 @@ export function setRootPasswordSchema(): Tool["inputSchema"] {
     type: "object",
     required: ["password"],
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: {
-        type: "boolean",
-        description:
-          "Must be true to execute commands. Omit or false for plan-only output.",
-      },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("rotate and persist the root password"),
       password: {
         type: "string",
         minLength: 1,
@@ -584,11 +535,21 @@ export function cleanupSchema(): Tool["inputSchema"] {
   return {
     type: "object",
     properties: {
-      profile: { type: "string" },
-      configPath: { type: "string" },
-      confirm: { type: "boolean" },
-      paths: { type: "array", items: { type: "string" } },
-      volumes: { type: "array", items: { type: "string" } },
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      confirm: confirmProperty("remove the explicitly supplied storage paths or Docker volumes"),
+      paths: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Explicit host filesystem paths to remove. Nothing is deleted unless each path is supplied here and confirm=true.",
+      },
+      volumes: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Explicit Docker volume names to remove. Nothing is deleted unless each volume is supplied here and confirm=true.",
+      },
     },
     additionalProperties: false,
   };
