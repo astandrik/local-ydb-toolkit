@@ -159,7 +159,8 @@ export const toolDefinitions = [
   defineTool({
     group: "checks",
     name: "local_ydb_inventory",
-    description: "Collect Docker inventory for a local-ydb target profile.",
+    description:
+      "Read-only Docker inventory for a local-ydb target profile. Returns the public profile, Docker containers and volumes visible on the selected target, and inspect data for the configured static and primary dynamic containers; use before mutating tools to capture current stack state.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => inventory(context)),
@@ -167,7 +168,8 @@ export const toolDefinitions = [
   defineTool({
     group: "checks",
     name: "local_ydb_database_status",
-    description: "Read database status via the YDB admin API.",
+    description:
+      "Read-only YDB admin database status for the configured tenant path. Returns the command, stdout, stderr, and ok flag; use this for tenant state before bootstrap/restart troubleshooting, and use local_ydb_tenant_check for scheme reachability.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => databaseStatus(context)),
@@ -175,7 +177,8 @@ export const toolDefinitions = [
   defineTool({
     group: "checks",
     name: "local_ydb_container_logs",
-    description: "Read recent logs from the static or dynamic local-ydb container.",
+    description:
+      "Read recent Docker logs from the configured static or primary dynamic local-ydb container. Use when bootstrap, restart, or readiness checks fail; target selects the container role and lines controls the tail length.",
     inputSchema: logsSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(LogsArgs, (context, parsed) =>
@@ -185,7 +188,8 @@ export const toolDefinitions = [
   defineTool({
     group: "checks",
     name: "local_ydb_status_report",
-    description: "Aggregate local-ydb inventory, auth, tenant, and node checks.",
+    description:
+      "Read-only aggregate report for quick diagnosis. Runs local_ydb_inventory, local_ydb_auth_check, local_ydb_tenant_check, and local_ydb_nodes_check, returning each result; use this first for broad stack health, then run focused checks for database status, GraphShard, storage, or logs.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => statusReport(context)),
@@ -202,7 +206,8 @@ export const toolDefinitions = [
   defineTool({
     group: "checks",
     name: "local_ydb_scheme",
-    description: "List or describe YDB scheme objects with capped output.",
+    description:
+      "Read-only YDB scheme list or describe with capped stdout/stderr. It uses the root database for rootDatabase paths and the tenant database otherwise; list supports recursive/long/onePerLine flags, describe supports stats, and incompatible flag combinations are rejected.",
     inputSchema: schemeSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(SchemeArgs, (context, parsed) =>
@@ -232,7 +237,8 @@ export const toolDefinitions = [
   defineTool({
     group: "checks",
     name: "local_ydb_graphshard_check",
-    description: "Check GraphShard capability and tablet visibility.",
+    description:
+      "Read-only GraphShard check through viewer/json capabilities and tabletinfo for the configured tenant. Returns graphShardExists, tablet ids, and viewer status details; use after tenant bootstrap when GraphShard support or tablet visibility is the specific question.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => graphshardCheck(context)),
@@ -259,7 +265,7 @@ export const toolDefinitions = [
     group: "storage",
     name: "local_ydb_add_storage_groups",
     description:
-      "Increase NumGroups for a tenant storage pool using the current ReadStoragePool definition.",
+      "Increase NumGroups for one tenant storage pool using the current ReadStoragePool definition. Without confirm=true this returns the DefineStoragePool plan, rollback, target pool, and target count; when the update succeeds it verifies NumGroups and tenant metadata.",
     inputSchema: addStorageGroupsSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(AddStorageGroupsArgs, (context, parsed) =>
@@ -280,7 +286,8 @@ export const toolDefinitions = [
   defineTool({
     group: "checks",
     name: "local_ydb_storage_leftovers",
-    description: "Find leftover local-ydb volumes, dumps, and PDisk paths.",
+    description:
+      "Read-only search for candidate leftover local-ydb Docker volumes, dumps, and PDisk/data paths. It scans Docker volume names plus profile.storageSearchPaths and deletes nothing; use before local_ydb_cleanup_storage to decide exact paths or volumes to remove.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => storageLeftovers(context)),
@@ -289,7 +296,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_list_versions",
     description:
-      "List published registry tags for a local-ydb container image, with numeric versions sorted newest first.",
+      "List published registry tags for a local-ydb container image, with numeric version tags sorted newest first. Use before local_ydb_upgrade_version to choose a target tag; pageSize and maxPages bound registry pagination and the response reports truncation.",
     inputSchema: listVersionsSchema(),
     annotations: readOnlyAnnotations(),
     handler: async (args, options) => {
@@ -302,7 +309,7 @@ export const toolDefinitions = [
     instructionOrder: 7,
     name: "local_ydb_pull_image",
     description:
-      "Start a background Docker pull for a local-ydb image on the selected target.",
+      "Plan or start a background Docker pull for a local-ydb image on the selected target. Without confirm=true it returns inspect and pull commands only; with confirm=true it returns a jobId for local_ydb_pull_status unless the image is already present.",
     inputSchema: pullImageSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(PullImageArgs, (context, parsed) =>
@@ -338,7 +345,7 @@ export const toolDefinitions = [
     instructionOrder: 1,
     name: "local_ydb_bootstrap_root_database",
     description:
-      "Bootstrap a plain local YDB database at /local with only a static node; choose this for generic local database requests.",
+      "Bootstrap a plain local YDB database at /local with only a static node. Use for generic local database requests that do not need a CMS tenant, GraphShard, or dynamic nodes; without confirm=true this returns the image preflight, Docker network/storage/static-node, and verification plan without executing it.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -350,7 +357,7 @@ export const toolDefinitions = [
     instructionOrder: 2,
     name: "local_ydb_bootstrap",
     description:
-      "Bootstrap a tenant topology: static node, configured CMS tenant, and dynamic tenant node; choose this only for tenant, GraphShard, or dynamic-node scenarios.",
+      "Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and primary dynamic tenant node. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -362,7 +369,7 @@ export const toolDefinitions = [
     instructionOrder: 0,
     name: "local_ydb_check_prerequisites",
     description:
-      "Check target-host prerequisites and optionally install supported missing packages.",
+      "Check target-host prerequisites for Docker, curl, ruby, and the configured rootPasswordFile when present. Without confirm=true it returns checks, missing items, manual actions, and any apt-get install plan; with confirm=true it may install only supported curl/ruby packages and never installs Docker.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -397,7 +404,7 @@ export const toolDefinitions = [
     group: "dynamic nodes",
     name: "local_ydb_add_dynamic_nodes",
     description:
-      "Add extra dynamic tenant nodes one at a time and verify each reaches nodelist.",
+      "Add extra dynamic tenant nodes beyond the configured primary dynamic node, one at a time. Without confirm=true it returns container/port plans; with confirm=true it starts each node, verifies its IC port appears in viewer/json nodelist, and checks tenant metadata.",
     inputSchema: addDynamicNodesSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(AddDynamicNodesArgs, (context, parsed) =>
@@ -432,7 +439,7 @@ export const toolDefinitions = [
     instructionOrder: 8,
     name: "local_ydb_upgrade_version",
     description:
-      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag via image preflight, dump, rebuild, restore, auth reapply, extra-node recreation, image verification, and profile image persistence.",
+      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; it preflights source and target images, dumps, rebuilds, restores, reapplies auth when configured, recreates extra nodes, verifies container images, and persists the profile image after successful confirmed execution.",
     inputSchema: upgradeVersionSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: async (args, options) => {
@@ -443,7 +450,8 @@ export const toolDefinitions = [
   defineTool({
     group: "backup restore",
     name: "local_ydb_dump_tenant",
-    description: "Dump the configured tenant using a local-ydb helper container.",
+    description:
+      "Dump the configured tenant using a local-ydb helper container on the static container network. It creates profile.dumpHostPath/dumpName, excludes .sys objects, writes the tenant dump under dumpName/tenant, and without confirm=true returns the mkdir/helper-container plan only.",
     inputSchema: dumpSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(DumpArgs, (context, parsed) =>
