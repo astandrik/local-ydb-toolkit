@@ -11,6 +11,7 @@ import {
   type CommandResult,
   type CommandSpec
 } from "../src/index.js";
+import { pathRedactions } from "../src/redactions.js";
 import { ConfigSchema, resolveProfile } from "../src/validation.js";
 
 describe("api client helpers", () => {
@@ -55,7 +56,9 @@ Status {
     expect(redactCommand("docker rm -f ydb-local")).toBe("docker rm -f ydb-local");
     expect(redactCommand("docker exec -i ydb-local true")).toBe("docker exec -i ydb-local true");
     expect(redactCommand("ssh -i /secret/key host true")).toBe("ssh -i <redacted> host true");
+    expect(redactCommand("/usr/bin/ssh -i /secret/key host true")).toBe("/usr/bin/ssh -i <redacted> host true");
     expect(redactCommand("bash -lc 'ssh -i /secret/key host true'")).toBe("bash -lc 'ssh -i <redacted> host true'");
+    expect(redactCommand("bash -lc '/usr/bin/ssh -B eth0 -P tag -i /secret/key host true'")).toBe("bash -lc '/usr/bin/ssh -B eth0 -P tag -i <redacted> host true'");
     expect(redactCommand("env ssh -i /secret/key host true")).toBe("env ssh -i <redacted> host true");
     expect(redactCommand("bash -lc 'rm -f /tmp/secret'", ["/tmp/secret"])).toBe("bash -lc 'rm -f <redacted>'");
     expect(redactCommand("bash -lc 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
@@ -129,6 +132,12 @@ Status {
 
     expect(tmpCommand).toBe("bash -lc 'echo /tmp/not-secret && cat <redacted>'");
     expect(homeCommand).toBe("bash -lc 'echo /home/alice/not-secret && cat <redacted>'");
+  });
+
+  it("normalizes repeated trailing slashes without broad parent redactions", () => {
+    const slashRun = "/".repeat(5000);
+    expect(pathRedactions(`/tmp${slashRun}root.password`)).toEqual([`/tmp${slashRun}root.password`]);
+    expect(pathRedactions(`/home/alice${slashRun}key`)).toEqual([`/home/alice${slashRun}key`]);
   });
 
   it("formats ssh commands with safe defaults", () => {

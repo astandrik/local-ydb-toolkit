@@ -9,8 +9,8 @@ const SENSITIVE_FLAGS = [
 ] as const;
 const SENSITIVE_FLAG_SET = new Set<string>(SENSITIVE_FLAGS);
 const SENSITIVE_FLAG_PATTERN = buildSensitiveFlagPattern(SENSITIVE_FLAGS);
-const SSH_COMMAND_PATTERN = /(^|[\s'"`;&|()])ssh(?=$|[\s'"`;&|()])/g;
 const SSH_OPTIONS_WITH_VALUE = new Set([
+  "-B",
   "-b",
   "-c",
   "-D",
@@ -24,6 +24,7 @@ const SSH_OPTIONS_WITH_VALUE = new Set([
   "-m",
   "-O",
   "-o",
+  "-P",
   "-p",
   "-Q",
   "-R",
@@ -56,7 +57,7 @@ export function redactCommand(command: string, extraRedactions: string[] = []): 
       return "<redacted>";
     }
     const flag = part.text.includes("=") ? part.text.slice(0, part.text.indexOf("=")) : part.text;
-    const isSensitiveFlag = SENSITIVE_FLAG_SET.has(flag) || (commandName === "ssh" && flag === "-i");
+    const isSensitiveFlag = SENSITIVE_FLAG_SET.has(flag) || (isSshCommandName(commandName) && flag === "-i");
     if (isSensitiveFlag) {
       if (part.text.includes("=")) {
         return `${flag}=<redacted>`;
@@ -104,15 +105,19 @@ function escapeRegExp(value: string): string {
 function redactSshIdentityValues(input: string): string {
   let output = "";
   let lastIndex = 0;
-  let match: RegExpExecArray | null;
+  let cursor = 0;
 
-  SSH_COMMAND_PATTERN.lastIndex = 0;
-  while ((match = SSH_COMMAND_PATTERN.exec(input)) !== null) {
-    const sshStart = match.index + match[1].length;
-    if (sshStart < lastIndex) {
+  while (cursor < input.length) {
+    const sshStart = findNextSshWordStart(input, cursor);
+    if (sshStart >= input.length) {
+      break;
+    }
+    const sshEnd = findSshWordEnd(input, sshStart);
+    if (!isSshCommandName(input.slice(sshStart, sshEnd))) {
+      cursor = sshEnd;
       continue;
     }
-    let cursor = sshStart + "ssh".length;
+    cursor = sshEnd;
     for (;;) {
       const wordStart = skipWhitespace(input, cursor);
       if (wordStart >= input.length || isShellCommandBoundary(input[wordStart])) {
@@ -143,6 +148,30 @@ function redactSshIdentityValues(input: string): string {
   }
 
   return output + input.slice(lastIndex);
+}
+
+function isSshCommandName(commandName: string | undefined): boolean {
+  return commandName === "ssh" || commandName?.endsWith("/ssh") === true;
+}
+
+function findNextSshWordStart(input: string, start: number): number {
+  let index = start;
+  while (index < input.length && isSshScanBoundary(input[index])) {
+    index += 1;
+  }
+  return index;
+}
+
+function findSshWordEnd(input: string, start: number): number {
+  let index = start;
+  while (index < input.length && !isSshScanBoundary(input[index])) {
+    index += 1;
+  }
+  return index;
+}
+
+function isSshScanBoundary(char: string): boolean {
+  return /\s/.test(char) || char === "'" || char === "\"" || char === "`" || isShellCommandBoundary(char);
 }
 
 function skipWhitespace(input: string, start: number): number {

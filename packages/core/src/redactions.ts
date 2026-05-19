@@ -9,10 +9,18 @@ export function pathRedactions(...paths: Array<string | undefined>): string[] {
 }
 
 function isSpecificParentDirectory(parent: string): boolean {
-  const normalized = parent.replace(/\/+$/, "") || "/";
+  const normalized = stripTrailingSlashes(parent);
   if ([".", "/", "/tmp", "/var/tmp", "/home", "/Users"].includes(normalized)) {
     return false;
   }
   const parts = normalized.split("/").filter(Boolean);
   return !((parts[0] === "home" || parts[0] === "Users") && parts.length <= 2);
+}
+
+function stripTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return end === 0 ? "/" : path.slice(0, end);
 }
