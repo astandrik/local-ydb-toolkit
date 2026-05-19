@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.5](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.4...mcp-server-v0.9.5) (2026-05-19)
+
+
+### Bug Fixes
+
+* mcp scheme flags and redaction ([#59](https://github.com/astandrik/local-ydb-toolkit/issues/59)) ([1067f5d](https://github.com/astandrik/local-ydb-toolkit/commit/1067f5da812a3d78499342b6954010ecd968f925))
+
 ## [0.9.4](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.3...mcp-server-v0.9.4) (2026-05-18)
 
 
