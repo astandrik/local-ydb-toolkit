@@ -68,27 +68,21 @@ function redactSensitiveFlagValues(input: string): string {
 function findShellWordEnd(input: string, start: number): number {
   let quote: "'" | "\"" | undefined;
   let escaped = false;
-  let sawUnquoted = false;
 
   for (let index = start; index < input.length; index += 1) {
     const char = input[index];
     if (escaped) {
       escaped = false;
-      sawUnquoted = true;
       continue;
     }
     if (char === "\\" && quote !== "'") {
       escaped = true;
-      sawUnquoted = true;
       continue;
     }
     if (!quote && /\s/.test(char)) {
       return index;
     }
     if (!quote && (char === "'" || char === "\"")) {
-      if (sawUnquoted) {
-        return index;
-      }
       quote = char;
       continue;
     }
@@ -96,7 +90,6 @@ function findShellWordEnd(input: string, start: number): number {
       quote = undefined;
       continue;
     }
-    sawUnquoted = true;
   }
 
   return input.length;

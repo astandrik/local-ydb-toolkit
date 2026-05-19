@@ -59,6 +59,7 @@ Status {
     expect(redactCommand("bash -lc 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
     expect(redactCommand("bash -lc\\ 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc\\ 'ydb --token-file <redacted> scheme ls'");
     expect(redactCommand("bash -lc\\ 'rm -f /tmp/secret path'", ["/tmp/secret path"])).toBe("bash -lc\\ 'rm -f <redacted>'");
+    expect(redactCommand(`bash -lc 'ydb --token-file ${shellQuote("/tmp/quote'd/token file")} scheme ls'`)).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
   });
 
   it("redacts shell-quoted profile paths before rendering display commands", () => {
