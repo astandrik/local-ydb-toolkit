@@ -102,6 +102,35 @@ Status {
     expect(mountCommand).not.toContain("quote");
   });
 
+  it("does not redact broad parent directories for top-level sensitive files", () => {
+    const executor = new ShellCommandExecutor();
+    const tmpProfile = resolveProfile(ConfigSchema.parse({
+      profiles: {
+        default: {
+          rootPasswordFile: "/tmp/root.password"
+        }
+      }
+    }));
+    const tmpCommand = executor.display(tmpProfile, {
+      command: "bash",
+      args: ["-lc", "echo /tmp/not-secret && cat /tmp/root.password"]
+    });
+    const homeProfile = resolveProfile(ConfigSchema.parse({
+      profiles: {
+        default: {
+          rootPasswordFile: "/home/alice/root.password"
+        }
+      }
+    }));
+    const homeCommand = executor.display(homeProfile, {
+      command: "bash",
+      args: ["-lc", "echo /home/alice/not-secret && cat /home/alice/root.password"]
+    });
+
+    expect(tmpCommand).toBe("bash -lc 'echo /tmp/not-secret && cat <redacted>'");
+    expect(homeCommand).toBe("bash -lc 'echo /home/alice/not-secret && cat <redacted>'");
+  });
+
   it("formats ssh commands with safe defaults", () => {
     const profile = resolveProfile(ConfigSchema.parse({
       profiles: {
