@@ -60,10 +60,14 @@ Status {
     expect(redactCommand("ssh -i /secret/key host true")).toBe("ssh -i <redacted> host true");
     expect(redactCommand("ssh -i/secret/key host true")).toBe("ssh -i<redacted> host true");
     expect(redactCommand("/usr/bin/ssh -i /secret/key host true")).toBe("/usr/bin/ssh -i <redacted> host true");
+    expect(redactCommand("'/usr/bin/ssh' -i /secret/key host true")).toBe("'/usr/bin/ssh' -i <redacted> host true");
     expect(redactCommand("scp -i /secret/key file host:/tmp")).toBe("scp -i <redacted> file host:/tmp");
     expect(redactCommand("sftp -i /secret/key host")).toBe("sftp -i <redacted> host");
     expect(redactCommand("bash -lc 'ssh -i /secret/key host true'")).toBe("bash -lc 'ssh -i <redacted> host true'");
+    expect(redactCommand("bash -lc '\"/usr/bin/ssh\" -i /secret/key host true'")).toBe("bash -lc '\"/usr/bin/ssh\" -i <redacted> host true'");
     expect(redactCommand("bash -lc 'ssh -vi /secret/key host true'")).toBe("bash -lc 'ssh -vi <redacted> host true'");
+    expect(redactCommand("bash -lc 'ssh </dev/null -i /secret/key host true'")).toBe("bash -lc 'ssh </dev/null -i <redacted> host true'");
+    expect(redactCommand("bash -lc 'ssh 2>/tmp/err -i /secret/key host true'")).toBe("bash -lc 'ssh 2>/tmp/err -i <redacted> host true'");
     expect(redactCommand("bash -lc '/usr/bin/ssh -B eth0 -P tag -i /secret/key host true'")).toBe("bash -lc '/usr/bin/ssh -B eth0 -P tag -i <redacted> host true'");
     expect(redactCommand("bash -lc 'ssh -o ProxyCommand=\"ssh -i /secret/key jump\" host true'")).toBe("bash -lc 'ssh -o ProxyCommand=\"ssh -i <redacted> jump\" host true'");
     expect(redactCommand("bash -lc 'ssh -oProxyCommand=\"ssh -i /secret/key jump\" host true'")).toBe("bash -lc 'ssh -oProxyCommand=\"ssh -i <redacted> jump\" host true'");
@@ -77,6 +81,8 @@ Status {
     expect(redactCommand(`bash -lc 'ssh ${lineContinuation} -i /secret/key host true'`)).toBe(`bash -lc 'ssh ${lineContinuation} -i <redacted> host true'`);
     expect(redactCommand("bash -lc 'rm -f /tmp/secret'", ["/tmp/secret"])).toBe("bash -lc 'rm -f <redacted>'");
     expect(redactCommand("bash -lc 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
+    expect(redactCommand("bash -lc 'ydb --token-file $(cat /secret/token-path) scheme ls'")).toBe("bash -lc 'ydb --token-file <redacted> scheme ls'");
+    expect(redactCommand("bash -lc 'ssh -i $(cat /secret/key-path) host true'")).toBe("bash -lc 'ssh -i <redacted> host true'");
     expect(redactCommand("bash -lc 'cmd=\"ydb --token-file /secret/token\"; echo ok'")).toBe("bash -lc 'cmd=\"ydb --token-file <redacted>\"; echo ok'");
     expect(redactCommand(`bash -lc 'ydb --token-file ${lineContinuation} /secret/token scheme ls'`)).toBe(`bash -lc 'ydb --token-file ${lineContinuation} <redacted> scheme ls'`);
     expect(redactCommand("bash -lc\\ 'ydb --token-file /secrets/token scheme ls'")).toBe("bash -lc\\ 'ydb --token-file <redacted> scheme ls'");

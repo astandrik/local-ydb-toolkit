@@ -43,6 +43,7 @@ type OpenSshOptionAction =
   | { kind: "identity-attached"; valueStart: number }
   | { kind: "value-next" }
   | { kind: "value-attached"; valueStart: number };
+type ShellRedirectionAction = { kind: "attached-target" } | { kind: "next-target" };
 
 export function redactText(input: string, extraRedactions: string[] = []): string {
   let output = input;
@@ -133,7 +134,7 @@ function collectSshIdentityRanges(input: string, start: number, end: number, ran
       continue;
     }
     const optionsWithValue = OPENSSH_COMMAND_OPTIONS_WITH_VALUE[commandName];
-    cursor = sshEnd;
+    cursor = findOpenSshCommandWordEnd(input, sshStart, sshEnd);
     for (;;) {
       const wordStart = skipShellWhitespace(input, cursor);
       if (wordStart >= end || isShellCommandBoundary(input[wordStart])) {
@@ -143,6 +144,18 @@ function collectSshIdentityRanges(input: string, start: number, end: number, ran
       const word = input.slice(wordStart, wordEnd);
       if (word === "--") {
         break;
+      }
+      const redirectionAction = classifyShellRedirectionWord(word);
+      if (redirectionAction) {
+        cursor = wordEnd;
+        if (redirectionAction.kind === "next-target") {
+          const targetStart = skipShellWhitespace(input, cursor);
+          if (targetStart >= end) {
+            break;
+          }
+          cursor = Math.min(findShellWordEnd(input, targetStart), end);
+        }
+        continue;
       }
       if (!word.startsWith("-") || word === "-") {
         break;
@@ -209,6 +222,31 @@ function classifyOpenSshOptionWord(word: string, optionsWithValue: Set<string>):
     }
   }
   return { kind: "flag" };
+}
+
+function classifyShellRedirectionWord(word: string): ShellRedirectionAction | undefined {
+  let index = 0;
+  while (index < word.length && /\d/.test(word[index])) {
+    index += 1;
+  }
+  const rest = word.slice(index);
+  if (rest.startsWith("<(") || rest.startsWith(">(")) {
+    return undefined;
+  }
+  for (const operator of ["<<<", ">>", "<<", "<>", ">&", "<&", ">|", ">", "<"]) {
+    if (rest.startsWith(operator)) {
+      return rest.length === operator.length ? { kind: "next-target" } : { kind: "attached-target" };
+    }
+  }
+  return undefined;
+}
+
+function findOpenSshCommandWordEnd(input: string, commandStart: number, commandEnd: number): number {
+  const quote = input[commandStart - 1];
+  if ((quote === "'" || quote === "\"") && input[commandEnd] === quote) {
+    return commandEnd + 1;
+  }
+  return commandEnd;
 }
 
 function getOpenSshCommandName(commandName: string | undefined): OpenSshCommand | undefined {
@@ -285,6 +323,11 @@ function findCommandValueEnd(input: string, start: number): number {
       escaped = true;
       continue;
     }
+    const substitutionEnd = findShellSubstitutionEnd(input, index);
+    if (substitutionEnd !== undefined) {
+      index = substitutionEnd - 1;
+      continue;
+    }
     if (/\s/.test(char) || char === "'" || char === "\"" || char === "`" || isShellCommandBoundary(char)) {
       return index;
     }
@@ -310,7 +353,7 @@ function findShellWordEnd(input: string, start: number): number {
     if (!quote && substitutionDepth === 0 && /\s/.test(char)) {
       return index;
     }
-    if (!quote && isShellSubstitutionStart(input, index)) {
+    if (!quote && findShellSubstitutionEnd(input, index) !== undefined) {
       substitutionDepth += 1;
       index += 1;
       continue;
@@ -337,6 +380,46 @@ function isShellSubstitutionStart(input: string, index: number): boolean {
     return false;
   }
   return input[index] === "<" || input[index] === ">" || input[index] === "$";
+}
+
+function findShellSubstitutionEnd(input: string, start: number): number | undefined {
+  if (!isShellSubstitutionStart(input, start)) {
+    return undefined;
+  }
+  let depth = 1;
+  let quote: "'" | "\"" | undefined;
+  let escaped = false;
+  for (let index = start + 2; index < input.length; index += 1) {
+    const char = input[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (!quote && isShellSubstitutionStart(input, index)) {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (!quote && char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index + 1;
+      }
+      continue;
+    }
+    if (!quote && (char === "'" || char === "\"")) {
+      quote = char;
+      continue;
+    }
+    if (quote && char === quote) {
+      quote = undefined;
+    }
+  }
+  return input.length;
 }
 
 function splitTopLevelShellParts(input: string): Array<{ text: string; isWord: boolean }> {
