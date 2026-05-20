@@ -11,19 +11,19 @@ export function formatResponseContent(
   options: ResponseFormatOptions = {},
 ): string {
   const format = resolveResponseContentFormat(options.responseContentFormat);
-  const jsonModel = toJsonDataModel(result);
   if (format === "json") {
-    return JSON.stringify(jsonModel, null, 2);
+    return stringifyJsonContent(result);
   }
+  const jsonText = stringifyJsonContent(result);
+  const jsonModel = JSON.parse(jsonText) as unknown;
   const toon = encode(jsonModel);
   return decodesToJsonModel(toon, jsonModel)
     ? toon
-    : JSON.stringify(jsonModel, null, 2);
+    : jsonText;
 }
 
-function toJsonDataModel(result: unknown): unknown {
-  const serialized = JSON.stringify(result);
-  return serialized === undefined ? null : JSON.parse(serialized);
+function stringifyJsonContent(result: unknown): string {
+  return JSON.stringify(result, null, 2) ?? "null";
 }
 
 function decodesToJsonModel(toon: string, jsonModel: unknown): boolean {

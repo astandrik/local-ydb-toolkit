@@ -63,25 +63,30 @@ return successResult(
 
 ## Как именно кодируется результат
 
-`formatResponseContent()` сначала приводит результат к JSON data model:
+`formatResponseContent()` сначала строит pretty JSON text:
 
 ```ts
-const serialized = JSON.stringify(result);
-const jsonModel = serialized === undefined ? null : JSON.parse(serialized);
+const jsonText = JSON.stringify(result, null, 2) ?? "null";
 ```
 
-Зачем это нужно:
+В режиме `json` этот текст возвращается сразу, без дополнительного `JSON.parse()`:
+
+```ts
+return jsonText;
+```
+
+Для `toon` режима этот же JSON text используется как источник JSON data model:
+
+```ts
+const jsonModel = JSON.parse(jsonText);
+```
+
+Зачем нужна JSON data model в TOON режиме:
 
 - MCP транспорт все равно сериализует данные как JSON.
 - `undefined` в объектах исчезает, как в JSON.
 - Значения, не представимые в JSON data model, не становятся частью текстового payload.
 - TOON round-trip сравнивается именно с тем, что реально выразимо как JSON.
-
-В режиме `json` возвращается текущий pretty JSON:
-
-```ts
-JSON.stringify(jsonModel, null, 2)
-```
 
 В режиме `toon`:
 
@@ -89,7 +94,7 @@ JSON.stringify(jsonModel, null, 2)
 const toon = encode(jsonModel);
 return decodesToJsonModel(toon, jsonModel)
   ? toon
-  : JSON.stringify(jsonModel, null, 2);
+  : jsonText;
 ```
 
 То есть сервер:
