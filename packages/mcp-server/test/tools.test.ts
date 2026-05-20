@@ -214,6 +214,33 @@ describe("mcp tools", () => {
     });
   });
 
+  it("rejects invalid response text content format before confirmed mutations run", async () => {
+    const executor = new RecordingExecutor();
+    const server = createLocalYdbMcpServer({
+      config: ConfigSchema.parse({}),
+      executor,
+      responseContentFormat: "xml" as "json",
+    }) as unknown as {
+      _requestHandlers: Map<string, (request: unknown, extra: unknown) => Promise<unknown>>;
+    };
+    const handler = server._requestHandlers.get("tools/call");
+    if (!handler) {
+      throw new Error("Expected tools/call handler to be registered");
+    }
+
+    const result = await handler({
+      method: "tools/call",
+      params: {
+        name: "local_ydb_bootstrap_root_database",
+        arguments: { confirm: true },
+      },
+    }, {}) as ToolResultForTest;
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("Invalid LOCAL_YDB_MCP_CONTENT_FORMAT");
+    expect(executor.commands).toHaveLength(0);
+  });
+
   it("describes every top-level tool input parameter", () => {
     for (const tool of localYdbTools) {
       for (const [propertyName, schema] of Object.entries(tool.inputSchema.properties ?? {})) {
