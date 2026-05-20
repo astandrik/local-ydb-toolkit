@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.7...mcp-server-v0.10.0) (2026-05-20)
+
+
+### Features
+
+* toon mcp content format ([#65](https://github.com/astandrik/local-ydb-toolkit/issues/65)) ([9a3f021](https://github.com/astandrik/local-ydb-toolkit/commit/9a3f0210cc9c942465189d0b06cc3381013a00ed))
+
 ## [0.9.7](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.6...mcp-server-v0.9.7) (2026-05-19)
 
 
