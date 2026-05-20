@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { decode } from "@toon-format/toon";
 import { describe, expect, it } from "vitest";
 import {
   commandToShell,
@@ -20,11 +21,50 @@ import {
   localYdbPrompts,
   localYdbTools
 } from "../src/index.js";
+import { normalizeResponseContentFormat } from "../src/response-format.js";
+import { successResult } from "../src/responses.js";
 import { toolDefinitions } from "../src/tools/registry.js";
 
 const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string;
 }).version;
+
+type TextContentForTest = {
+  type: "text";
+  text: string;
+};
+
+type ToolResultForTest = {
+  isError?: boolean;
+  content: TextContentForTest[];
+  structuredContent?: unknown;
+};
+
+const responseFixture = {
+  summary: "Example local-ydb response.",
+  executed: false,
+  plannedCommands: ["docker ps -a", "docker volume ls"],
+  verification: ["containers are listed", "volumes are listed"],
+  checks: [
+    { name: "docker", ok: true },
+    { name: "curl", ok: false },
+  ],
+};
+
+const responseFixtureJsonModel = {
+  summary: "Example response with optional fields.",
+  optional: undefined,
+  nested: [
+    { name: "docker", ok: true, note: undefined },
+  ],
+};
+
+const responseFixtureLogText = {
+  summary: "Example log response.",
+  ok: true,
+  stdout: "2026 INFO [actor]\tmessage: value\nnext",
+  stderr: "",
+};
 
 class RecordingExecutor implements CommandExecutor {
   readonly commands: string[] = [];
@@ -104,6 +144,74 @@ describe("mcp tools", () => {
       "local_ydb_upgrade_version",
       "local_ydb_write_dynamic_auth_config"
     ]);
+  });
+
+  it("defaults response text content formatting to JSON", () => {
+    expect(normalizeResponseContentFormat(undefined)).toBe("json");
+  });
+
+  it("formats response text content as JSON when forced", () => {
+    const result = successResult(responseFixture, {
+      responseContentFormat: "json",
+    }) as ToolResultForTest;
+
+    expect(result.content[1]?.text).toBe(JSON.stringify(responseFixture, null, 2));
+    expect(result.structuredContent).toBe(responseFixture);
+  });
+
+  it("formats response text content as TOON when forced", () => {
+    const result = successResult(responseFixture, {
+      responseContentFormat: "toon",
+    }) as ToolResultForTest;
+
+    expect(result.content[1]?.text).not.toBe(JSON.stringify(responseFixture, null, 2));
+    expect(decode(result.content[1]?.text ?? "")).toEqual(responseFixture);
+    expect(result.structuredContent).toBe(responseFixture);
+  });
+
+  it("formats TOON against the JSON data model for optional fields", () => {
+    const result = successResult(responseFixtureJsonModel, {
+      responseContentFormat: "toon",
+    }) as ToolResultForTest;
+    const jsonModel = JSON.parse(JSON.stringify(responseFixtureJsonModel)) as unknown;
+
+    expect(decode(result.content[1]?.text ?? "")).toEqual(jsonModel);
+    expect(result.structuredContent).toBe(responseFixtureJsonModel);
+  });
+
+  it("falls back to JSON when TOON would not decode losslessly", () => {
+    const result = successResult(responseFixtureLogText, {
+      responseContentFormat: "toon",
+    }) as ToolResultForTest;
+
+    expect(JSON.parse(result.content[1]?.text ?? "")).toEqual(responseFixtureLogText);
+    expect(result.structuredContent).toBe(responseFixtureLogText);
+  });
+
+  it("rejects invalid response text content format through tool errors", async () => {
+    const server = createLocalYdbMcpServer({
+      responseContentFormat: "xml" as "json",
+    }) as unknown as {
+      _requestHandlers: Map<string, (request: unknown, extra: unknown) => Promise<unknown>>;
+    };
+    const handler = server._requestHandlers.get("tools/call");
+    if (!handler) {
+      throw new Error("Expected tools/call handler to be registered");
+    }
+
+    const result = await handler({
+      method: "tools/call",
+      params: {
+        name: "local_ydb_pull_status",
+        arguments: { jobId: "missing-job" },
+      },
+    }, {}) as ToolResultForTest;
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("Invalid LOCAL_YDB_MCP_CONTENT_FORMAT");
+    expect(result.structuredContent).toMatchObject({
+      error: expect.stringContaining("expected \"json\" or \"toon\""),
+    });
   });
 
   it("describes every top-level tool input parameter", () => {

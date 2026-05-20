@@ -36,6 +36,7 @@ export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
     try {
       return successResult(
         await handler(request.params.arguments ?? {}, options),
+        options,
       );
     } catch (error) {
       return errorResult(

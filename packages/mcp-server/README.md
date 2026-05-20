@@ -35,6 +35,28 @@ Prompts return workflow instructions only; they do not execute commands.
 
 Mutating tools remain plan-only unless called with `confirm: true`.
 
+## Response Content Format
+
+By default, tool responses keep the current MCP shape: `structuredContent` is a JSON object, and the second text content block is pretty-printed JSON. To prefer TOON for the LLM-facing text block only, set:
+
+```json
+{
+  "env": {
+    "LOCAL_YDB_MCP_CONTENT_FORMAT": "toon"
+  }
+}
+```
+
+Valid values are `json` and `toon`; omit the variable for the default `json` format. This does not change MCP JSON-RPC, tool input schemas, or `structuredContent`. In `toon` mode the server verifies that the encoded text decodes back to the same JSON data model; if not, it falls back to pretty JSON for that response text.
+
+For a reproducible local comparison of representative response fixtures:
+
+```bash
+npm run compare:formats -w @astandrik/local-ydb-mcp
+```
+
+Manual agent smoke check: run the MCP server once with `LOCAL_YDB_MCP_CONTENT_FORMAT=json` and once with `toon`, then call the same tools in both sessions: `local_ydb_inventory`, `local_ydb_status_report`, `local_ydb_bootstrap_root_database` without `confirm`, `local_ydb_scheme`, `local_ydb_permissions` with a plan-only mutation, `local_ydb_list_versions`, and `local_ydb_nodes_check`. Record whether the agent extracts the same status, planned commands, risks, and next steps. Treat this as qualitative evidence; the benchmark command is the reproducible metric.
+
 ## Global Install
 
 ```bash

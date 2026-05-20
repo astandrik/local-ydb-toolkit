@@ -70,7 +70,8 @@ Use the npm package directly from an MCP client:
       "command": "npx",
       "args": ["-y", "--prefer-online", "@astandrik/local-ydb-mcp@latest"],
       "env": {
-        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
+        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json",
+        "LOCAL_YDB_MCP_CONTENT_FORMAT": "toon"
       }
     }
   }
@@ -91,7 +92,8 @@ npm install -g @astandrik/local-ydb-mcp
     "local-ydb": {
       "command": "local-ydb-mcp",
       "env": {
-        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
+        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json",
+        "LOCAL_YDB_MCP_CONTENT_FORMAT": "toon"
       }
     }
   }
@@ -114,12 +116,15 @@ Example MCP client config for a local checkout:
       "command": "node",
       "args": ["/path/to/local-ydb-toolkit/packages/mcp-server/dist/index.js"],
       "env": {
-        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json"
+        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json",
+        "LOCAL_YDB_MCP_CONTENT_FORMAT": "toon"
       }
     }
   }
 }
 ```
+
+`LOCAL_YDB_MCP_CONTENT_FORMAT` is optional. Use `toon` to prefer TOON for the LLM-facing text content block while keeping MCP JSON-RPC and `structuredContent` as JSON; omit it or set `json` for the default pretty JSON text. If a payload cannot be represented as lossless, decodable TOON, the server falls back to pretty JSON for that text block.
 
 Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH keys, password files, and backup paths outside committed config.
 

@@ -1,9 +1,14 @@
-export function successResult(result: unknown) {
+import { formatResponseContent, type ResponseFormatOptions } from "./response-format.js";
+
+export function successResult(
+  result: unknown,
+  options: ResponseFormatOptions = {},
+) {
   const data = result as { summary?: string };
   return {
     content: [
       { type: "text", text: data.summary ?? "local-ydb tool completed." },
-      { type: "text", text: JSON.stringify(result, null, 2) },
+      { type: "text", text: formatResponseContent(result, options) },
     ],
     structuredContent: result,
   };
