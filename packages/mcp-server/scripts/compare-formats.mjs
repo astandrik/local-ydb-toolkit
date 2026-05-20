@@ -166,8 +166,9 @@ printRows([
 ]);
 
 function measureFixture(fixture) {
-  const jsonText = JSON.stringify(fixture.result, null, 2);
-  const toonText = encode(fixture.result);
+  const jsonModel = toJsonDataModel(fixture.result);
+  const jsonText = JSON.stringify(jsonModel, null, 2);
+  const toonText = encode(jsonModel);
   const jsonBytes = Buffer.byteLength(jsonText, "utf8");
   const toonBytes = Buffer.byteLength(toonText, "utf8");
   const jsonTokens = countTokens(jsonText);
@@ -180,8 +181,13 @@ function measureFixture(fixture) {
     jsonTokens,
     toonTokens,
     tokenDeltaPercent: percentDelta(toonTokens, jsonTokens),
-    roundTrip: isDeepStrictEqual(decode(toonText), JSON.parse(jsonText)),
+    roundTrip: isDeepStrictEqual(decode(toonText), jsonModel),
   };
+}
+
+function toJsonDataModel(result) {
+  const serialized = JSON.stringify(result);
+  return serialized === undefined ? null : JSON.parse(serialized);
 }
 
 function printRows(inputRows) {
