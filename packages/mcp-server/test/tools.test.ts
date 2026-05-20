@@ -501,6 +501,7 @@ describe("mcp tools", () => {
     const plan = result.plannedCommands.join("\n");
     expect(result.executed).toBe(false);
     expect(plan).toContain("scheme ls /local");
+    expect(plan).toContain("for attempt in $(seq 1 30)");
     expect(plan).not.toContain("admin database");
     expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
   });

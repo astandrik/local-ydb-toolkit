@@ -316,6 +316,14 @@ export function waitForYdbCli(profile: ResolvedLocalYdbProfile, args: string[], 
   });
 }
 
+export function waitForYdbRootCli(profile: ResolvedLocalYdbProfile, args: string[], description: string): CommandSpec {
+  const command = commandForYdbRootCli(profile, args);
+  const retryableErrors = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
+  return waitForCommand(command, description, retryableErrors, {
+    redactions: [profile.rootPasswordFile ?? ""]
+  });
+}
+
 function commandForYdbCli(profile: ResolvedLocalYdbProfile, args: string[], database: string): string {
   if (profile.rootPasswordFile) {
     return commandForPasswordPipedDockerExec(profile, `/ydb -e grpc://localhost:${profile.ports.dynamicGrpc} -d ${shellQuote(database)} --user ${shellQuote(profile.rootUser)} --password-file /tmp/root.password ${args.map(shellQuote).join(" ")}`);

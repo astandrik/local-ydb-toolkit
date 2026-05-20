@@ -5,8 +5,8 @@ import {
   commandForStaticEnsureRun,
   createTenantSpec,
   removeTenantIfPresentSpec,
+  waitForYdbRootCli,
   waitForYdbCli,
-  ydbRootCli
 } from "./commands.js";
 import { normalizeExpectedYdbResult, runMutating } from "./execution.js";
 import { findExtraDynamicContainers } from "./helpers.js";
@@ -55,7 +55,7 @@ export async function bootstrapRootDatabase(ctx: ToolkitContext, options: Mutati
       : bash(`docker volume inspect ${shellQuote(ctx.profile.volume)} >/dev/null 2>&1 || docker volume create ${shellQuote(ctx.profile.volume)}`, { description: "Ensure Docker volume exists" }),
     bash(commandForStaticEnsureRun(ctx.profile, { enableGraphShard: false }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
     bash("sleep 5", { description: "Wait briefly for static node startup" }),
-    ydbRootCli(ctx.profile, ["scheme", "ls", ctx.profile.rootDatabase], "Verify root database metadata"),
+    waitForYdbRootCli(ctx.profile, ["scheme", "ls", ctx.profile.rootDatabase], "Wait for root database metadata"),
     bash(`curl -fsSL ${shellQuote(`${ctx.profile.monitoringBaseUrl}/viewer/json/tenants?database=${encodeURIComponent(ctx.profile.rootDatabase)}`)} >/dev/null || true`, { allowFailure: true, description: "Verify viewer tenants endpoint" })
   ];
   return runMutating(ctx, {
