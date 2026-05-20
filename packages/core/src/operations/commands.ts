@@ -5,6 +5,8 @@ import { statusCommandFailureLines } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
 import type { DynamicNodePlan } from "./types.js";
 
+const YDB_CLI_RETRYABLE_ERRORS = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
+
 export function commandForStaticRun(
   profile: ResolvedLocalYdbProfile,
   options: { enableGraphShard?: boolean; publishDynamicGrpc?: boolean } = {}
@@ -310,16 +312,16 @@ export function waitForCommand(
 
 export function waitForYdbCli(profile: ResolvedLocalYdbProfile, args: string[], database: string, description: string): CommandSpec {
   const command = commandForYdbCli(profile, args, database);
-  const retryableErrors = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
-  return waitForCommand(command, description, retryableErrors, {
-    redactions: [profile.rootPasswordFile ?? ""]
-  });
+  return waitForYdbCliCommand(profile, command, description);
 }
 
 export function waitForYdbRootCli(profile: ResolvedLocalYdbProfile, args: string[], description: string): CommandSpec {
   const command = commandForYdbRootCli(profile, args);
-  const retryableErrors = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
-  return waitForCommand(command, description, retryableErrors, {
+  return waitForYdbCliCommand(profile, command, description);
+}
+
+function waitForYdbCliCommand(profile: ResolvedLocalYdbProfile, command: string, description: string): CommandSpec {
+  return waitForCommand(command, description, YDB_CLI_RETRYABLE_ERRORS, {
     redactions: [profile.rootPasswordFile ?? ""]
   });
 }
