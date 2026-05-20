@@ -6,11 +6,13 @@ import {
   type LocalYdbConfig,
   type ToolkitContext,
 } from "@local-ydb-toolkit/core";
+import type { ResponseContentFormat } from "../response-format.js";
 
 export type HandlerOptions = {
   executor?: CommandExecutor;
   config?: LocalYdbConfig;
   fetchImpl?: typeof fetch;
+  responseContentFormat?: ResponseContentFormat;
 };
 
 export type ToolHandler = (

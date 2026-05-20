@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { localYdbMcpServerVersion } from "./metadata.js";
 import { getLocalYdbPrompt, localYdbPrompts } from "./prompts.js";
+import { resolveResponseContentFormat } from "./response-format.js";
 import { errorResult, successResult } from "./responses.js";
 import { localYdbInstructions } from "./tools/instructions.js";
 import { handlers, localYdbTools } from "./tools/registry.js";
@@ -34,8 +35,11 @@ export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
       return errorResult(`Unknown tool: ${name}`);
     }
     try {
+      const responseContentFormat = resolveResponseContentFormat(options.responseContentFormat);
+      const callOptions = { ...options, responseContentFormat };
       return successResult(
-        await handler(request.params.arguments ?? {}, options),
+        await handler(request.params.arguments ?? {}, callOptions),
+        callOptions,
       );
     } catch (error) {
       return errorResult(

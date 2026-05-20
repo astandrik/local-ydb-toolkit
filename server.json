@@ -35,6 +35,12 @@
           "format": "filepath",
           "isRequired": false,
           "placeholder": "/path/to/local-ydb.config.json"
+        },
+        {
+          "name": "LOCAL_YDB_MCP_CONTENT_FORMAT",
+          "description": "Optional LLM-facing tool response text format. Use toon to prefer TOON for the second text content block, with JSON fallback if TOON cannot round-trip losslessly; omit or set json for pretty JSON. MCP JSON-RPC and structuredContent stay JSON.",
+          "isRequired": false,
+          "placeholder": "toon"
         }
       ],
       "transport": {

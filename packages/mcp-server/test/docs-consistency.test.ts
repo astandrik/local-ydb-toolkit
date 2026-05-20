@@ -66,6 +66,10 @@ describe("MCP Registry metadata", () => {
       name: "LOCAL_YDB_TOOLKIT_CONFIG",
       isRequired: false
     }));
+    expect(npmPackage.environmentVariables).toContainEqual(expect.objectContaining({
+      name: "LOCAL_YDB_MCP_CONTENT_FORMAT",
+      isRequired: false
+    }));
   });
 
   it("keeps release-please paths rooted inside the configured package", () => {
