@@ -10,11 +10,33 @@ The action should be a JavaScript action, not a Docker action. It needs to contr
 
 - Repository: `astandrik/setup-local-ydb`, public, with root-level `action.yml`.
 - Marketplace shape: unique action name and clean action repository identity; avoid mixing this with the existing MCP/npm release workflows.
-- Runtime: JavaScript action using `node20` for broad GitHub Actions compatibility.
+- Runtime: JavaScript action using `node24`.
 - Initial scope: Linux GitHub-hosted and Linux self-hosted runners with Docker available.
 - Out of scope for v1: SSH profiles, MCP tool wrappers, TOON output, storage migration, version upgrade, dump/restore, and remote-host operations.
 - Default image: use an exact `local-ydb` tag by default, currently `ghcr.io/ydb-platform/local-ydb:26.1.1.6`.
 - `version: latest`: support only as explicit opt-in and expose the resolved tag as an output.
+
+## Current Status
+
+- Action repository: https://github.com/astandrik/setup-local-ydb
+- Marketplace listing: https://github.com/marketplace/actions/setup-local-ydb
+- Stable major tag: `astandrik/setup-local-ydb@v1`
+- Immutable release: `astandrik/setup-local-ydb@v1.0.0`
+- Dogfood workflow: `.github/workflows/setup-local-ydb-smoke.yml`
+
+## GitHub Developer Program Artifact
+
+Use this as the concise integration card for Developer Program, partner, or portfolio contexts:
+
+- Name: `setup-local-ydb`
+- Type: GitHub Action published on GitHub Marketplace.
+- Purpose: provision a disposable local YDB tenant for GitHub Actions CI jobs.
+- Repository: https://github.com/astandrik/setup-local-ydb
+- Marketplace: https://github.com/marketplace/actions/setup-local-ydb
+- Related project: https://github.com/astandrik/local-ydb-toolkit
+- Support channel: GitHub Issues in the action repository.
+- Security channel: private vulnerability reporting in the action repository.
+- Proof of use: `local-ydb-toolkit` dogfoods `astandrik/setup-local-ydb@v1` in a scheduled and manually runnable smoke workflow.
 
 ## Public Interface
 
