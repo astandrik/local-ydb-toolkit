@@ -206,6 +206,12 @@ async function verifyLiveTools(client) {
   });
   assert(staticLogs.ok === true, staticLogs.stderr || "static container logs failed");
 
+  await verifyConfirmedDynamicNodeMutation(client, profile);
+}
+
+async function verifyConfirmedDynamicNodeMutation(client, profile) {
+  const extraContainer = `${containerPrefix}-dynamic-2`;
+  const extraIcPort = 19003;
   const dynamicNodePlan = await callTool(client, "local_ydb_add_dynamic_nodes", {
     profile,
     count: 1,
@@ -218,6 +224,60 @@ async function verifyLiveTools(client) {
     Array.isArray(dynamicNodePlan.plannedCommands) && dynamicNodePlan.plannedCommands.length > 0,
     "dynamic-node plan did not include commands.",
   );
+
+  let added = false;
+  try {
+    const addResult = await callTool(client, "local_ydb_add_dynamic_nodes", {
+      profile,
+      count: 1,
+      confirm: true,
+    });
+    added = true;
+    assert(addResult.executed === true, "confirmed dynamic-node add did not execute.");
+    assert(
+      addResult.results?.every((result) => result.ok === true) === true,
+      "confirmed dynamic-node add had failed command results.",
+    );
+    assert(
+      addResult.nodeChecks?.every((check) => check.ok === true) === true,
+      "confirmed dynamic-node add did not verify the extra node.",
+    );
+
+    const afterAdd = await callTool(client, "local_ydb_nodes_check", { profile });
+    assert(
+      nodePorts(afterAdd).includes(extraIcPort),
+      "extra dynamic node IC port was not visible after confirmed add.",
+    );
+  } finally {
+    if (added) {
+      const removeResult = await callTool(client, "local_ydb_remove_dynamic_nodes", {
+        profile,
+        containers: [extraContainer],
+        confirm: true,
+      });
+      assert(removeResult.executed === true, "confirmed dynamic-node removal did not execute.");
+      assert(
+        removeResult.results?.some((result) => result.ok === true) === true,
+        "confirmed dynamic-node removal had no successful command results.",
+      );
+      assert(
+        removeResult.nodeChecks?.every((check) => check.ok === true) === true,
+        "confirmed dynamic-node removal did not verify node disappearance.",
+      );
+
+      const afterRemove = await callTool(client, "local_ydb_nodes_check", { profile });
+      assert(
+        !nodePorts(afterRemove).includes(extraIcPort),
+        "extra dynamic node IC port was still visible after confirmed removal.",
+      );
+
+      const tenantAfterRemove = await callTool(client, "local_ydb_tenant_check", { profile });
+      assert(
+        tenantAfterRemove.ok === true,
+        tenantAfterRemove.stderr || "tenant check failed after confirmed dynamic-node removal",
+      );
+    }
+  }
 }
 
 async function callTool(client, name, args) {
@@ -226,7 +286,7 @@ async function callTool(client, name, args) {
     const result = await client.callTool(
       { name, arguments: args },
       undefined,
-      { timeout: 120_000 },
+      { timeout: 180_000 },
     );
     if (result.isError) {
       throw new Error(`${name} returned MCP error: ${toolText(result)}`);
@@ -238,6 +298,14 @@ async function callTool(client, name, args) {
   } finally {
     console.log("::endgroup::");
   }
+}
+
+function nodePorts(value) {
+  return Array.isArray(value.nodes)
+    ? value.nodes
+      .map((node) => node?.Port)
+      .filter((port) => Number.isInteger(port))
+    : [];
 }
 
 function summarize(value) {

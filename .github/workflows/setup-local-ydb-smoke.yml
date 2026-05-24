@@ -1,6 +1,9 @@
 name: setup-local-ydb smoke
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
