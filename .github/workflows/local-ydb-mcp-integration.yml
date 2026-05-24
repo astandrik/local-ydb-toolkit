@@ -1,0 +1,45 @@
+name: local-ydb MCP integration
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-ydb-mcp-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Start local YDB
+        id: ydb
+        uses: astandrik/setup-local-ydb@v1
+        with:
+          version: 26.1.1.6
+          tenant: /local/test
+          container-prefix: local-ydb-toolkit-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Run MCP integration against live YDB
+        env:
+          LOCAL_YDB_STATIC_ENDPOINT: ${{ steps.ydb.outputs.static-endpoint }}
+          LOCAL_YDB_IMAGE: ${{ steps.ydb.outputs.image }}
+          LOCAL_YDB_CONTAINER_PREFIX: local-ydb-toolkit-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+        run: node scripts/ci/verify-live-mcp-server.mjs
