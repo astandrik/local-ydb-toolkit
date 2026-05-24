@@ -91,10 +91,11 @@ Environment written through `GITHUB_ENV`:
    - static and dynamic container logs tail;
    - last readiness command and stderr;
    - redaction for password file paths and secret values.
-7. Update this repository only with documentation:
+7. Update this repository with:
    - README badge/link to `astandrik/setup-local-ydb`;
    - short "Use in GitHub Actions CI" section;
-   - example workflow with exact version and `auth: true`.
+   - example workflow with an exact version and unauthenticated quick start;
+   - optional dogfood smoke workflow outside the action repository.
 
 ## Test Plan
 

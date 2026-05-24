@@ -1,0 +1,33 @@
+name: setup-local-ydb smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: setup-local-ydb-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Start local YDB
+        id: ydb
+        uses: astandrik/setup-local-ydb@v1
+        with:
+          version: 26.1.1.6
+          tenant: /local/test
+
+      - name: Verify connection values
+        run: |
+          test -n "${LOCAL_YDB_ENDPOINT}"
+          test "${LOCAL_YDB_DATABASE}" = "/local/test"
+          test -n "${LOCAL_YDB_MONITORING_URL}"
+          test "${{ steps.ydb.outputs.database }}" = "/local/test"
+          curl --fail --silent --show-error "${LOCAL_YDB_MONITORING_URL}/viewer/json/capabilities?database=%2Flocal%2Ftest" >/tmp/local-ydb-capabilities.json

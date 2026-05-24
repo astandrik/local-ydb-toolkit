@@ -48,6 +48,8 @@ Use [`astandrik/setup-local-ydb`](https://github.com/astandrik/setup-local-ydb) 
 
 The action starts `ghcr.io/ydb-platform/local-ydb`, creates the tenant database, waits for readiness, optionally enables native YDB auth, and exports `LOCAL_YDB_ENDPOINT`, `LOCAL_YDB_DATABASE`, and `LOCAL_YDB_MONITORING_URL` for later workflow steps. Add `auth: true` when tests need authenticated YDB behavior; in that mode it also exports `LOCAL_YDB_USER` and `LOCAL_YDB_PASSWORD_FILE` without exposing the raw password value.
 
+This repository dogfoods the Marketplace action in `.github/workflows/setup-local-ydb-smoke.yml`.
+
 ## Skill Contents
 
 ```text
