@@ -3,6 +3,8 @@
 [![Listed on CuratedMCP](https://www.curatedmcp.com/api/badge/local-ydb-unofficial-mcp-server)](https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server)
 [![MCP Badge](https://lobehub.com/badge/mcp/astandrik-local-ydb-toolkit)](https://lobehub.com/mcp/astandrik-local-ydb-toolkit)
 [![local-ydb-toolkit MCP server](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit/badges/score.svg)](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit)
+[![GitHub Action: setup-local-ydb](https://img.shields.io/badge/GitHub%20Action-setup--local--ydb-2088FF?logo=githubactions&logoColor=white)](https://github.com/astandrik/setup-local-ydb)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-setup--local--ydb-blue?logo=github)](https://github.com/marketplace/actions/setup-local-ydb)
 
 Reusable Codex skill for operating `local-ydb` deployments.
 
@@ -27,6 +29,24 @@ SKILLS_DIR="${CODEX_HOME:-$HOME/.codex}/skills"
 mkdir -p "$SKILLS_DIR"
 cp -R skills/local-ydb "$SKILLS_DIR/local-ydb"
 ```
+
+## Use in GitHub Actions CI
+
+Use [`astandrik/setup-local-ydb`](https://github.com/astandrik/setup-local-ydb) when a GitHub Actions job needs an ephemeral local YDB tenant:
+
+```yaml
+- uses: astandrik/setup-local-ydb@v1
+  id: ydb
+  with:
+    version: 26.1.1.6
+    tenant: /local/test
+
+- run: |
+    echo "$LOCAL_YDB_ENDPOINT"
+    echo "$LOCAL_YDB_DATABASE"
+```
+
+The action starts `ghcr.io/ydb-platform/local-ydb`, creates the tenant database, waits for readiness, optionally enables native YDB auth, and exports `LOCAL_YDB_ENDPOINT`, `LOCAL_YDB_DATABASE`, and `LOCAL_YDB_MONITORING_URL` for later workflow steps. Add `auth: true` when tests need authenticated YDB behavior; in that mode it also exports `LOCAL_YDB_USER` and `LOCAL_YDB_PASSWORD_FILE` without exposing the raw password value.
 
 ## Skill Contents
 
