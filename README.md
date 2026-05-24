@@ -6,11 +6,17 @@
 [![GitHub Action: setup-local-ydb](https://img.shields.io/badge/GitHub%20Action-setup--local--ydb-2088FF?logo=githubactions&logoColor=white)](https://github.com/astandrik/setup-local-ydb)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-setup--local--ydb-blue?logo=github)](https://github.com/marketplace/actions/setup-local-ydb)
 
-Reusable Codex skill for operating `local-ydb` deployments.
+Toolkit for operating `local-ydb` deployments across Codex, MCP clients, and GitHub Actions CI.
+
+It includes:
+
+- a reusable Codex skill for local and SSH `local-ydb` operations;
+- an unofficial local stdio MCP server published as `@astandrik/local-ydb-mcp`;
+- a Marketplace GitHub Action, [`astandrik/setup-local-ydb`](https://github.com/astandrik/setup-local-ydb), for booting disposable YDB tenants in CI.
 
 Directory listing: [Local YDB MCP on Skiln](https://skiln.co/mcp/mcp-io-github-astandrik-local-ydb-mcp).
 
-## Quick Start
+## Codex Skill Quick Start
 
 The easiest install path for Codex is to ask Codex to install the skill from this repository:
 
