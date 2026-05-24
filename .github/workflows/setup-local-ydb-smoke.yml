@@ -1,6 +1,9 @@
 name: setup-local-ydb smoke
 
 on:
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
   schedule:
     - cron: "17 4 * * 1"
@@ -17,12 +20,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
       - name: Start local YDB
         id: ydb
         uses: astandrik/setup-local-ydb@v1
         with:
           version: 26.1.1.6
           tenant: /local/test
+          container-prefix: local-ydb-toolkit-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Verify connection values
         run: |
@@ -31,3 +46,10 @@ jobs:
           test -n "${LOCAL_YDB_MONITORING_URL}"
           test "${{ steps.ydb.outputs.database }}" = "/local/test"
           curl --fail --silent --show-error "${LOCAL_YDB_MONITORING_URL}/viewer/json/capabilities?database=%2Flocal%2Ftest" >/tmp/local-ydb-capabilities.json
+
+      - name: Verify through local-ydb-toolkit MCP tools
+        env:
+          LOCAL_YDB_STATIC_ENDPOINT: ${{ steps.ydb.outputs.static-endpoint }}
+          LOCAL_YDB_IMAGE: ${{ steps.ydb.outputs.image }}
+          LOCAL_YDB_CONTAINER_PREFIX: local-ydb-toolkit-${{ github.run_id }}-${{ github.run_attempt }}
+        run: node scripts/ci/verify-setup-local-ydb.mjs
