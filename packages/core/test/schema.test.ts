@@ -71,6 +71,23 @@ describe("schema application", () => {
     expect(calls.map((call) => call.mode)).toEqual(["validate"]);
   });
 
+  it("classifies ALTER TABLE DROP actions as high risk", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    const response = await applySchema(ctx, {
+      action: "apply",
+      script: "ALTER TABLE users DROP COLUMN name;",
+      sdkExecutor: successfulSdkRecorder(),
+    });
+
+    expect(response.executed).toBe(false);
+    expect(response.risk).toBe("high");
+    expect(response.statements).toEqual({
+      count: 1,
+      kinds: ["ALTER TABLE"],
+    });
+  });
+
   it("executes apply only after validation succeeds and confirm=true is supplied", async () => {
     const calls: SchemaSdkExecuteRequest[] = [];
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));

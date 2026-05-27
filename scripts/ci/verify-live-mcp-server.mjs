@@ -238,6 +238,7 @@ async function verifySchemaApply(client, profile) {
     script: createScript,
   });
   assert(apply.executed === true, apply.execution?.issues || "schema apply failed");
+  assert(apply.execution?.ok === true, apply.execution?.issues || "schema apply execution failed");
 
   const describe = await callTool(client, "local_ydb_scheme", {
     profile,
@@ -253,6 +254,7 @@ async function verifySchemaApply(client, profile) {
     script: `DROP TABLE ${tableName};`,
   });
   assert(drop.executed === true, drop.execution?.issues || "schema cleanup drop failed");
+  assert(drop.execution?.ok === true, drop.execution?.issues || "schema cleanup drop execution failed");
 }
 
 async function verifyConfirmedDynamicNodeMutation(client, profile) {

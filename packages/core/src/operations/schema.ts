@@ -48,9 +48,13 @@ export async function applySchema(
   const databasePath = normalizeDatabasePath(ctx, options.databasePath);
   const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
   const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes);
-  const statements = analyzeSchemaScript(script);
+  const schemaAnalysis = analyzeSchemaScript(script);
+  const statements = {
+    count: schemaAnalysis.count,
+    kinds: schemaAnalysis.kinds,
+  };
   const scriptSha256 = createHash("sha256").update(script).digest("hex");
-  const risk = schemaRisk(action, statements.kinds);
+  const risk = schemaRisk(action, statements.kinds, schemaAnalysis.hasDestructiveAlterDrop);
   const plannedCommands = schemaPlannedCommands(action, databasePath, scriptSha256);
   const rollback = schemaRollback(statements.kinds);
   const verification = schemaVerification(databasePath);
@@ -158,7 +162,7 @@ function normalizeTimeoutMs(timeoutMs: number | undefined): number {
   return timeoutMs;
 }
 
-function analyzeSchemaScript(script: string): { count: number; kinds: SchemaStatementKind[] } {
+function analyzeSchemaScript(script: string): { count: number; kinds: SchemaStatementKind[]; hasDestructiveAlterDrop: boolean } {
   const statements = splitStatements(script)
     .map((statement) => statement.trim())
     .filter(Boolean);
@@ -169,6 +173,7 @@ function analyzeSchemaScript(script: string): { count: number; kinds: SchemaStat
   return {
     count: statements.length,
     kinds: uniqueStatementKinds(statements.map(statementKind)),
+    hasDestructiveAlterDrop: statements.some(isDestructiveAlterDrop),
   };
 }
 
@@ -241,11 +246,7 @@ function splitStatements(script: string): string[] {
 }
 
 function statementKind(statement: string): SchemaStatementKind {
-  const tokens = statement
-    .replace(/^\uFEFF/, "")
-    .trim()
-    .match(/[A-Za-z_][A-Za-z0-9_-]*/g)
-    ?.map((token) => token.toUpperCase()) ?? [];
+  const tokens = statementTokens(statement);
   const first = tokens[0];
   const second = tokens[1];
 
@@ -264,6 +265,43 @@ function statementKind(statement: string): SchemaStatementKind {
   throw new Error(`${ALLOWED_STATEMENT_MESSAGE} Unsupported statement starts with ${tokens.slice(0, 2).join(" ") || "empty input"}.`);
 }
 
+function statementTokens(statement: string): string[] {
+  const tokens: string[] = [];
+  let quote: "'" | "\"" | "`" | undefined;
+  for (let index = 0; index < statement.length; index += 1) {
+    const char = statement[index] ?? "";
+    const next = statement[index + 1] ?? "";
+
+    if (quote) {
+      if (char === quote) {
+        if (next === quote) {
+          index += 1;
+        } else {
+          quote = undefined;
+        }
+      } else if (char === "\\" && (quote === "'" || quote === "\"") && next) {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === "\"" || char === "`") {
+      quote = char;
+      continue;
+    }
+
+    if (/[A-Za-z_]/.test(char)) {
+      let end = index + 1;
+      while (end < statement.length && /[A-Za-z0-9_-]/.test(statement[end] ?? "")) {
+        end += 1;
+      }
+      tokens.push(statement.slice(index, end).replace(/^\uFEFF/, "").toUpperCase());
+      index = end - 1;
+    }
+  }
+  return tokens.filter(Boolean);
+}
+
 function uniqueStatementKinds(kinds: SchemaStatementKind[]): SchemaStatementKind[] {
   const ordered: SchemaStatementKind[] = [];
   for (const kind of kinds) {
@@ -274,11 +312,20 @@ function uniqueStatementKinds(kinds: SchemaStatementKind[]): SchemaStatementKind
   return ordered;
 }
 
-function schemaRisk(action: "validate" | "apply", kinds: SchemaStatementKind[]): OperationPlan["risk"] {
+function isDestructiveAlterDrop(statement: string): boolean {
+  const tokens = statementTokens(statement);
+  return tokens[0] === "ALTER" && tokens[1] === "TABLE" && tokens.includes("DROP");
+}
+
+function schemaRisk(
+  action: "validate" | "apply",
+  kinds: SchemaStatementKind[],
+  hasDestructiveAlterDrop = false,
+): OperationPlan["risk"] {
   if (action === "validate") {
     return "low";
   }
-  return kinds.includes("DROP TABLE") ? "high" : "medium";
+  return kinds.includes("DROP TABLE") || hasDestructiveAlterDrop ? "high" : "medium";
 }
 
 function schemaPlannedCommands(action: "validate" | "apply", databasePath: string, scriptSha256: string): string[] {

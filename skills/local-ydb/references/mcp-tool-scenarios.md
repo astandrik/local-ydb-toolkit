@@ -143,7 +143,7 @@ Expected:
 - validation runs through the YDB JS SDK and does not apply DDL
 - apply without `confirm=true` is plan-only after validation
 - confirmed apply reports script SHA-256, statement kinds, validation/execution status, risk, rollback, and verification without echoing raw DDL or credential paths
-- `DROP TABLE` is high risk
+- `DROP TABLE` and destructive `ALTER TABLE ... DROP ...` actions are high risk
 
 Avoid:
 

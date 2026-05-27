@@ -152,7 +152,7 @@ Expected:
 - `action=apply` without `confirm=true` validates and returns planned SDK validation/application steps only.
 - confirmed apply returns a script SHA-256, statement count/kinds, validation result, execution result, risk, rollback notes, and verification steps.
 - the response does not echo the raw DDL script or configured credential paths.
-- `DROP TABLE` is reported as high risk.
+- `DROP TABLE` and destructive `ALTER TABLE ... DROP ...` actions are reported as high risk.
 
 Avoid:
 
