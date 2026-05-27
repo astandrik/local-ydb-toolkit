@@ -795,6 +795,26 @@ describe("mcp tools", () => {
     ]));
   });
 
+  it("exposes non-empty schema array constraints in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    const statements = tool?.inputSchema.properties?.statements as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    };
+    const createTableSchema = statements.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "createTable";
+    });
+    const indexes = createTableSchema?.properties?.indexes as { items?: { properties?: Record<string, unknown> } } | undefined;
+
+    expect(indexes?.items?.properties?.cover).toMatchObject({
+      type: "array",
+      minItems: 1
+    });
+    expect(createTableSchema?.properties?.partitionByHash).toMatchObject({
+      type: "array",
+      minItems: 1
+    });
+  });
+
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
     expect(tool?.inputSchema.required).toContain("version");
@@ -1032,6 +1052,78 @@ describe("mcp tools", () => {
     }, {
       config: ConfigSchema.parse({})
     })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx must be sync/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{
+          kind: "addIndex",
+          index: {
+            name: "orders_by_created_at",
+            columns: ["created_at"],
+            local: true
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/secondary index orders_by_created_at cannot be local/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "order_no", type: "Utf8" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_by_order_no",
+          columns: ["order_no"],
+          unique: true,
+          global: true,
+          sync: "async"
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
+  });
+
+  it("rejects empty schema arrays through the MCP handler", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "items_by_embedding",
+          columns: ["embedding"],
+          cover: []
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Array must contain at least 1 element/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [{ name: "id", type: "Uint64" }],
+        primaryKey: ["id"],
+        store: "column",
+        partitionByHash: []
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Array must contain at least 1 element/);
   });
 
   it("advertises schema apply as a mutating destructive tool", () => {

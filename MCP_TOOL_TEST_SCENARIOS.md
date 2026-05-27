@@ -160,6 +160,7 @@ Expected:
 - `partitionByHash` is used only with `store: "column"` and primary key columns; row tables use row partitioning `WITH` settings instead.
 - If an index needs a newly added column, generate/apply the `addColumn` first, then run a separate generate/apply call for `addIndex`.
 - `vector_kmeans_tree` indexes include `global: true`, `sync: "sync"`, and complete `with` settings: `vector_dimension`, `vector_type`, either `distance` or `similarity`, `clusters`, and `levels`.
+- normal secondary indexes are global-only, unique indexes are synchronous, and creating a table with a vector index returns a warning that adding the vector index after loading representative data is preferred.
 
 Avoid:
 
@@ -188,7 +189,7 @@ Expected:
 
 - each positive generated script validates, then goes through `local_ydb_apply_schema action=apply confirm=false` before any confirmed apply.
 - created probe tables are described with `local_ydb_scheme action=describe` and then cleaned up with validated/confirmed `DROP TABLE`.
-- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, column-store secondary indexes, `with.STORE`, missing primary/index columns, invalid types, and invalid setting tokens before rendering.
+- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, local secondary indexes, async unique indexes, `with.STORE`, missing primary/index columns, invalid types, and invalid setting tokens before rendering.
 
 ## Scenario 1B: Schema Permissions
 

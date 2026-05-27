@@ -225,8 +225,9 @@ const indexSchema = {
     },
     cover: {
       type: "array",
+      minItems: 1,
       items: { type: "string", minLength: 1 },
-      description: "Optional COVER columns for the index.",
+      description: "Optional non-empty COVER columns for the index.",
     },
     global: {
       type: "boolean",
@@ -234,16 +235,16 @@ const indexSchema = {
     },
     local: {
       type: "boolean",
-      description: "Emit LOCAL for the index.",
+      description: "Emit LOCAL for supported index types. Rejected for secondary and vector indexes in v1.",
     },
     unique: {
       type: "boolean",
-      description: "Emit UNIQUE for the index.",
+      description: "Emit UNIQUE for the index. Unique indexes must be sync.",
     },
     sync: {
       type: "string",
       enum: ["sync", "async"],
-      description: "Emit SYNC or ASYNC for the index. vector_kmeans_tree requires sync.",
+      description: "Emit SYNC or ASYNC for the index. unique and vector_kmeans_tree indexes require sync.",
     },
     using: {
       type: "string",
@@ -300,9 +301,10 @@ const schemaStatementSchema = {
         },
         partitionByHash: {
           type: "array",
+          minItems: 1,
           items: { type: "string", minLength: 1 },
           description:
-            "Optional PARTITION BY HASH columns for column-oriented tables. Requires store: \"column\" and each partition column must be part of primaryKey.",
+            "Optional non-empty PARTITION BY HASH columns for column-oriented tables. Requires store: \"column\" and each partition column must be part of primaryKey.",
         },
         store: {
           type: "string",

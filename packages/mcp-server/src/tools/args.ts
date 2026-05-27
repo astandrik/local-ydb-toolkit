@@ -45,7 +45,7 @@ const SchemaColumnArgs = z.object({
 const SchemaIndexArgs = z.object({
   name: z.string().min(1),
   columns: z.array(z.string().min(1)).nonempty(),
-  cover: z.array(z.string().min(1)).optional(),
+  cover: z.array(z.string().min(1)).nonempty().optional(),
   global: z.boolean().optional(),
   local: z.boolean().optional(),
   unique: z.boolean().optional(),
@@ -61,7 +61,7 @@ const CreateTableStatementArgs = z.object({
   columns: z.array(SchemaColumnArgs).nonempty(),
   primaryKey: z.array(z.string().min(1)).nonempty(),
   indexes: z.array(SchemaIndexArgs).optional(),
-  partitionByHash: z.array(z.string().min(1)).optional(),
+  partitionByHash: z.array(z.string().min(1)).nonempty().optional(),
   store: z.enum(["row", "column"]).optional(),
   with: z.record(SchemaSettingValue).optional(),
 }).strict();
@@ -109,6 +109,31 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
   timeoutMs: z.number().int().positive().max(600_000).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
 }).superRefine((args, ctx) => {
+  const validateIndex = (index: z.infer<typeof SchemaIndexArgs>, path: (string | number)[]) => {
+    const indexType = index.using ?? "secondary";
+    if (indexType === "secondary" && index.local) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, "local"],
+        message: `secondary index ${index.name} cannot be local`,
+      });
+    }
+    if (index.unique && index.sync === "async") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, "sync"],
+        message: `unique index ${index.name} must be sync`,
+      });
+    }
+    if (index.using === "vector_kmeans_tree" && index.sync !== "sync") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, "sync"],
+        message: `vector_kmeans_tree index ${index.name} must be sync`,
+      });
+    }
+  };
+
   args.statements.forEach((statement, statementIndex) => {
     if (statement.kind === "createTable") {
       if (statement.with !== undefined && Object.keys(statement.with).some((name) => name.trim().toUpperCase() === "STORE")) {
@@ -119,23 +144,13 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
         });
       }
       statement.indexes?.forEach((index, indexIndex) => {
-        if (index.using === "vector_kmeans_tree" && index.sync !== "sync") {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["statements", statementIndex, "indexes", indexIndex, "sync"],
-            message: `vector_kmeans_tree index ${index.name} must be sync`,
-          });
-        }
+        validateIndex(index, ["statements", statementIndex, "indexes", indexIndex]);
       });
     }
     if (statement.kind === "alterTable") {
       statement.actions.forEach((action, actionIndex) => {
-        if (action.kind === "addIndex" && action.index.using === "vector_kmeans_tree" && action.index.sync !== "sync") {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["statements", statementIndex, "actions", actionIndex, "index", "sync"],
-            message: `vector_kmeans_tree index ${action.index.name} must be sync`,
-          });
+        if (action.kind === "addIndex") {
+          validateIndex(action.index, ["statements", statementIndex, "actions", actionIndex, "index"]);
         }
       });
     }

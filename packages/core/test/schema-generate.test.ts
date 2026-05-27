@@ -264,6 +264,38 @@ describe("schema generation", () => {
     expect(response.script).toContain("WITH (distance = 'cosine', vector_type = 'float', vector_dimension = 3, clusters = 2, levels = 1)");
   });
 
+  it("warns when creating a table with a vector index", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    const response = await generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1,
+          },
+        }],
+      }],
+    });
+
+    expect(response.warnings).toContain("Generated CREATE TABLE with a vector index. YDB recommends adding vector indexes after loading representative data; a vector index created on an empty table can degrade to full scans.");
+  });
+
   it("rejects secondary indexes on column-oriented tables", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 
@@ -280,6 +312,36 @@ describe("schema generation", () => {
         indexes: [{ name: "orders_by_created_at", columns: ["created_at"], global: true }],
       }],
     })).rejects.toThrow(/Secondary indexes are supported only for row-oriented tables/);
+  });
+
+  it("rejects unsupported secondary index modifiers", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "created_at", type: "Timestamp" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{ name: "orders_by_created_at", columns: ["created_at"], local: true }],
+      }],
+    })).rejects.toThrow(/secondary index orders_by_created_at cannot be local/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "order_no", type: "Utf8" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{ name: "orders_by_order_no", columns: ["order_no"], unique: true, global: true, sync: "async" }],
+      }],
+    })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
   });
 
   it("rejects invalid setting tokens before rendering", async () => {

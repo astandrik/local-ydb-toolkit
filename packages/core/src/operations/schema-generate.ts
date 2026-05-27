@@ -199,7 +199,7 @@ function renderStatement(statement: SchemaStatementSpec): {
         kind: "CREATE TABLE",
         sql: renderCreateTable(statement),
         statementCount: 1,
-        warnings: [],
+        warnings: createTableWarnings(statement),
       };
     case "alterTable":
       return renderAlterTable(statement.tableName, statement.actions);
@@ -370,6 +370,7 @@ function renderIndex(index: SchemaIndexSpec): string {
   if (index.global && index.local) {
     throw new Error(`index ${index.name} cannot be both global and local`);
   }
+  validateIndexMode(index);
   const parts = ["INDEX", quoteIdentifier(index.name)];
   if (index.global) {
     parts.push("GLOBAL");
@@ -398,6 +399,16 @@ function renderIndex(index: SchemaIndexSpec): string {
     parts.push("WITH", `(${withSettings.join(", ")})`);
   }
   return parts.join(" ");
+}
+
+function validateIndexMode(index: SchemaIndexSpec): void {
+  const indexType = index.using ?? "secondary";
+  if (indexType === "secondary" && index.local) {
+    throw new Error(`secondary index ${index.name} cannot be local`);
+  }
+  if (index.unique && index.sync === "async") {
+    throw new Error(`unique index ${index.name} must be sync`);
+  }
 }
 
 function validateVectorIndex(index: SchemaIndexSpec): void {
@@ -433,6 +444,15 @@ function validateVectorIndex(index: SchemaIndexSpec): void {
   if (clusters ** levels > 1_073_741_824) {
     throw new Error(`vector_kmeans_tree index ${index.name} clusters ** levels must be at most 1073741824`);
   }
+}
+
+function createTableWarnings(statement: CreateTableSchemaStatementSpec): string[] {
+  if ((statement.indexes ?? []).some((index) => index.using === "vector_kmeans_tree")) {
+    return [
+      "Generated CREATE TABLE with a vector index. YDB recommends adding vector indexes after loading representative data; a vector index created on an empty table can degrade to full scans.",
+    ];
+  }
+  return [];
 }
 
 function requireVectorNumberSetting(
