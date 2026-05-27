@@ -29,6 +29,87 @@ export const ApplySchemaArgs = ProfileArgs.extend({
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
 });
 
+const SchemaScalarValue = z.union([z.string(), z.number(), z.boolean()]);
+const SchemaSettingTokenValue = z.object({
+  token: z.string().min(1).regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+}).strict();
+const SchemaSettingValue = z.union([SchemaScalarValue, SchemaSettingTokenValue]);
+
+const SchemaColumnArgs = z.object({
+  name: z.string().min(1),
+  type: z.string().min(1),
+  notNull: z.boolean().optional(),
+  default: SchemaScalarValue.optional(),
+}).strict();
+
+const SchemaIndexArgs = z.object({
+  name: z.string().min(1),
+  columns: z.array(z.string().min(1)).nonempty(),
+  cover: z.array(z.string().min(1)).optional(),
+  global: z.boolean().optional(),
+  local: z.boolean().optional(),
+  unique: z.boolean().optional(),
+  sync: z.enum(["sync", "async"]).optional(),
+  using: z.enum(["secondary", "vector_kmeans_tree"]).optional(),
+  with: z.record(SchemaSettingValue).optional(),
+}).strict();
+
+const CreateTableStatementArgs = z.object({
+  kind: z.literal("createTable"),
+  tableName: z.string().min(1),
+  ifNotExists: z.boolean().optional(),
+  columns: z.array(SchemaColumnArgs).nonempty(),
+  primaryKey: z.array(z.string().min(1)).nonempty(),
+  indexes: z.array(SchemaIndexArgs).optional(),
+  partitionByHash: z.array(z.string().min(1)).optional(),
+  store: z.enum(["row", "column"]).optional(),
+  with: z.record(SchemaSettingValue).optional(),
+}).strict();
+
+const AlterTableActionArgs = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("addColumn"),
+    column: SchemaColumnArgs,
+  }).strict(),
+  z.object({
+    kind: z.literal("dropColumn"),
+    name: z.string().min(1),
+  }).strict(),
+  z.object({
+    kind: z.literal("addIndex"),
+    index: SchemaIndexArgs,
+  }).strict(),
+  z.object({
+    kind: z.literal("dropIndex"),
+    name: z.string().min(1),
+  }).strict(),
+]);
+
+const AlterTableStatementArgs = z.object({
+  kind: z.literal("alterTable"),
+  tableName: z.string().min(1),
+  actions: z.array(AlterTableActionArgs).nonempty(),
+}).strict();
+
+const DropTableStatementArgs = z.object({
+  kind: z.literal("dropTable"),
+  tableName: z.string().min(1),
+}).strict();
+
+const SchemaStatementArgs = z.discriminatedUnion("kind", [
+  CreateTableStatementArgs,
+  AlterTableStatementArgs,
+  DropTableStatementArgs,
+]);
+
+export const GenerateSchemaArgs = ProfileArgs.extend({
+  databasePath: z.string().min(1).optional(),
+  validate: z.boolean().optional(),
+  statements: z.array(SchemaStatementArgs).nonempty(),
+  timeoutMs: z.number().int().positive().max(600_000).optional(),
+  maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+});
+
 export const PermissionsArgs = ProfileArgs.extend({
   action: z.enum([
     "list",

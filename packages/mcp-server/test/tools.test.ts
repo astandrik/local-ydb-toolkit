@@ -123,6 +123,7 @@ describe("mcp tools", () => {
       "local_ydb_database_status",
       "local_ydb_destroy_stack",
       "local_ydb_dump_tenant",
+      "local_ydb_generate_schema",
       "local_ydb_graphshard_check",
       "local_ydb_inventory",
       "local_ydb_list_versions",
@@ -258,6 +259,7 @@ describe("mcp tools", () => {
       "local_ydb_auth_check",
       "local_ydb_container_logs",
       "local_ydb_database_status",
+      "local_ydb_generate_schema",
       "local_ydb_graphshard_check",
       "local_ydb_inventory",
       "local_ydb_list_versions",
@@ -335,7 +337,8 @@ describe("mcp tools", () => {
       "local_ydb_bootstrap_tenant_workflow",
       "local_ydb_upgrade_version_workflow",
       "local_ydb_auth_hardening_workflow",
-      "local_ydb_reduce_storage_groups_workflow"
+      "local_ydb_reduce_storage_groups_workflow",
+      "local_ydb_schema_generate_apply_workflow"
     ]);
   });
 
@@ -422,6 +425,27 @@ describe("mcp tools", () => {
     expect(text).toContain("Storage pool not found");
     expect(text).not.toContain("storage pool was not found");
     expect(text).not.toContain("storage groups to keep");
+  });
+
+  it("renders schema generation workflow prompt", () => {
+    const result = getLocalYdbPrompt("local_ydb_schema_generate_apply_workflow", {
+      profile: "ghcr261-auth",
+      scenario: "column partition",
+      tableName: "tmp_probe"
+    });
+    const text = result.messages[0]?.content.type === "text"
+      ? result.messages[0].content.text
+      : "";
+
+    expect(text).toContain("local_ydb_status_report");
+    expect(text).toContain("local_ydb_generate_schema with validate=true");
+    expect(text).toContain("local_ydb_apply_schema action=validate");
+    expect(text).toContain("action=apply with confirm=false");
+    expect(text).toContain("confirm=true only after");
+    expect(text).toContain("partitionByHash only with store: \"column\" and primaryKey columns");
+    expect(text).toContain("vector_kmeans_tree");
+    expect(text).toContain("\"scenario\": \"column partition\"");
+    expect(text).toContain("\"tableName\": \"tmp_probe\"");
   });
 
   it("renders bootstrap prompts with plan-only prerequisites first", () => {
@@ -724,6 +748,52 @@ describe("mcp tools", () => {
     });
   });
 
+  it("exposes schema generation options in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    expect(tool?.inputSchema.required).toContain("statements");
+    expect(tool?.inputSchema.properties?.databasePath).toMatchObject({ type: "string" });
+    expect(tool?.inputSchema.properties?.validate).toMatchObject({ type: "boolean" });
+    expect(tool?.inputSchema.properties?.statements).toMatchObject({
+      type: "array",
+      minItems: 1
+    });
+    expect(tool?.inputSchema.properties?.timeoutMs).toMatchObject({
+      type: "integer",
+      maximum: 600_000
+    });
+    expect(tool?.inputSchema.properties?.maxOutputBytes).toMatchObject({
+      type: "integer",
+      maximum: 1_048_576
+    });
+  });
+
+  it("exposes schema setting token values in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    const statements = tool?.inputSchema.properties?.statements as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    };
+    const createTableSchema = statements.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "createTable";
+    });
+    const tableWith = (createTableSchema?.properties?.with as {
+      additionalProperties?: { oneOf?: unknown[] };
+    } | undefined)?.additionalProperties;
+
+    expect(tableWith?.oneOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "object",
+        required: ["token"],
+        additionalProperties: false,
+        properties: expect.objectContaining({
+          token: expect.objectContaining({
+            type: "string",
+            minLength: 1
+          })
+        })
+      })
+    ]));
+  });
+
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
     expect(tool?.inputSchema.required).toContain("version");
@@ -837,6 +907,88 @@ describe("mcp tools", () => {
     expect(result.validation.ok).toBe(true);
   });
 
+  it("can generate schema DDL through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "users",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "email", type: "Utf8" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "users_by_email",
+          columns: ["email"],
+          global: true
+        }],
+        with: {
+          AUTO_PARTITIONING_BY_SIZE: { token: "ENABLED" }
+        }
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    }) as { script: string; applyRisk: string; statements: { kinds: string[] }; references: Array<{ label: string }> };
+
+    expect(result.script).toBe([
+      "CREATE TABLE `users` (",
+      "  `id` Uint64 NOT NULL,",
+      "  `email` Utf8,",
+      "  INDEX `users_by_email` GLOBAL ON (`email`),",
+      "  PRIMARY KEY (`id`)",
+      ")",
+      "WITH (",
+      "  AUTO_PARTITIONING_BY_SIZE = ENABLED",
+      ");",
+    ].join("\n"));
+    expect(result.applyRisk).toBe("low");
+    expect(result.statements.kinds).toEqual(["CREATE TABLE"]);
+    expect(result.references.map((reference) => reference.label)).toContain("YDB CREATE TABLE syntax");
+  });
+
+  it("can validate generated schema DDL through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_generate_schema", {
+      validate: true,
+      statements: [{
+        kind: "createTable",
+        tableName: "users",
+        columns: [{ name: "id", type: "Uint64" }],
+        primaryKey: ["id"]
+      }]
+    }, {
+      config: ConfigSchema.parse({}),
+      sdkExecutor: async () => ({
+        ok: true,
+        status: "SUCCESS",
+        issues: ""
+      })
+    }) as { validation?: { ok: boolean; status: string }; script: string };
+
+    expect(result.script).toContain("CREATE TABLE `users`");
+    expect(result.validation).toMatchObject({
+      ok: true,
+      status: "SUCCESS"
+    });
+  });
+
+  it("rejects generated column table partitioning outside the primary key through the MCP handler", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "bucket", type: "Uint32" }
+        ],
+        primaryKey: ["id"],
+        store: "column",
+        partitionByHash: ["bucket"]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/partitionByHash column bucket must be part of primaryKey/);
+  });
+
   it("advertises schema apply as a mutating destructive tool", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_apply_schema");
 
@@ -845,6 +997,17 @@ describe("mcp tools", () => {
       destructiveHint: true
     });
     expect(localYdbInstructions).toContain("local_ydb_apply_schema");
+  });
+
+  it("advertises schema generation as a read-only tool", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+
+    expect(tool?.annotations).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false
+    });
+    expect(localYdbInstructions).toContain("local_ydb_generate_schema");
+    expect(localYdbInstructions).toContain("generate_schema");
   });
 
   it("can list permissions through the MCP handler without confirm", async () => {

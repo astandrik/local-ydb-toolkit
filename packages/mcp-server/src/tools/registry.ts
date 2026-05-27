@@ -13,6 +13,7 @@ import {
   databaseStatus,
   destroyStack,
   dumpTenant,
+  generateSchema,
   graphshardCheck,
   inspectScheme,
   inventory,
@@ -47,6 +48,7 @@ import {
   DestroyStackArgs,
   DumpArgs,
   DynamicAuthConfigArgs,
+  GenerateSchemaArgs,
   ListVersionsArgs,
   LogsArgs,
   MutatingArgs,
@@ -71,6 +73,7 @@ import {
   destroyStackSchema,
   dumpSchema,
   dynamicAuthConfigSchema,
+  generateSchemaSchema,
   listVersionsSchema,
   logsSchema,
   mutatingSchema,
@@ -217,6 +220,21 @@ export const toolDefinitions = [
     handler: withContext(SchemeArgs, (context, parsed) =>
       inspectScheme(context, parsed),
     ),
+  }),
+  defineTool({
+    group: "schema",
+    name: "local_ydb_generate_schema",
+    description:
+      "Read-only structured YDB table DDL generator. It renders strict JSON specs for CREATE TABLE, ALTER TABLE, DROP TABLE, and secondary indexes, returns the generated script with official references and warnings, and can optionally validate through the YDB JS SDK without applying changes.",
+    inputSchema: generateSchemaSchema(),
+    annotations: readOnlyAnnotations(),
+    handler: async (args, options) => {
+      const parsed = GenerateSchemaArgs.parse(args ?? {});
+      return generateSchema(createToolContext(parsed, options), {
+        ...parsed,
+        sdkExecutor: options.sdkExecutor,
+      });
+    },
   }),
   defineTool({
     group: "schema",

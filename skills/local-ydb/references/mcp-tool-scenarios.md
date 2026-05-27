@@ -15,6 +15,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_status_report`
 - `local_ydb_tenant_check`
 - `local_ydb_scheme`
+- `local_ydb_generate_schema`
 - `local_ydb_apply_schema`
 - `local_ydb_permissions`
 - `local_ydb_nodes_check`
@@ -124,31 +125,58 @@ Avoid:
 
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
 
-## Scenario 1A: Schema Apply
+## Scenario 1A: Schema Generate and Apply
 
-Goal: verify YDB table DDL validation, confirm-gating, application, inspection, and cleanup.
+Goal: verify structured YDB table DDL generation, SDK validation, confirm-gating, application, inspection, and cleanup.
 
 Calls:
 
 ```json
-{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "validate", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));" } }
-{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));", "confirm": false } }
-{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));", "confirm": true } }
-{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "describe", "path": "/local/example/schema_apply_smoke" } }
-{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "DROP TABLE schema_apply_smoke;", "confirm": true } }
+{ "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "createTable", "tableName": "schema_apply_smoke", "columns": [{ "name": "id", "type": "Uint64", "notNull": true }, { "name": "value", "type": "Utf8" }], "primaryKey": ["id"], "indexes": [{ "name": "schema_apply_smoke_by_value", "columns": ["value"], "global": true }], "with": { "AUTO_PARTITIONING_BY_SIZE": { "token": "ENABLED" } } }] } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "validate", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);" } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);", "confirm": false } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);", "confirm": true } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-auth", "action": "describe", "path": "/local/example/schema_apply_smoke" } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "DROP TABLE schema_apply_smoke;", "confirm": true } }
 ```
 
 Expected:
 
+- schema generation returns generated DDL, script SHA-256, statement kinds, official YDB references, risk, warnings, verification steps, and SDK validation when `validate=true`
+- bare table `WITH` tokens such as `AUTO_PARTITIONING_BY_SIZE = ENABLED` are represented as `{ "token": "ENABLED" }` in the structured spec
 - validation runs through the YDB JS SDK and does not apply DDL
 - apply without `confirm=true` is plan-only after validation
 - confirmed apply reports script SHA-256, statement kinds, validation/execution status, risk, rollback, and verification without echoing raw DDL or credential paths
 - `DROP TABLE` and destructive `ALTER TABLE ... DROP ...` actions are high risk
+- `partitionByHash` is used only with `store: "column"` and primary key columns; row tables use row partitioning `WITH` settings instead
+- If an index needs a newly added column, generate/apply the `addColumn` first, then run a separate generate/apply call for `addIndex`
+- `vector_kmeans_tree` indexes include `global: true`, `sync: "sync"`, and complete `with` settings: `vector_dimension`, `vector_type`, either `distance` or `similarity`, `clusters`, and `levels`
 
 Avoid:
 
+- assuming generated DDL was applied; apply still goes through `local_ydb_apply_schema` and requires `confirm=true`
 - using schema apply for DML, user/auth DDL, ACLs, topics, transfers, or views
 - assuming rollback is automatic
+
+## Scenario 1A.1: Diverse Schema Generate Probes
+
+Goal: exercise the structured generator against common schema shapes before relying on it for a larger migration.
+
+Calls:
+
+```json
+{ "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "createTable", "tableName": "schema_probe_column_partition", "store": "column", "partitionByHash": ["tenant_id"], "columns": [{ "name": "tenant_id", "type": "Utf8", "notNull": true }, { "name": "ts", "type": "Timestamp", "notNull": true }, { "name": "value", "type": "Double" }], "primaryKey": ["tenant_id", "ts"], "with": { "AUTO_PARTITIONING_MIN_PARTITIONS_COUNT": 2 } }] } }
+{ "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "createTable", "tableName": "schema_probe_vector", "store": "row", "columns": [{ "name": "id", "type": "Uint64", "notNull": true }, { "name": "user", "type": "String" }, { "name": "title", "type": "String" }, { "name": "embedding", "type": "String" }], "primaryKey": ["id"], "indexes": [{ "name": "schema_probe_vector_idx", "columns": ["user", "embedding"], "cover": ["title"], "global": true, "sync": "sync", "using": "vector_kmeans_tree", "with": { "distance": "cosine", "vector_type": "float", "vector_dimension": 3, "clusters": 2, "levels": 1 } }] }] } }
+{ "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "createTable", "tableName": "schema_probe_defaults", "columns": [{ "name": "id", "type": "Uint64", "notNull": true, "default": 1 }, { "name": "label", "type": "Utf8", "default": "new" }, { "name": "created_on", "type": "Date", "default": "2026-05-27" }], "primaryKey": ["id"] }] } }
+{ "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "alterTable", "tableName": "schema_probe_alter", "actions": [{ "kind": "addColumn", "column": { "name": "status", "type": "Utf8" } }] }] } }
+{ "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "alterTable", "tableName": "schema_probe_alter", "actions": [{ "kind": "addIndex", "index": { "name": "schema_probe_alter_by_status", "columns": ["status"], "global": true } }] }] } }
+```
+
+Expected:
+
+- each positive generated script validates, then goes through `local_ydb_apply_schema action=apply confirm=false` before any confirmed apply
+- created probe tables are described with `local_ydb_scheme action=describe` and then cleaned up with validated/confirmed `DROP TABLE`
+- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, column-store secondary indexes, missing primary/index columns, invalid types, and invalid setting tokens before rendering
 
 ## Scenario 1B: Published Image Tags
 

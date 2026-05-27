@@ -153,6 +153,296 @@ export function applySchemaSchema(): Tool["inputSchema"] {
   };
 }
 
+const scalarSchema = {
+  oneOf: [
+    { type: "string" },
+    { type: "number" },
+    { type: "boolean" },
+  ],
+};
+
+const settingValueSchema = {
+  oneOf: [
+    ...scalarSchema.oneOf,
+    {
+      type: "object",
+      required: ["token"],
+      properties: {
+        token: {
+          type: "string",
+          minLength: 1,
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+          description: "Bare YQL token value, for settings such as AUTO_PARTITIONING_BY_SIZE = ENABLED.",
+        },
+      },
+      additionalProperties: false,
+    },
+  ],
+};
+
+const columnSchema = {
+  type: "object",
+  required: ["name", "type"],
+  properties: {
+    name: {
+      type: "string",
+      minLength: 1,
+      description: "Column name. The generator always backtick-quotes and escapes it in YQL.",
+    },
+    type: {
+      type: "string",
+      minLength: 1,
+      description:
+        "YDB primitive column type such as Uint64, Utf8, Timestamp, JsonDocument, or Decimal(precision, scale).",
+    },
+    notNull: {
+      type: "boolean",
+      description: "Emit NOT NULL for the column.",
+    },
+    default: {
+      ...scalarSchema,
+      description:
+        "Optional DEFAULT value. The generator renders type-aware YQL defaults such as Utf8('x'), Uint64('1'), Date('2026-05-27'), or TRUE.",
+    },
+  },
+  additionalProperties: false,
+};
+
+const indexSchema = {
+  type: "object",
+  required: ["name", "columns"],
+  properties: {
+    name: {
+      type: "string",
+      minLength: 1,
+      description: "Index name. The generator always backtick-quotes and escapes it in YQL.",
+    },
+    columns: {
+      type: "array",
+      minItems: 1,
+      items: { type: "string", minLength: 1 },
+      description: "Index key columns, in order. For createTable, each must exist in columns.",
+    },
+    cover: {
+      type: "array",
+      items: { type: "string", minLength: 1 },
+      description: "Optional COVER columns for the index.",
+    },
+    global: {
+      type: "boolean",
+      description: "Emit GLOBAL for the index.",
+    },
+    local: {
+      type: "boolean",
+      description: "Emit LOCAL for the index.",
+    },
+    unique: {
+      type: "boolean",
+      description: "Emit UNIQUE for the index.",
+    },
+    sync: {
+      type: "string",
+      enum: ["sync", "async"],
+      description: "Emit SYNC or ASYNC for the index.",
+    },
+    using: {
+      type: "string",
+      enum: ["secondary", "vector_kmeans_tree"],
+      description:
+        "Optional USING index type. vector_kmeans_tree requires a row-oriented GLOBAL SYNC index and complete vector WITH settings.",
+    },
+    with: {
+      type: "object",
+      additionalProperties: settingValueSchema,
+      description:
+        "Optional index WITH settings. Strings render as quoted YQL literals; vector_kmeans_tree requires vector_dimension, vector_type, distance or similarity, clusters, and levels.",
+    },
+  },
+  additionalProperties: false,
+};
+
+const schemaStatementSchema = {
+  oneOf: [
+    {
+      type: "object",
+      required: ["kind", "tableName", "columns", "primaryKey"],
+      properties: {
+        kind: {
+          type: "string",
+          const: "createTable",
+          description: "Generate a CREATE TABLE statement.",
+        },
+        tableName: {
+          type: "string",
+          minLength: 1,
+          description: "Table name or relative YDB table path.",
+        },
+        ifNotExists: {
+          type: "boolean",
+          description: "Emit IF NOT EXISTS.",
+        },
+        columns: {
+          type: "array",
+          minItems: 1,
+          items: columnSchema,
+          description: "Columns for the new table.",
+        },
+        primaryKey: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+          description: "Primary key columns, in order. Each must exist in columns.",
+        },
+        indexes: {
+          type: "array",
+          items: indexSchema,
+          description: "Secondary indexes to define inside CREATE TABLE.",
+        },
+        partitionByHash: {
+          type: "array",
+          items: { type: "string", minLength: 1 },
+          description:
+            "Optional PARTITION BY HASH columns for column-oriented tables. Requires store: \"column\" and each partition column must be part of primaryKey.",
+        },
+        store: {
+          type: "string",
+          enum: ["row", "column"],
+          description: "Optional table storage type rendered as STORE = ROW or STORE = COLUMN.",
+        },
+        with: {
+          type: "object",
+          additionalProperties: settingValueSchema,
+          description: "Optional table WITH settings. Strings render as quoted YQL literals; use { token: \"ENABLED\" } for bare tokens.",
+        },
+      },
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      required: ["kind", "tableName", "actions"],
+      properties: {
+        kind: {
+          type: "string",
+          const: "alterTable",
+          description: "Generate an ALTER TABLE statement.",
+        },
+        tableName: {
+          type: "string",
+          minLength: 1,
+          description: "Table name or relative YDB table path.",
+        },
+        actions: {
+          type: "array",
+          minItems: 1,
+          items: {
+            oneOf: [
+              {
+                type: "object",
+                required: ["kind", "column"],
+                properties: {
+                  kind: { type: "string", const: "addColumn" },
+                  column: columnSchema,
+                },
+                additionalProperties: false,
+              },
+              {
+                type: "object",
+                required: ["kind", "name"],
+                properties: {
+                  kind: { type: "string", const: "dropColumn" },
+                  name: { type: "string", minLength: 1 },
+                },
+                additionalProperties: false,
+              },
+              {
+                type: "object",
+                required: ["kind", "index"],
+                properties: {
+                  kind: { type: "string", const: "addIndex" },
+                  index: indexSchema,
+                },
+                additionalProperties: false,
+              },
+              {
+                type: "object",
+                required: ["kind", "name"],
+                properties: {
+                  kind: { type: "string", const: "dropIndex" },
+                  name: { type: "string", minLength: 1 },
+                },
+                additionalProperties: false,
+              },
+            ],
+          },
+          description:
+            "ALTER TABLE actions to render in order. Do not add an index on a column added in the same alterTable spec; apply the addColumn first, then generate addIndex separately.",
+        },
+      },
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      required: ["kind", "tableName"],
+      properties: {
+        kind: {
+          type: "string",
+          const: "dropTable",
+          description: "Generate a DROP TABLE statement.",
+        },
+        tableName: {
+          type: "string",
+          minLength: 1,
+          description: "Table name or relative YDB table path.",
+        },
+      },
+      additionalProperties: false,
+    },
+  ],
+};
+
+export function generateSchemaSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    required: ["statements"],
+    properties: {
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      databasePath: {
+        type: "string",
+        description:
+          "YDB database path to use when validate=true. Defaults to the configured tenant root.",
+      },
+      validate: {
+        type: "boolean",
+        description:
+          "If true, validate the generated DDL through local_ydb_apply_schema action=validate. This tool never applies DDL.",
+      },
+      statements: {
+        type: "array",
+        minItems: 1,
+        items: schemaStatementSchema,
+        description:
+          "Structured schema statement specs to render into YDB table DDL.",
+      },
+      timeoutMs: {
+        type: "integer",
+        minimum: 1,
+        maximum: 600_000,
+        description:
+          "SDK validation timeout in milliseconds when validate=true. Defaults to 120000.",
+      },
+      maxOutputBytes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 1_048_576,
+        description:
+          "Maximum UTF-8 bytes returned per validation issue stream when validate=true. Defaults to 65536.",
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
 export function permissionsSchema(): Tool["inputSchema"] {
   return {
     type: "object",
