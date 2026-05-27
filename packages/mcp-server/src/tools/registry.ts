@@ -1,6 +1,7 @@
 import {
   addDynamicNodes,
   addStorageGroups,
+  applySchema,
   applyAuthHardening,
   authCheck,
   bootstrap,
@@ -40,6 +41,7 @@ import type { z } from "zod";
 import {
   AddDynamicNodesArgs,
   AddStorageGroupsArgs,
+  ApplySchemaArgs,
   AuthHardeningArgs,
   CleanupArgs,
   DestroyStackArgs,
@@ -63,6 +65,7 @@ import {
 import {
   addDynamicNodesSchema,
   addStorageGroupsSchema,
+  applySchemaSchema,
   authHardeningSchema,
   cleanupSchema,
   destroyStackSchema,
@@ -92,6 +95,7 @@ import {
 
 export const localYdbToolGroups = [
   "checks",
+  "schema",
   "lifecycle",
   "dynamic nodes",
   "storage",
@@ -213,6 +217,21 @@ export const toolDefinitions = [
     handler: withContext(SchemeArgs, (context, parsed) =>
       inspectScheme(context, parsed),
     ),
+  }),
+  defineTool({
+    group: "schema",
+    name: "local_ydb_apply_schema",
+    description:
+      "Validate or apply YDB table DDL through the official YDB JS SDK. It accepts raw YQL DDL for PRAGMA plus CREATE TABLE, ALTER TABLE, and DROP TABLE; action=apply validates first and executes only with confirm=true.",
+    inputSchema: applySchemaSchema(),
+    annotations: mutatingAnnotations({ destructive: true }),
+    handler: async (args, options) => {
+      const parsed = ApplySchemaArgs.parse(args ?? {});
+      return applySchema(createToolContext(parsed, options), {
+        ...parsed,
+        sdkExecutor: options.sdkExecutor,
+      });
+    },
   }),
   defineTool({
     group: "auth",

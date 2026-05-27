@@ -104,6 +104,55 @@ export function schemeSchema(): Tool["inputSchema"] {
   };
 }
 
+export function applySchemaSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    required: ["script"],
+    properties: {
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      action: {
+        type: "string",
+        enum: ["validate", "apply"],
+        description:
+          "Schema operation to run. validate only checks the YQL DDL through the YDB SDK; apply validates first and executes only with confirm=true.",
+      },
+      databasePath: {
+        type: "string",
+        description:
+          "YDB database path for SDK validation/application. Defaults to the configured tenant root; root database paths use the static gRPC port.",
+      },
+      script: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1_048_576,
+        description:
+          "YQL DDL script to validate or apply. Supports PRAGMA plus CREATE TABLE, ALTER TABLE, and DROP TABLE statements.",
+      },
+      confirm: {
+        type: "boolean",
+        description:
+          "Must be true to execute action=apply after SDK validation succeeds. Omit or false for validation plus plan-only output.",
+      },
+      timeoutMs: {
+        type: "integer",
+        minimum: 1,
+        maximum: 600_000,
+        description:
+          "SDK operation timeout in milliseconds. Defaults to 120000.",
+      },
+      maxOutputBytes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 1_048_576,
+        description:
+          "Maximum UTF-8 bytes returned per validation/execution issue stream. Defaults to 65536.",
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
 export function permissionsSchema(): Tool["inputSchema"] {
   return {
     type: "object",

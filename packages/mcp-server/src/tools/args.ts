@@ -20,6 +20,15 @@ export const SchemeArgs = ProfileArgs.extend({
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
 });
 
+export const ApplySchemaArgs = ProfileArgs.extend({
+  action: z.enum(["validate", "apply"]).optional(),
+  databasePath: z.string().min(1).optional(),
+  script: z.string().min(1).max(1_048_576),
+  confirm: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().max(600_000).optional(),
+  maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+});
+
 export const PermissionsArgs = ProfileArgs.extend({
   action: z.enum([
     "list",
