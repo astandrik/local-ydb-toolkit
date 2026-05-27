@@ -4,6 +4,7 @@ import {
   resolveConfigPath,
   type CommandExecutor,
   type LocalYdbConfig,
+  type SchemaSdkExecutor,
   type ToolkitContext,
 } from "@local-ydb-toolkit/core";
 import type { ResponseContentFormat } from "../response-format.js";
@@ -13,6 +14,7 @@ export type HandlerOptions = {
   config?: LocalYdbConfig;
   fetchImpl?: typeof fetch;
   responseContentFormat?: ResponseContentFormat;
+  sdkExecutor?: SchemaSdkExecutor;
 };
 
 export type ToolHandler = (

@@ -4,11 +4,13 @@ Unofficial stdio MCP server for operating Docker-based `local-ydb` deployments.
 
 ## Relationship to `ydb/ydb-mcp`
 
-This package is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` for YDB database-level tools such as SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
+This package is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` for general YDB database-level tools such as ad hoc SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
 
-Use `@astandrik/local-ydb-mcp` when an agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, auth hardening, storage workflows, dump/restore, and version upgrades. Mutating tools are plan-first and require `confirm: true` before they execute changes.
+Use `@astandrik/local-ydb-mcp` when an agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, table DDL validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Mutating tools are plan-first and require `confirm: true` before they execute changes.
 
 ## MCP Client Config
+
+This package requires Node.js 20.19 or newer.
 
 Use `npx` so clients can run the server without a manual checkout:
 
@@ -61,7 +63,7 @@ For a reproducible local comparison of representative response fixtures:
 npm run compare:formats -w @astandrik/local-ydb-mcp
 ```
 
-Manual agent smoke check: run the MCP server once with `LOCAL_YDB_MCP_CONTENT_FORMAT=json` and once with `toon`, then call the same tools in both sessions: `local_ydb_inventory`, `local_ydb_status_report`, `local_ydb_bootstrap_root_database` without `confirm`, `local_ydb_scheme`, `local_ydb_permissions` with a plan-only mutation, `local_ydb_list_versions`, and `local_ydb_nodes_check`. Record whether the agent extracts the same status, planned commands, risks, and next steps. Treat this as qualitative evidence; the benchmark command is the reproducible metric.
+Manual agent smoke check: run the MCP server once with `LOCAL_YDB_MCP_CONTENT_FORMAT=json` and once with `toon`, then call the same tools in both sessions: `local_ydb_inventory`, `local_ydb_status_report`, `local_ydb_bootstrap_root_database` without `confirm`, `local_ydb_scheme`, `local_ydb_apply_schema` with `action=validate`, `local_ydb_permissions` with a plan-only mutation, `local_ydb_list_versions`, and `local_ydb_nodes_check`. Record whether the agent extracts the same status, planned commands, risks, and next steps. Treat this as qualitative evidence; the benchmark command is the reproducible metric.
 
 ## Global Install
 
@@ -82,6 +84,6 @@ npm install -g @astandrik/local-ydb-mcp
 }
 ```
 
-Mutating tools are plan-only unless called with `confirm: true`.
+Mutating tools are plan-only unless called with `confirm: true`. `local_ydb_apply_schema` is the table-DDL path: it validates raw YQL DDL through the official `@ydbjs/*` SDK, supports `PRAGMA`, `CREATE TABLE`, `ALTER TABLE`, and `DROP TABLE`, and applies only after validation succeeds and `confirm: true` is present. Responses report the script SHA-256 and capped YDB issue text without echoing the raw script or credential paths. For table creation, prefer a CMS tenant path such as `/local/example`; a root-only `/local` stack can validate DDL through the static endpoint, but YDB rejects storage-backed table creation there when the root database has no tenant storage pools.
 
-The server includes a root-only `local_ydb_bootstrap_root_database` tool for starting `/local` with just the static node, a tenant-oriented `local_ydb_bootstrap` tool for GraphShard-ready dynamic-node topologies, a read-only `local_ydb_list_versions` tool for discovering published `local-ydb` image tags with numeric versions sorted newest first, background image-pull tools (`local_ydb_pull_image` and `local_ydb_pull_status`) for slow registry downloads, and a high-risk `local_ydb_upgrade_version` tool that upgrades a file-backed profile by image preflight, dump, rebuild, restore, auth reapply, image verification, and persisting the profile image. Bind-mounted data profiles are not supported by the automatic upgrade path.
+The server includes a root-only `local_ydb_bootstrap_root_database` tool for starting `/local` with just the static node, a tenant-oriented `local_ydb_bootstrap` tool for GraphShard-ready dynamic-node topologies, a read-only `local_ydb_list_versions` tool for discovering published `local-ydb` image tags with numeric versions sorted newest first, background image-pull tools (`local_ydb_pull_image` and `local_ydb_pull_status`) for slow registry downloads, `local_ydb_apply_schema` for validated table DDL changes, and a high-risk `local_ydb_upgrade_version` tool that upgrades a file-backed profile by image preflight, dump, rebuild, restore, auth reapply, image verification, and persisting the profile image. Bind-mounted data profiles are not supported by the automatic upgrade path.

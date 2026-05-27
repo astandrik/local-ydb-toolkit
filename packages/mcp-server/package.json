@@ -31,7 +31,7 @@
     "codex"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19.0"
   },
   "publishConfig": {
     "access": "public"
@@ -45,6 +45,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@toon-format/toon": "^2.3.0",
+    "@ydbjs/api": "^6.0.0",
+    "@ydbjs/auth": "^6.3.0",
+    "@ydbjs/core": "^6.3.0",
+    "@ydbjs/error": "^6.0.5",
     "zod": "^3.25.76"
   },
   "devDependencies": {

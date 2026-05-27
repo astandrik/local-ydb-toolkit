@@ -15,6 +15,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_status_report`
 - `local_ydb_tenant_check`
 - `local_ydb_scheme`
+- `local_ydb_apply_schema`
 - `local_ydb_permissions`
 - `local_ydb_nodes_check`
 - `local_ydb_graphshard_check`
@@ -123,7 +124,33 @@ Avoid:
 
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
 
-## Scenario 1A: Published Image Tags
+## Scenario 1A: Schema Apply
+
+Goal: verify YDB table DDL validation, confirm-gating, application, inspection, and cleanup.
+
+Calls:
+
+```json
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "validate", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));" } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));", "confirm": false } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));", "confirm": true } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "describe", "path": "/local/example/schema_apply_smoke" } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "DROP TABLE schema_apply_smoke;", "confirm": true } }
+```
+
+Expected:
+
+- validation runs through the YDB JS SDK and does not apply DDL
+- apply without `confirm=true` is plan-only after validation
+- confirmed apply reports script SHA-256, statement kinds, validation/execution status, risk, rollback, and verification without echoing raw DDL or credential paths
+- `DROP TABLE` is high risk
+
+Avoid:
+
+- using schema apply for DML, user/auth DDL, ACLs, topics, transfers, or views
+- assuming rollback is automatic
+
+## Scenario 1B: Published Image Tags
 
 Goal: verify that the registry tag listing tool can discover concrete `local-ydb` image versions before an upgrade.
 
@@ -147,7 +174,7 @@ Avoid:
 - assuming `latest` is the only safe upgrade target
 - using a short major/minor tag in production-like checks when an exact patch tag is available
 
-## Scenario 1B: Background Image Pull
+## Scenario 1C: Background Image Pull
 
 Goal: start slow registry downloads outside synchronous bootstrap or upgrade calls.
 

@@ -9,6 +9,7 @@ export const localYdbInstructions = [
   "Use local_ydb_check_prerequisites first on a new local or remote target to verify Docker, host helpers, and auth-file prerequisites before deeper checks.",
   "If local_ydb_check_prerequisites reports installable missing packages, review the plan first and then run it with confirm=true to install supported host helpers such as curl or ruby; Docker still requires manual installation.",
   "Use local_ydb_status_report or local_ydb_inventory first to establish the current stack state before mutating anything.",
+  "For table schema DDL, call local_ydb_apply_schema with action=validate first; action=apply validates again and requires confirm=true before executing CREATE TABLE, ALTER TABLE, or DROP TABLE.",
   "Use local_ydb_list_versions to inspect published local-ydb image tags before choosing a target version for upgrade.",
   "Use local_ydb_pull_image with confirm=true before bootstrap or upgrade when an image is missing, then poll local_ydb_pull_status until it completes.",
   "For generic requests such as \"start local YDB\" or \"create a local database\" where the user does not explicitly ask for a tenant, GraphShard, or dynamic node, choose local_ydb_bootstrap_root_database.",

@@ -99,6 +99,7 @@ async function verifyToolRegistry(client) {
       "local_ydb_tenant_check",
       "local_ydb_nodes_check",
       "local_ydb_scheme",
+      "local_ydb_apply_schema",
       "local_ydb_graphshard_check",
       "local_ydb_auth_check",
       "local_ydb_storage_placement",
@@ -112,7 +113,7 @@ async function verifyToolRegistry(client) {
     }
 
     const expectedReadOnlyTools = expectedTools.filter(
-      (toolName) => toolName !== "local_ydb_permissions" && toolName !== "local_ydb_add_dynamic_nodes",
+      (toolName) => !["local_ydb_apply_schema", "local_ydb_permissions", "local_ydb_add_dynamic_nodes"].includes(toolName),
     );
     for (const name of expectedReadOnlyTools) {
       assert(tools.get(name)?.annotations?.readOnlyHint === true, `${name} should be advertised as read-only.`);
@@ -182,6 +183,8 @@ async function verifyLiveTools(client) {
   });
   assert(scheme.ok === true, scheme.stderr || "scheme list failed");
 
+  await verifySchemaApply(client, profile);
+
   const permissions = await callTool(client, "local_ydb_permissions", {
     profile,
     action: "list",
@@ -207,6 +210,49 @@ async function verifyLiveTools(client) {
   assert(staticLogs.ok === true, staticLogs.stderr || "static container logs failed");
 
   await verifyConfirmedDynamicNodeMutation(client, profile);
+}
+
+async function verifySchemaApply(client, profile) {
+  const tableName = "schema_apply_smoke";
+  const tablePath = `${tenantPath}/${tableName}`;
+  const createScript = `
+    CREATE TABLE ${tableName} (
+      id Uint64 NOT NULL,
+      value Utf8,
+      PRIMARY KEY (id)
+    );
+  `;
+
+  const validation = await callTool(client, "local_ydb_apply_schema", {
+    profile,
+    action: "validate",
+    script: createScript,
+  });
+  assert(validation.validation?.ok === true, validation.validation?.issues || "schema validation failed");
+  assert(validation.executed === false, "schema validation should not apply DDL.");
+
+  const apply = await callTool(client, "local_ydb_apply_schema", {
+    profile,
+    action: "apply",
+    confirm: true,
+    script: createScript,
+  });
+  assert(apply.executed === true, apply.execution?.issues || "schema apply failed");
+
+  const describe = await callTool(client, "local_ydb_scheme", {
+    profile,
+    action: "describe",
+    path: tablePath,
+  });
+  assert(describe.ok === true, describe.stderr || "created schema table was not describable");
+
+  const drop = await callTool(client, "local_ydb_apply_schema", {
+    profile,
+    action: "apply",
+    confirm: true,
+    script: `DROP TABLE ${tableName};`,
+  });
+  assert(drop.executed === true, drop.execution?.issues || "schema cleanup drop failed");
 }
 
 async function verifyConfirmedDynamicNodeMutation(client, profile) {

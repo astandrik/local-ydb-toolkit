@@ -85,6 +85,65 @@ export interface SchemeOptions {
   maxOutputBytes?: number;
 }
 
+export type SchemaAction = "validate" | "apply";
+
+export type SchemaStatementKind = "PRAGMA" | "CREATE TABLE" | "ALTER TABLE" | "DROP TABLE";
+
+export interface SchemaSdkExecuteRequest {
+  mode: "validate" | "execute";
+  connectionString: string;
+  databasePath: string;
+  endpoint: string;
+  script: string;
+  timeoutMs: number;
+  rootUser?: string;
+  rootPassword?: string;
+}
+
+export interface SchemaSdkExecuteResult {
+  ok: boolean;
+  status: string;
+  issues: string;
+}
+
+export type SchemaSdkExecutor = (request: SchemaSdkExecuteRequest) => Promise<SchemaSdkExecuteResult>;
+
+export interface ApplySchemaOptions extends MutatingOptions {
+  action?: SchemaAction;
+  databasePath?: string;
+  script: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  sdkExecutor?: SchemaSdkExecutor;
+}
+
+export interface SchemaOperationResult {
+  ok: boolean;
+  status: string;
+  /** Captured SDK/YDB issue text, potentially capped to maxOutputBytes. */
+  issues: string;
+  /** Byte length of the original uncapped issue text. */
+  issuesBytes: number;
+  /** Whether issues was truncated due to maxOutputBytes. */
+  issuesTruncated: boolean;
+}
+
+export interface ApplySchemaResponse extends OperationPlan {
+  summary: string;
+  action: SchemaAction;
+  databasePath: string;
+  executed: boolean;
+  scriptSha256: string;
+  statements: {
+    count: number;
+    kinds: SchemaStatementKind[];
+  };
+  validation: SchemaOperationResult;
+  execution?: SchemaOperationResult;
+  /** Maximum bytes returned in validation/execution issue fields. */
+  maxOutputBytes: number;
+}
+
 export type PermissionsAction =
   | "list"
   | "grant"

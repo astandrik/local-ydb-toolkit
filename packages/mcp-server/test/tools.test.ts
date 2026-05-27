@@ -112,6 +112,7 @@ describe("mcp tools", () => {
       "local_ydb_add_dynamic_nodes",
       "local_ydb_add_storage_groups",
       "local_ydb_apply_auth_hardening",
+      "local_ydb_apply_schema",
       "local_ydb_auth_check",
       "local_ydb_bootstrap",
       "local_ydb_bootstrap_root_database",
@@ -269,6 +270,7 @@ describe("mcp tools", () => {
       "local_ydb_tenant_check"
     ]);
     const destructiveTools = new Set([
+      "local_ydb_apply_schema",
       "local_ydb_cleanup_storage",
       "local_ydb_destroy_stack",
       "local_ydb_permissions",
@@ -698,6 +700,30 @@ describe("mcp tools", () => {
     expect(tool?.inputSchema.properties?.confirm).toMatchObject({ type: "boolean" });
   });
 
+  it("exposes schema apply options in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_apply_schema");
+    expect(tool?.inputSchema.required).toContain("script");
+    expect(tool?.inputSchema.properties?.action).toMatchObject({
+      type: "string",
+      enum: ["validate", "apply"]
+    });
+    expect(tool?.inputSchema.properties?.databasePath).toMatchObject({ type: "string" });
+    expect(tool?.inputSchema.properties?.script).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 1_048_576
+    });
+    expect(tool?.inputSchema.properties?.confirm).toMatchObject({ type: "boolean" });
+    expect(tool?.inputSchema.properties?.timeoutMs).toMatchObject({
+      type: "integer",
+      maximum: 600_000
+    });
+    expect(tool?.inputSchema.properties?.maxOutputBytes).toMatchObject({
+      type: "integer",
+      maximum: 1_048_576
+    });
+  });
+
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
     expect(tool?.inputSchema.required).toContain("version");
@@ -791,6 +817,34 @@ describe("mcp tools", () => {
     expect(result.action).toBe("describe");
     expect(result.path).toBe("/local/example/users");
     expect(result.command).toContain("scheme describe /local/example/users --stats");
+  });
+
+  it("can validate schema DDL through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_apply_schema", {
+      script: "CREATE TABLE users (id Uint64, PRIMARY KEY (id));"
+    }, {
+      config: ConfigSchema.parse({}),
+      sdkExecutor: async () => ({
+        ok: true,
+        status: "SUCCESS",
+        issues: ""
+      })
+    }) as { action: string; executed: boolean; statements: { kinds: string[] }; validation: { ok: boolean } };
+
+    expect(result.action).toBe("validate");
+    expect(result.executed).toBe(false);
+    expect(result.statements.kinds).toEqual(["CREATE TABLE"]);
+    expect(result.validation.ok).toBe(true);
+  });
+
+  it("advertises schema apply as a mutating destructive tool", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_apply_schema");
+
+    expect(tool?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true
+    });
+    expect(localYdbInstructions).toContain("local_ydb_apply_schema");
   });
 
   it("can list permissions through the MCP handler without confirm", async () => {

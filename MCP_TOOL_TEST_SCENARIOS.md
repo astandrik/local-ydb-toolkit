@@ -15,6 +15,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_status_report`
 - `local_ydb_tenant_check`
 - `local_ydb_scheme`
+- `local_ydb_apply_schema`
 - `local_ydb_permissions`
 - `local_ydb_nodes_check`
 - `local_ydb_graphshard_check`
@@ -128,7 +129,37 @@ Avoid:
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
 - Passing list-only flags such as `recursive` to `action=describe`, or `stats` to `action=list`.
 
-## Scenario 1A: Schema Permissions
+## Scenario 1A: Schema Apply
+
+Goal: verify YDB table DDL validation, confirm-gating, application, inspection, and cleanup.
+
+Profile:
+`ghcr261-clean`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "validate", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));" } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));", "confirm": false } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "CREATE TABLE schema_apply_smoke (id Uint64 NOT NULL, value Utf8, PRIMARY KEY (id));", "confirm": true } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "describe", "path": "/local/example/schema_apply_smoke" } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-clean", "action": "apply", "script": "DROP TABLE schema_apply_smoke;", "confirm": true } }
+```
+
+Expected:
+
+- `action=validate` returns SDK validation status and never applies DDL.
+- `action=apply` without `confirm=true` validates and returns planned SDK validation/application steps only.
+- confirmed apply returns a script SHA-256, statement count/kinds, validation result, execution result, risk, rollback notes, and verification steps.
+- the response does not echo the raw DDL script or configured credential paths.
+- `DROP TABLE` is reported as high risk.
+
+Avoid:
+
+- using this tool for DML, user/auth DDL, ACLs, topics, transfers, or views; v1 supports only `PRAGMA`, `CREATE TABLE`, `ALTER TABLE`, and `DROP TABLE`.
+- treating rollback notes as automatic rollback. Schema DDL needs explicit inverse DDL or restore from dump.
+
+## Scenario 1B: Schema Permissions
 
 Goal: verify ACL command construction and confirm-gating without accidentally changing an active stack.
 
@@ -160,7 +191,7 @@ Avoid:
 - using `confirm: true` for `clear`, `chown`, or inheritance changes unless the target path and rollback are already captured by `action=list`.
 - passing a comma-separated permission string; use the structured `permissions` array.
 
-## Scenario 1B: Published Image Tags
+## Scenario 1C: Published Image Tags
 
 Goal: verify that the registry tag listing tool can discover concrete `local-ydb` image versions before an upgrade.
 
@@ -184,7 +215,7 @@ Avoid:
 - assuming `latest` is the only safe upgrade target
 - using a short major/minor tag in production-like checks when an exact patch tag is available
 
-## Scenario 1C: Background Image Pull
+## Scenario 1D: Background Image Pull
 
 Goal: start slow registry downloads outside synchronous bootstrap or upgrade calls.
 
