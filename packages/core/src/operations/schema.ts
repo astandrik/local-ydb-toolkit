@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { Driver } from "@ydbjs/core";
@@ -31,6 +31,9 @@ import type {
 const DEFAULT_SCHEMA_TIMEOUT_MS = 120_000;
 const MAX_SCHEMA_TIMEOUT_MS = 600_000;
 const MAX_SCHEMA_SCRIPT_CHARS = 1_048_576;
+const SSH_TUNNEL_READY_TIMEOUT_MS = 12_000;
+const SSH_TUNNEL_READY_POLL_MS = 100;
+const SSH_TUNNEL_CONNECT_TIMEOUT_MS = 250;
 const ALLOWED_STATEMENT_MESSAGE = "Only PRAGMA, CREATE TABLE, ALTER TABLE, and DROP TABLE schema statements are supported by local_ydb_apply_schema v1.";
 
 export async function applySchema(
@@ -419,6 +422,7 @@ async function startSshTunnel(
   const args = [
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
+    "-o", "ExitOnForwardFailure=yes",
     "-N",
     "-L", `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
   ];
@@ -433,11 +437,59 @@ async function startSshTunnel(
   const child = spawn("ssh", args);
   child.stdout.resume();
   child.stderr.resume();
-  await delay(250);
-  if (child.exitCode !== null) {
-    throw new Error("Failed to establish SSH tunnel for YDB schema operation");
+  try {
+    await waitForSshTunnelReady(child, localPort);
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
   }
   return child;
+}
+
+async function waitForSshTunnelReady(child: ChildProcessWithoutNullStreams, localPort: number): Promise<void> {
+  let childFailure: Error | undefined;
+  const onError = () => {
+    childFailure = new Error("Failed to start SSH tunnel for YDB schema operation");
+  };
+  const onExit = () => {
+    childFailure = new Error("Failed to establish SSH tunnel for YDB schema operation");
+  };
+  child.once("error", onError);
+  child.once("exit", onExit);
+  try {
+    const deadline = Date.now() + SSH_TUNNEL_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (childFailure) {
+        throw childFailure;
+      }
+      if (child.exitCode !== null) {
+        throw new Error("Failed to establish SSH tunnel for YDB schema operation");
+      }
+      if (await canConnectToLocalPort(localPort)) {
+        return;
+      }
+      await delay(SSH_TUNNEL_READY_POLL_MS);
+    }
+    throw new Error("Timed out establishing SSH tunnel for YDB schema operation");
+  } finally {
+    child.off("error", onError);
+    child.off("exit", onExit);
+  }
+}
+
+function canConnectToLocalPort(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const finish = (ok: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(SSH_TUNNEL_CONNECT_TIMEOUT_MS);
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.once("timeout", () => finish(false));
+  });
 }
 
 export async function executeSchemaWithSdk(request: SchemaSdkExecuteRequest): Promise<SchemaSdkExecuteResult> {
