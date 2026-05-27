@@ -266,6 +266,32 @@ describe("schema generation", () => {
     expect(response.script).toContain("WITH (distance = 'cosine', vector_type = 'float', vector_dimension = 3, clusters = 2, levels = 1)");
   });
 
+  it("treats explicit secondary index type as the default", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    const response = await generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_by_status",
+          columns: ["status"],
+          global: true,
+          sync: "sync",
+          using: "secondary",
+        }],
+      }],
+    });
+
+    expect(response.script).toContain("INDEX `orders_by_status` GLOBAL SYNC ON (`status`)");
+    expect(response.script).not.toContain("USING secondary");
+  });
+
   it("warns when creating a table with a vector index", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 
@@ -392,6 +418,97 @@ describe("schema generation", () => {
     })).rejects.toThrow(/secondary index orders_by_created_at cannot have WITH settings/);
   });
 
+  it("rejects duplicate index names within one statement", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8" },
+        ],
+        primaryKey: ["id"],
+        indexes: [
+          { name: "orders_by_status", columns: ["status"], global: true, sync: "sync" },
+          { name: " orders_by_status ", columns: ["id"], global: true, sync: "sync" },
+        ],
+      }],
+    })).rejects.toThrow(/Duplicate index name: orders_by_status/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "addIndex", index: { name: "orders_by_status", columns: ["status"], global: true, sync: "sync" } },
+          { kind: "addIndex", index: { name: " orders_by_status ", columns: ["customer_id"], global: true, sync: "sync" } },
+        ],
+      }],
+    })).rejects.toThrow(/Duplicate index name: orders_by_status/);
+  });
+
+  it("rejects duplicate names in ordered name lists", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
+        primaryKey: ["id", " id "],
+      }],
+    })).rejects.toThrow(/primaryKey contains duplicate name: id/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_by_status",
+          columns: ["status", " status "],
+          global: true,
+          sync: "sync",
+        }],
+      }],
+    })).rejects.toThrow(/index orders_by_status columns contains duplicate name: status/);
+  });
+
+  it("rejects unsupported NOT NULL placement", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8", notNull: true },
+        ],
+        primaryKey: ["id"],
+      }],
+    })).rejects.toThrow(/NOT NULL column status must be part of primaryKey/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "tenant_id", type: "Utf8" },
+          { name: "ts", type: "Timestamp", notNull: true },
+        ],
+        primaryKey: ["tenant_id", "ts"],
+        store: "column",
+      }],
+    })).rejects.toThrow(/column-oriented table primaryKey column tenant_id must be NOT NULL/);
+  });
+
   it("rejects invalid setting tokens before rendering", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 
@@ -420,6 +537,50 @@ describe("schema generation", () => {
     })).rejects.toThrow(/YDB setting object values must be \{ token: string \}/);
   });
 
+  it("rejects duplicate WITH setting names after normalization", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
+        primaryKey: ["id"],
+        with: {
+          AUTO_PARTITIONING_BY_SIZE: { token: "ENABLED" },
+          auto_partitioning_by_size: { token: "DISABLED" },
+        },
+      }],
+    })).rejects.toThrow(/Duplicate YDB setting name: AUTO_PARTITIONING_BY_SIZE/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "embedding", type: "String" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            " distance ": "euclidean",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1,
+          },
+        }],
+      }],
+    })).rejects.toThrow(/Duplicate YDB setting name: distance/);
+  });
+
   it("rejects STORE inside table WITH settings", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 
@@ -427,7 +588,7 @@ describe("schema generation", () => {
       statements: [{
         kind: "createTable",
         tableName: "orders",
-        columns: [{ name: "id", type: "Uint64" }],
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
         primaryKey: ["id"],
         store: "column",
         with: {
@@ -467,7 +628,7 @@ describe("schema generation", () => {
       statements: [{
         kind: "createTable",
         tableName: "orders",
-        columns: [{ name: "id", type: "Uint64" }],
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
         primaryKey: ["id"],
         store: "column",
         partitionByHash: ["tenant_id"],
@@ -505,6 +666,19 @@ describe("schema generation", () => {
         partitionByHash: ["id"],
       }],
     })).rejects.toThrow(/partitionByHash is supported only for column-oriented tables/);
+  });
+
+  it("rejects ASCII control characters in identifiers", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "i\td", type: "Uint64", notNull: true }],
+        primaryKey: ["i\td"],
+      }],
+    })).rejects.toThrow(/YDB identifiers cannot contain ASCII control characters/);
   });
 
   it("rejects incomplete vector index settings", async () => {

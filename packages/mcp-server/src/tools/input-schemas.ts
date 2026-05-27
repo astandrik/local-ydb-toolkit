@@ -220,12 +220,14 @@ const indexSchema = {
     columns: {
       type: "array",
       minItems: 1,
+      uniqueItems: true,
       items: { type: "string", minLength: 1 },
       description: "Index key columns, in order. For createTable, each must exist in columns.",
     },
     cover: {
       type: "array",
       minItems: 1,
+      uniqueItems: true,
       items: { type: "string", minLength: 1 },
       description: "Optional non-empty COVER columns for the index.",
     },
@@ -250,7 +252,7 @@ const indexSchema = {
       type: "string",
       enum: ["secondary", "vector_kmeans_tree"],
       description:
-        "Optional USING index type. vector_kmeans_tree requires a row-oriented GLOBAL SYNC non-unique index and complete vector WITH settings.",
+        "Optional index type. secondary is the default and is not rendered as USING secondary; vector_kmeans_tree requires a row-oriented GLOBAL SYNC non-unique index and complete vector WITH settings.",
     },
     with: {
       type: "object",
@@ -345,6 +347,7 @@ const schemaStatementSchema = {
         primaryKey: {
           type: "array",
           minItems: 1,
+          uniqueItems: true,
           items: { type: "string", minLength: 1 },
           description: "Primary key columns, in order. Each must exist in columns.",
         },
@@ -356,6 +359,7 @@ const schemaStatementSchema = {
         partitionByHash: {
           type: "array",
           minItems: 1,
+          uniqueItems: true,
           items: { type: "string", minLength: 1 },
           description:
             "Optional non-empty PARTITION BY HASH columns for column-oriented tables. Requires store: \"column\" and each partition column must be part of primaryKey.",

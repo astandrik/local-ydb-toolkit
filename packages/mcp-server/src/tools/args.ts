@@ -109,8 +109,74 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
   timeoutMs: z.number().int().positive().max(600_000).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
 }).superRefine((args, ctx) => {
+  const normalizedName = (name: string) => name.trim();
+  const validateIdentifier = (name: string, path: (string | number)[]) => {
+    if (/[\u0000-\u001F\u007F]/.test(normalizedName(name))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path,
+        message: "YDB identifiers cannot contain ASCII control characters",
+      });
+    }
+  };
+  const validateNameList = (names: string[], path: (string | number)[], label: string) => {
+    const seen = new Set<string>();
+    names.forEach((name, index) => {
+      const normalized = normalizedName(name);
+      validateIdentifier(name, [...path, index]);
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [...path, index],
+          message: `${label} contains duplicate name: ${normalized}`,
+        });
+      }
+      seen.add(normalized);
+    });
+  };
+  const validateSettingNames = (
+    settings: Record<string, z.infer<typeof SchemaSettingValue>> | undefined,
+    path: (string | number)[],
+    nameCase: "preserve" | "upper",
+  ) => {
+    if (settings === undefined) {
+      return;
+    }
+    const seen = new Set<string>();
+    Object.keys(settings).forEach((name) => {
+      const normalized = nameCase === "upper" ? name.trim().toUpperCase() : name.trim();
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path,
+          message: `Duplicate YDB setting name: ${normalized}`,
+        });
+      }
+      seen.add(normalized);
+    });
+  };
+  const validateIndexNames = (indexes: z.infer<typeof SchemaIndexArgs>[], path: (string | number)[]) => {
+    const seen = new Set<string>();
+    indexes.forEach((index, indexIndex) => {
+      const normalized = normalizedName(index.name);
+      validateIdentifier(index.name, [...path, indexIndex, "name"]);
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [...path, indexIndex, "name"],
+          message: `Duplicate index name: ${normalized}`,
+        });
+      }
+      seen.add(normalized);
+    });
+  };
   const validateIndex = (index: z.infer<typeof SchemaIndexArgs>, path: (string | number)[]) => {
     const indexType = index.using ?? "secondary";
+    validateNameList(index.columns, [...path, "columns"], `index ${index.name} columns`);
+    if (index.cover !== undefined) {
+      validateNameList(index.cover, [...path, "cover"], `index ${index.name} cover`);
+    }
+    validateSettingNames(index.with, [...path, "with"], "preserve");
     if (index.global && index.local) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -179,7 +245,47 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
   };
 
   args.statements.forEach((statement, statementIndex) => {
+    validateIdentifier(statement.tableName, ["statements", statementIndex, "tableName"]);
     if (statement.kind === "createTable") {
+      validateNameList(statement.primaryKey, ["statements", statementIndex, "primaryKey"], "primaryKey");
+      if (statement.partitionByHash !== undefined) {
+        validateNameList(statement.partitionByHash, ["statements", statementIndex, "partitionByHash"], "partitionByHash");
+      }
+      validateSettingNames(statement.with, ["statements", statementIndex, "with"], "upper");
+      const primaryKeyNames = new Set(statement.primaryKey.map(normalizedName));
+      const columnsByName = new Map(statement.columns.map((column) => [normalizedName(column.name), column]));
+      const columnNames = new Set<string>();
+      statement.columns.forEach((column, columnIndex) => {
+        const name = normalizedName(column.name);
+        validateIdentifier(column.name, ["statements", statementIndex, "columns", columnIndex, "name"]);
+        if (columnNames.has(name)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["statements", statementIndex, "columns", columnIndex, "name"],
+            message: `Duplicate column name: ${name}`,
+          });
+        }
+        columnNames.add(name);
+        if (column.notNull && !primaryKeyNames.has(name)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["statements", statementIndex, "columns", columnIndex, "notNull"],
+            message: `NOT NULL column ${name} must be part of primaryKey`,
+          });
+        }
+      });
+      if (statement.store === "column") {
+        statement.primaryKey.forEach((key, primaryKeyIndex) => {
+          const name = normalizedName(key);
+          if (columnsByName.get(name)?.notNull !== true) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["statements", statementIndex, "primaryKey", primaryKeyIndex],
+              message: `column-oriented table primaryKey column ${name} must be NOT NULL`,
+            });
+          }
+        });
+      }
       if (statement.with !== undefined && Object.keys(statement.with).some((name) => name.trim().toUpperCase() === "STORE")) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -187,11 +293,14 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
           message: "Use the store field instead of with.STORE",
         });
       }
+      validateIndexNames(statement.indexes ?? [], ["statements", statementIndex, "indexes"]);
       statement.indexes?.forEach((index, indexIndex) => {
         validateIndex(index, ["statements", statementIndex, "indexes", indexIndex]);
       });
     }
     if (statement.kind === "alterTable") {
+      const addedIndexes = statement.actions.flatMap((action) => action.kind === "addIndex" ? [action.index] : []);
+      validateIndexNames(addedIndexes, ["statements", statementIndex, "actions"]);
       statement.actions.forEach((action, actionIndex) => {
         if (action.kind === "addIndex") {
           validateIndex(action.index, ["statements", statementIndex, "actions", actionIndex, "index"]);

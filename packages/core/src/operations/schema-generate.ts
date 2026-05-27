@@ -236,6 +236,8 @@ function renderCreateTable(statement: CreateTableSchemaStatementSpec): string {
       throw new Error(`primaryKey column ${key} must exist in columns`);
     }
   }
+  validateColumnNullability(columns, primaryKeyNames, statement.store);
+  validateIndexNames(indexes);
   for (const index of indexes) {
     validateIndexColumns(index, columnNames);
   }
@@ -320,6 +322,7 @@ function validateAlterTableActions(actions: AlterTableSchemaAction[]): void {
       droppedColumns.add(normalizeIdentifier(action.name));
     }
   }
+  validateIndexNames(actions.flatMap((action) => action.kind === "addIndex" ? [action.index] : []));
 
   for (const action of actions) {
     if (action.kind === "addIndex") {
@@ -360,6 +363,37 @@ function normalizeColumns(columns: SchemaColumnSpec[] | undefined): SchemaColumn
   return columns;
 }
 
+function validateColumnNullability(
+  columns: SchemaColumnSpec[],
+  primaryKeyNames: Set<string>,
+  store: CreateTableSchemaStatementSpec["store"],
+): void {
+  const columnsByName = new Map(columns.map((column) => [normalizeIdentifier(column.name), column]));
+  for (const [name, column] of columnsByName) {
+    if (column.notNull && !primaryKeyNames.has(name)) {
+      throw new Error(`NOT NULL column ${name} must be part of primaryKey`);
+    }
+  }
+  if (store === "column") {
+    for (const key of primaryKeyNames) {
+      if (columnsByName.get(key)?.notNull !== true) {
+        throw new Error(`column-oriented table primaryKey column ${key} must be NOT NULL`);
+      }
+    }
+  }
+}
+
+function validateIndexNames(indexes: SchemaIndexSpec[]): void {
+  const names = new Set<string>();
+  for (const index of indexes) {
+    const name = normalizeIdentifier(index.name);
+    if (names.has(name)) {
+      throw new Error(`Duplicate index name: ${name}`);
+    }
+    names.add(name);
+  }
+}
+
 function renderColumn(column: SchemaColumnSpec): string {
   const columnType = normalizeColumnType(column.type);
   const parts = [
@@ -394,10 +428,8 @@ function renderIndex(index: SchemaIndexSpec): string {
   if (index.sync) {
     parts.push(index.sync.toUpperCase());
   }
-  if (index.using) {
-    if (index.using === "vector_kmeans_tree") {
-      validateVectorIndex(index);
-    }
+  if (index.using === "vector_kmeans_tree") {
+    validateVectorIndex(index);
     parts.push("USING", index.using);
   }
   parts.push("ON", `(${columns.map(quoteIdentifier).join(", ")})`);
@@ -520,7 +552,15 @@ function normalizeNameList(names: string[] | undefined, label: string): string[]
   if (!Array.isArray(names) || names.length === 0) {
     throw new Error(`${label} must contain at least one name`);
   }
-  return names.map(normalizeIdentifier);
+  const normalized = names.map(normalizeIdentifier);
+  const seen = new Set<string>();
+  for (const name of normalized) {
+    if (seen.has(name)) {
+      throw new Error(`${label} contains duplicate name: ${name}`);
+    }
+    seen.add(name);
+  }
+  return normalized;
 }
 
 function quoteTableName(tableName: string): string {
@@ -548,6 +588,9 @@ function normalizeIdentifier(identifier: string | undefined): string {
   const name = identifier.trim();
   if (!name) {
     throw new Error("YDB identifiers must be non-empty");
+  }
+  if (/[\u0000-\u001F\u007F]/.test(name)) {
+    throw new Error("YDB identifiers cannot contain ASCII control characters");
   }
   return name;
 }
@@ -577,7 +620,15 @@ function normalizeColumnType(type: string): string {
 }
 
 function renderWithSettings(settings: Record<string, PublicSettingValue>, nameCase: "preserve" | "upper"): string[] {
-  return Object.entries(settings).map(([key, value]) => `${normalizeSettingName(key, nameCase)} = ${renderSettingValue(value)}`);
+  const seen = new Set<string>();
+  return Object.entries(settings).map(([key, value]) => {
+    const name = normalizeSettingName(key, nameCase);
+    if (seen.has(name)) {
+      throw new Error(`Duplicate YDB setting name: ${name}`);
+    }
+    seen.add(name);
+    return `${name} = ${renderSettingValue(value)}`;
+  });
 }
 
 function normalizeSettingName(name: string, nameCase: "preserve" | "upper"): string {

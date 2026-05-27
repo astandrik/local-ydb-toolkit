@@ -807,11 +807,23 @@ describe("mcp tools", () => {
 
     expect(indexes?.items?.properties?.cover).toMatchObject({
       type: "array",
-      minItems: 1
+      minItems: 1,
+      uniqueItems: true
+    });
+    expect(indexes?.items?.properties?.columns).toMatchObject({
+      type: "array",
+      minItems: 1,
+      uniqueItems: true
+    });
+    expect(createTableSchema?.properties?.primaryKey).toMatchObject({
+      type: "array",
+      minItems: 1,
+      uniqueItems: true
     });
     expect(createTableSchema?.properties?.partitionByHash).toMatchObject({
       type: "array",
-      minItems: 1
+      minItems: 1,
+      uniqueItems: true
     });
   });
 
@@ -1299,6 +1311,82 @@ describe("mcp tools", () => {
     }, {
       config: ConfigSchema.parse({})
     })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8" }
+        ],
+        primaryKey: ["id"],
+        indexes: [
+          { name: "orders_by_status", columns: ["status"], global: true, sync: "sync" },
+          { name: " orders_by_status ", columns: ["id"], global: true, sync: "sync" }
+        ]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate index name: orders_by_status/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8" }
+        ],
+        primaryKey: ["id", " id "]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/primaryKey contains duplicate name: id/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8", notNull: true }
+        ],
+        primaryKey: ["id"]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/NOT NULL column status must be part of primaryKey/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "tenant_id", type: "Utf8" },
+          { name: "ts", type: "Timestamp", notNull: true }
+        ],
+        primaryKey: ["tenant_id", "ts"],
+        store: "column"
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/column-oriented table primaryKey column tenant_id must be NOT NULL/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
+        primaryKey: ["id"],
+        with: {
+          AUTO_PARTITIONING_BY_SIZE: { token: "ENABLED" },
+          auto_partitioning_by_size: { token: "DISABLED" }
+        }
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate YDB setting name: AUTO_PARTITIONING_BY_SIZE/);
   });
 
   it("rejects empty schema arrays through the MCP handler", async () => {
