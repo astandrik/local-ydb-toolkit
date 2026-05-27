@@ -71,7 +71,7 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 Goal: verify the target host has the required base tools before any Docker or YDB checks.
 
 Profile:
-`ghcr261-auth`
+`ghcr261-clean`
 
 Calls:
 
@@ -102,7 +102,7 @@ Avoid:
 Goal: verify the selected profile is wired correctly and all read-only endpoints work.
 
 Profile:
-`ghcr261-auth`
+`ghcr261-clean`
 
 Calls:
 

@@ -416,10 +416,13 @@ function validateIndexMode(index: SchemaIndexSpec): void {
   if (indexType === "secondary" && index.local) {
     throw new Error(`secondary index ${index.name} cannot be local`);
   }
+  if (indexType === "secondary" && !index.global) {
+    throw new Error(`secondary index ${index.name} must be global`);
+  }
   if (indexType === "secondary" && index.with !== undefined) {
     throw new Error(`secondary index ${index.name} cannot have WITH settings`);
   }
-  if (index.unique && index.sync === "async") {
+  if (index.unique && index.sync !== "sync") {
     throw new Error(`unique index ${index.name} must be sync`);
   }
 }

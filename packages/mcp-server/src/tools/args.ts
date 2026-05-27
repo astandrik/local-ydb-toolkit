@@ -125,6 +125,13 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
         message: `secondary index ${index.name} cannot be local`,
       });
     }
+    if (indexType === "secondary" && index.global !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, "global"],
+        message: `secondary index ${index.name} must be global`,
+      });
+    }
     if (indexType === "secondary" && index.with !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -132,7 +139,7 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
         message: `secondary index ${index.name} cannot have WITH settings`,
       });
     }
-    if (index.unique && index.sync === "async") {
+    if (index.unique && index.sync !== "sync") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [...path, "sync"],

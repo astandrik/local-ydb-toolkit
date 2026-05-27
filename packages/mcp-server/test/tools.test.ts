@@ -858,7 +858,26 @@ describe("mcp tools", () => {
           ])
         }),
         then: expect.objectContaining({
+          required: ["global"],
+          properties: expect.objectContaining({
+            global: { const: true },
+            local: { const: false }
+          }),
           not: { required: ["with"] }
+        })
+      }),
+      expect.objectContaining({
+        if: expect.objectContaining({
+          required: ["unique"],
+          properties: expect.objectContaining({
+            unique: { const: true }
+          })
+        }),
+        then: expect.objectContaining({
+          required: ["sync"],
+          properties: expect.objectContaining({
+            sync: { const: "sync" }
+          })
         })
       })
     ]));
@@ -1212,6 +1231,22 @@ describe("mcp tools", () => {
           kind: "addIndex",
           index: {
             name: "orders_by_created_at",
+            columns: ["created_at"]
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/secondary index orders_by_created_at must be global/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{
+          kind: "addIndex",
+          index: {
+            name: "orders_by_created_at",
             columns: ["created_at"],
             global: true,
             with: {
@@ -1239,6 +1274,26 @@ describe("mcp tools", () => {
           unique: true,
           global: true,
           sync: "async"
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "order_no", type: "Utf8" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_by_order_no",
+          columns: ["order_no"],
+          unique: true,
+          global: true
         }]
       }]
     }, {

@@ -231,7 +231,7 @@ const indexSchema = {
     },
     global: {
       type: "boolean",
-      description: "Emit GLOBAL for the index. Required for vector indexes.",
+      description: "Emit GLOBAL for the index. Required for secondary and vector indexes.",
     },
     local: {
       type: "boolean",
@@ -291,7 +291,9 @@ const indexSchema = {
         ],
       },
       then: {
+        required: ["global"],
         properties: {
+          global: { const: true },
           local: { const: false },
         },
         not: { required: ["with"] },
@@ -299,13 +301,13 @@ const indexSchema = {
     },
     {
       if: {
-        required: ["unique", "sync"],
+        required: ["unique"],
         properties: {
           unique: { const: true },
-          sync: { const: "async" },
         },
       },
       then: {
+        required: ["sync"],
         properties: {
           sync: { const: "sync" },
         },

@@ -338,10 +338,36 @@ describe("schema generation", () => {
         tableName: "orders",
         columns: [
           { name: "id", type: "Uint64" },
+          { name: "created_at", type: "Timestamp" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{ name: "orders_by_created_at", columns: ["created_at"] }],
+      }],
+    })).rejects.toThrow(/secondary index orders_by_created_at must be global/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
           { name: "order_no", type: "Utf8" },
         ],
         primaryKey: ["id"],
         indexes: [{ name: "orders_by_order_no", columns: ["order_no"], unique: true, global: true, sync: "async" }],
+      }],
+    })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "order_no", type: "Utf8" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{ name: "orders_by_order_no", columns: ["order_no"], unique: true, global: true }],
       }],
     })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
 
