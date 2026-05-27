@@ -146,35 +146,6 @@ export interface ApplySchemaResponse extends OperationPlan {
 
 export type GeneratedSchemaStatementKind = "CREATE TABLE" | "ALTER TABLE" | "DROP TABLE";
 
-export type SchemaColumnType =
-  | "Bool"
-  | "Int8"
-  | "Int16"
-  | "Int32"
-  | "Int64"
-  | "Uint8"
-  | "Uint16"
-  | "Uint32"
-  | "Uint64"
-  | "Float"
-  | "Double"
-  | "DyNumber"
-  | "String"
-  | "Utf8"
-  | "Json"
-  | "JsonDocument"
-  | "Yson"
-  | "Uuid"
-  | "Date"
-  | "Date32"
-  | "Datetime"
-  | "Datetime64"
-  | "Timestamp"
-  | "Timestamp64"
-  | "Interval"
-  | "Interval64"
-  | `Decimal(${number}, ${number})`;
-
 export interface SchemaColumnSpec {
   name: string;
   type: string;

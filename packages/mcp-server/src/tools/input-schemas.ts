@@ -243,7 +243,7 @@ const indexSchema = {
     sync: {
       type: "string",
       enum: ["sync", "async"],
-      description: "Emit SYNC or ASYNC for the index.",
+      description: "Emit SYNC or ASYNC for the index. vector_kmeans_tree requires sync.",
     },
     using: {
       type: "string",
@@ -312,7 +312,7 @@ const schemaStatementSchema = {
         with: {
           type: "object",
           additionalProperties: settingValueSchema,
-          description: "Optional table WITH settings. Strings render as quoted YQL literals; use { token: \"ENABLED\" } for bare tokens.",
+          description: "Optional table WITH settings. Strings render as quoted YQL literals; use { token: \"ENABLED\" } for bare tokens. Use store instead of STORE in WITH settings.",
         },
       },
       additionalProperties: false,

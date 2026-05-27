@@ -310,6 +310,23 @@ describe("schema generation", () => {
     })).rejects.toThrow(/YDB setting object values must be \{ token: string \}/);
   });
 
+  it("rejects STORE inside table WITH settings", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64" }],
+        primaryKey: ["id"],
+        store: "column",
+        with: {
+          store: { token: "ROW" },
+        },
+      }],
+    })).rejects.toThrow(/Use the store field instead of with\.STORE/);
+  });
+
   it("rejects primary keys and indexes that reference missing columns", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 
@@ -396,6 +413,32 @@ describe("schema generation", () => {
           name: "embedding_vector_idx",
           columns: ["embedding"],
           global: true,
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1,
+          },
+        }],
+      }],
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx must be sync/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          sync: "sync",
           using: "vector_kmeans_tree",
           with: {
             distance: "cosine",

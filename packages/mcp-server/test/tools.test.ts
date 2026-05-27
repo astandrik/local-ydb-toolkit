@@ -442,6 +442,7 @@ describe("mcp tools", () => {
     expect(text).toContain("local_ydb_apply_schema action=validate");
     expect(text).toContain("action=apply with confirm=false");
     expect(text).toContain("confirm=true only after");
+    expect(text).toContain("with.STORE");
     expect(text).toContain("partitionByHash only with store: \"column\" and primaryKey columns");
     expect(text).toContain("vector_kmeans_tree");
     expect(text).toContain("\"scenario\": \"column partition\"");
@@ -987,6 +988,50 @@ describe("mcp tools", () => {
     }, {
       config: ConfigSchema.parse({})
     })).rejects.toThrow(/partitionByHash column bucket must be part of primaryKey/);
+  });
+
+  it("rejects ambiguous generated schema specs through the MCP handler", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64" }],
+        primaryKey: ["id"],
+        store: "column",
+        with: {
+          STORE: { token: "ROW" }
+        }
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Use the store field instead of with\.STORE/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx must be sync/);
   });
 
   it("advertises schema apply as a mutating destructive tool", () => {

@@ -108,6 +108,38 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
   statements: z.array(SchemaStatementArgs).nonempty(),
   timeoutMs: z.number().int().positive().max(600_000).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+}).superRefine((args, ctx) => {
+  args.statements.forEach((statement, statementIndex) => {
+    if (statement.kind === "createTable") {
+      if (statement.with !== undefined && Object.keys(statement.with).some((name) => name.trim().toUpperCase() === "STORE")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["statements", statementIndex, "with"],
+          message: "Use the store field instead of with.STORE",
+        });
+      }
+      statement.indexes?.forEach((index, indexIndex) => {
+        if (index.using === "vector_kmeans_tree" && index.sync !== "sync") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["statements", statementIndex, "indexes", indexIndex, "sync"],
+            message: `vector_kmeans_tree index ${index.name} must be sync`,
+          });
+        }
+      });
+    }
+    if (statement.kind === "alterTable") {
+      statement.actions.forEach((action, actionIndex) => {
+        if (action.kind === "addIndex" && action.index.using === "vector_kmeans_tree" && action.index.sync !== "sync") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["statements", statementIndex, "actions", actionIndex, "index", "sync"],
+            message: `vector_kmeans_tree index ${action.index.name} must be sync`,
+          });
+        }
+      });
+    }
+  });
 });
 
 export const PermissionsArgs = ProfileArgs.extend({

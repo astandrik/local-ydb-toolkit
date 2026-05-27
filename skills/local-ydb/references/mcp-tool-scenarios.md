@@ -176,7 +176,7 @@ Expected:
 
 - each positive generated script validates, then goes through `local_ydb_apply_schema action=apply confirm=false` before any confirmed apply
 - created probe tables are described with `local_ydb_scheme action=describe` and then cleaned up with validated/confirmed `DROP TABLE`
-- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, column-store secondary indexes, missing primary/index columns, invalid types, and invalid setting tokens before rendering
+- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, column-store secondary indexes, `with.STORE`, missing primary/index columns, invalid types, and invalid setting tokens before rendering
 
 ## Scenario 1B: Published Image Tags
 

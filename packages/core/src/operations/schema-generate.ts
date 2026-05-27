@@ -247,6 +247,7 @@ function renderCreateTable(statement: CreateTableSchemaStatementSpec): string {
       throw new Error(`partitionByHash column ${column} must be part of primaryKey`);
     }
   }
+  rejectReservedTableWithSettings(statement.with);
 
   const tableItems = [
     ...columns.map((column) => `  ${renderColumn(column)}`),
@@ -406,8 +407,8 @@ function validateVectorIndex(index: SchemaIndexSpec): void {
   if (index.local) {
     throw new Error(`vector_kmeans_tree index ${index.name} cannot be local`);
   }
-  if (index.sync === "async") {
-    throw new Error(`vector_kmeans_tree index ${index.name} supports only sync mode`);
+  if (index.sync !== "sync") {
+    throw new Error(`vector_kmeans_tree index ${index.name} must be sync`);
   }
   const settings = index.with ?? {};
   const vectorDimension = requireVectorNumberSetting(index.name, settings, "vector_dimension", 1, 16_384);
@@ -590,6 +591,12 @@ function normalizeSettingToken(value: string): string {
     throw new Error(`Invalid YDB setting token: ${value}`);
   }
   return value;
+}
+
+function rejectReservedTableWithSettings(settings: Record<string, SchemaSettingValue> | undefined): void {
+  if (settings !== undefined && Object.keys(settings).some((name) => normalizeIdentifier(name).toUpperCase() === "STORE")) {
+    throw new Error("Use the store field instead of with.STORE");
+  }
 }
 
 function renderLiteral(value: string | number | boolean): string {
