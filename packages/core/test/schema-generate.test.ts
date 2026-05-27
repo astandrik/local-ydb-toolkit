@@ -77,6 +77,8 @@ describe("schema generation", () => {
     expect(response.scriptSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(response.references.map((reference) => reference.label)).toContain("YDB CREATE TABLE syntax");
     expect(response.verification.join("\n")).toContain("local_ydb_apply_schema action=validate");
+    expect(response.verification.join("\n")).toContain("local_ydb_apply_schema action=apply confirm=false");
+    expect(response.verification.join("\n")).toContain("Use confirm=true only after explicit approval of that plan.");
   });
 
   it("renders column CREATE TABLE with PARTITION BY HASH", async () => {
@@ -342,6 +344,26 @@ describe("schema generation", () => {
         indexes: [{ name: "orders_by_order_no", columns: ["order_no"], unique: true, global: true, sync: "async" }],
       }],
     })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "created_at", type: "Timestamp" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_by_created_at",
+          columns: ["created_at"],
+          global: true,
+          with: {
+            AUTO_PARTITIONING_BY_SIZE: { token: "ENABLED" },
+          },
+        }],
+      }],
+    })).rejects.toThrow(/secondary index orders_by_created_at cannot have WITH settings/);
   });
 
   it("rejects invalid setting tokens before rendering", async () => {
@@ -510,6 +532,33 @@ describe("schema generation", () => {
         }],
       }],
     })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx requires numeric clusters/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" },
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          unique: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1,
+          },
+        }],
+      }],
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx cannot be unique/);
   });
 
   it("rejects indexes that reference columns added in the same ALTER TABLE spec", async () => {
@@ -525,6 +574,43 @@ describe("schema generation", () => {
         ],
       }],
     })).rejects.toThrow(/index orders_by_status cannot reference column status added in the same alterTable spec/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "addIndex", index: { name: "orders_by_status", columns: ["status"], global: true } },
+          { kind: "addColumn", column: { name: "status", type: "Utf8" } },
+        ],
+      }],
+    })).rejects.toThrow(/index orders_by_status cannot reference column status added in the same alterTable spec/);
+  });
+
+  it("rejects indexes that reference columns dropped in the same ALTER TABLE spec", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "dropColumn", name: "status" },
+          { kind: "addIndex", index: { name: "orders_by_status", columns: ["status"], global: true } },
+        ],
+      }],
+    })).rejects.toThrow(/index orders_by_status cannot reference column status dropped in the same alterTable spec/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "addIndex", index: { name: "orders_by_status", columns: ["id"], cover: ["status"], global: true } },
+          { kind: "dropColumn", name: "status" },
+        ],
+      }],
+    })).rejects.toThrow(/index orders_by_status cannot cover column status dropped in the same alterTable spec/);
   });
 
   it("rejects unknown and malformed data types before rendering", async () => {

@@ -312,23 +312,33 @@ function renderAlterTable(tableName: string, actions: AlterTableSchemaAction[] |
 
 function validateAlterTableActions(actions: AlterTableSchemaAction[]): void {
   const addedColumns = new Set<string>();
+  const droppedColumns = new Set<string>();
   for (const action of actions) {
     if (action.kind === "addColumn") {
       addedColumns.add(normalizeIdentifier(action.column.name));
-      continue;
+    } else if (action.kind === "dropColumn") {
+      droppedColumns.add(normalizeIdentifier(action.name));
     }
+  }
+
+  for (const action of actions) {
     if (action.kind === "addIndex") {
-      for (const column of normalizeNameList(action.index.columns, `index ${action.index.name} columns`)) {
-        if (addedColumns.has(column)) {
-          throw new Error(`index ${action.index.name} cannot reference column ${column} added in the same alterTable spec; apply the addColumn first, then generate a separate addIndex statement`);
-        }
-      }
-      if (action.index.cover !== undefined) {
-        for (const column of normalizeNameList(action.index.cover, `index ${action.index.name} cover`)) {
-          if (addedColumns.has(column)) {
-            throw new Error(`index ${action.index.name} cannot cover column ${column} added in the same alterTable spec; apply the addColumn first, then generate a separate addIndex statement`);
-          }
-        }
+      validateAlterIndexReferences(action.index, addedColumns, "added in the same alterTable spec; apply the addColumn first, then generate a separate addIndex statement");
+      validateAlterIndexReferences(action.index, droppedColumns, "dropped in the same alterTable spec");
+    }
+  }
+}
+
+function validateAlterIndexReferences(index: SchemaIndexSpec, disallowedColumns: Set<string>, reason: string): void {
+  for (const column of normalizeNameList(index.columns, `index ${index.name} columns`)) {
+    if (disallowedColumns.has(column)) {
+      throw new Error(`index ${index.name} cannot reference column ${column} ${reason}`);
+    }
+  }
+  if (index.cover !== undefined) {
+    for (const column of normalizeNameList(index.cover, `index ${index.name} cover`)) {
+      if (disallowedColumns.has(column)) {
+        throw new Error(`index ${index.name} cannot cover column ${column} ${reason}`);
       }
     }
   }
@@ -406,6 +416,9 @@ function validateIndexMode(index: SchemaIndexSpec): void {
   if (indexType === "secondary" && index.local) {
     throw new Error(`secondary index ${index.name} cannot be local`);
   }
+  if (indexType === "secondary" && index.with !== undefined) {
+    throw new Error(`secondary index ${index.name} cannot have WITH settings`);
+  }
   if (index.unique && index.sync === "async") {
     throw new Error(`unique index ${index.name} must be sync`);
   }
@@ -417,6 +430,9 @@ function validateVectorIndex(index: SchemaIndexSpec): void {
   }
   if (index.local) {
     throw new Error(`vector_kmeans_tree index ${index.name} cannot be local`);
+  }
+  if (index.unique) {
+    throw new Error(`vector_kmeans_tree index ${index.name} cannot be unique`);
   }
   if (index.sync !== "sync") {
     throw new Error(`vector_kmeans_tree index ${index.name} must be sync`);
@@ -741,7 +757,8 @@ function schemaGenerationVerification(databasePath: string): string[] {
   return [
     "Review the generated script and warnings before applying it.",
     `local_ydb_apply_schema action=validate databasePath=${databasePath}`,
-    "If validation succeeds, call local_ydb_apply_schema action=apply with confirm=true.",
+    "If validation succeeds, call local_ydb_apply_schema action=apply confirm=false to review the exact apply plan.",
+    "Use confirm=true only after explicit approval of that plan.",
     "Describe changed tables with local_ydb_scheme action=describe after apply.",
   ];
 }

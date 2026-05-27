@@ -815,6 +815,55 @@ describe("mcp tools", () => {
     });
   });
 
+  it("exposes index mode constraints in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    const statements = tool?.inputSchema.properties?.statements as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    };
+    const createTableSchema = statements.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "createTable";
+    });
+    const indexes = createTableSchema?.properties?.indexes as { items?: { allOf?: unknown[] } } | undefined;
+
+    expect(indexes?.items?.allOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        if: expect.objectContaining({
+          required: ["using"],
+          properties: expect.objectContaining({
+            using: { const: "vector_kmeans_tree" }
+          })
+        }),
+        then: expect.objectContaining({
+          required: ["global", "sync"],
+          properties: expect.objectContaining({
+            global: { const: true },
+            sync: { const: "sync" },
+            local: { const: false },
+            unique: { const: false }
+          })
+        })
+      }),
+      expect.objectContaining({
+        if: expect.objectContaining({
+          anyOf: expect.arrayContaining([
+            expect.objectContaining({
+              not: { required: ["using"] }
+            }),
+            expect.objectContaining({
+              required: ["using"],
+              properties: expect.objectContaining({
+                using: { const: "secondary" }
+              })
+            })
+          ])
+        }),
+        then: expect.objectContaining({
+          not: { required: ["with"] }
+        })
+      })
+    ]));
+  });
+
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
     expect(tool?.inputSchema.required).toContain("version");
@@ -1055,6 +1104,91 @@ describe("mcp tools", () => {
 
     await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
       statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx must be global/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          local: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx cannot be local/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          unique: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx cannot be unique/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
         kind: "alterTable",
         tableName: "orders",
         actions: [{
@@ -1069,6 +1203,26 @@ describe("mcp tools", () => {
     }, {
       config: ConfigSchema.parse({})
     })).rejects.toThrow(/secondary index orders_by_created_at cannot be local/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{
+          kind: "addIndex",
+          index: {
+            name: "orders_by_created_at",
+            columns: ["created_at"],
+            global: true,
+            with: {
+              AUTO_PARTITIONING_BY_SIZE: { token: "ENABLED" }
+            }
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/secondary index orders_by_created_at cannot have WITH settings/);
 
     await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
       statements: [{

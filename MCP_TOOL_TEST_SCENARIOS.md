@@ -158,9 +158,9 @@ Expected:
 - the response does not echo the raw DDL script or configured credential paths.
 - `DROP TABLE` and destructive `ALTER TABLE ... DROP ...` actions are reported as high risk.
 - `partitionByHash` is used only with `store: "column"` and primary key columns; row tables use row partitioning `WITH` settings instead.
-- If an index needs a newly added column, generate/apply the `addColumn` first, then run a separate generate/apply call for `addIndex`.
-- `vector_kmeans_tree` indexes include `global: true`, `sync: "sync"`, and complete `with` settings: `vector_dimension`, `vector_type`, either `distance` or `similarity`, `clusters`, and `levels`.
-- normal secondary indexes are global-only, unique indexes are synchronous, and creating a table with a vector index returns a warning that adding the vector index after loading representative data is preferred.
+- If an index needs a newly added column, generate/apply the `addColumn` first, then run a separate generate/apply call for `addIndex`; do not add an index on a column dropped in the same `alterTable` spec.
+- `vector_kmeans_tree` indexes include `global: true`, `sync: "sync"`, no `unique`, and complete `with` settings: `vector_dimension`, `vector_type`, either `distance` or `similarity`, `clusters`, and `levels`.
+- normal secondary indexes are global-only, do not accept creation-time `with` settings, unique indexes are synchronous, and creating a table with a vector index returns a warning that adding the vector index after loading representative data is preferred.
 
 Avoid:
 
@@ -189,7 +189,7 @@ Expected:
 
 - each positive generated script validates, then goes through `local_ydb_apply_schema action=apply confirm=false` before any confirmed apply.
 - created probe tables are described with `local_ydb_scheme action=describe` and then cleaned up with validated/confirmed `DROP TABLE`.
-- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, local secondary indexes, async unique indexes, `with.STORE`, missing primary/index columns, invalid types, and invalid setting tokens before rendering.
+- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, local secondary indexes, secondary index `with` settings, async unique indexes, unique vector indexes, same-spec add/drop column references from indexes, `with.STORE`, missing primary/index columns, invalid types, and invalid setting tokens before rendering.
 
 ## Scenario 1B: Schema Permissions
 

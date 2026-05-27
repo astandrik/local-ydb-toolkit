@@ -111,11 +111,25 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
 }).superRefine((args, ctx) => {
   const validateIndex = (index: z.infer<typeof SchemaIndexArgs>, path: (string | number)[]) => {
     const indexType = index.using ?? "secondary";
+    if (index.global && index.local) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, "local"],
+        message: `index ${index.name} cannot be both global and local`,
+      });
+    }
     if (indexType === "secondary" && index.local) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [...path, "local"],
         message: `secondary index ${index.name} cannot be local`,
+      });
+    }
+    if (indexType === "secondary" && index.with !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, "with"],
+        message: `secondary index ${index.name} cannot have WITH settings`,
       });
     }
     if (index.unique && index.sync === "async") {
@@ -125,12 +139,35 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
         message: `unique index ${index.name} must be sync`,
       });
     }
-    if (index.using === "vector_kmeans_tree" && index.sync !== "sync") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [...path, "sync"],
-        message: `vector_kmeans_tree index ${index.name} must be sync`,
-      });
+    if (index.using === "vector_kmeans_tree") {
+      if (index.global !== true) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [...path, "global"],
+          message: `vector_kmeans_tree index ${index.name} must be global`,
+        });
+      }
+      if (index.local) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [...path, "local"],
+          message: `vector_kmeans_tree index ${index.name} cannot be local`,
+        });
+      }
+      if (index.unique) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [...path, "unique"],
+          message: `vector_kmeans_tree index ${index.name} cannot be unique`,
+        });
+      }
+      if (index.sync !== "sync") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [...path, "sync"],
+          message: `vector_kmeans_tree index ${index.name} must be sync`,
+        });
+      }
     }
   };
 

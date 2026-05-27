@@ -231,7 +231,7 @@ const indexSchema = {
     },
     global: {
       type: "boolean",
-      description: "Emit GLOBAL for the index.",
+      description: "Emit GLOBAL for the index. Required for vector indexes.",
     },
     local: {
       type: "boolean",
@@ -239,7 +239,7 @@ const indexSchema = {
     },
     unique: {
       type: "boolean",
-      description: "Emit UNIQUE for the index. Unique indexes must be sync.",
+      description: "Emit UNIQUE for the index. Unique indexes must be sync and are rejected for vector indexes.",
     },
     sync: {
       type: "string",
@@ -250,16 +250,68 @@ const indexSchema = {
       type: "string",
       enum: ["secondary", "vector_kmeans_tree"],
       description:
-        "Optional USING index type. vector_kmeans_tree requires a row-oriented GLOBAL SYNC index and complete vector WITH settings.",
+        "Optional USING index type. vector_kmeans_tree requires a row-oriented GLOBAL SYNC non-unique index and complete vector WITH settings.",
     },
     with: {
       type: "object",
       additionalProperties: settingValueSchema,
       description:
-        "Optional index WITH settings. Strings render as quoted YQL literals; vector_kmeans_tree requires vector_dimension, vector_type, distance or similarity, clusters, and levels.",
+        "Optional vector index WITH settings. Strings render as quoted YQL literals; vector_kmeans_tree requires vector_dimension, vector_type, distance or similarity, clusters, and levels.",
     },
   },
   additionalProperties: false,
+  allOf: [
+    {
+      if: {
+        required: ["using"],
+        properties: {
+          using: { const: "vector_kmeans_tree" },
+        },
+      },
+      then: {
+        required: ["global", "sync"],
+        properties: {
+          global: { const: true },
+          local: { const: false },
+          unique: { const: false },
+          sync: { const: "sync" },
+        },
+      },
+    },
+    {
+      if: {
+        anyOf: [
+          { not: { required: ["using"] } },
+          {
+            required: ["using"],
+            properties: {
+              using: { const: "secondary" },
+            },
+          },
+        ],
+      },
+      then: {
+        properties: {
+          local: { const: false },
+        },
+        not: { required: ["with"] },
+      },
+    },
+    {
+      if: {
+        required: ["unique", "sync"],
+        properties: {
+          unique: { const: true },
+          sync: { const: "async" },
+        },
+      },
+      then: {
+        properties: {
+          sync: { const: "sync" },
+        },
+      },
+    },
+  ],
 };
 
 const schemaStatementSchema = {
@@ -377,7 +429,7 @@ const schemaStatementSchema = {
             ],
           },
           description:
-            "ALTER TABLE actions to render in order. Do not add an index on a column added in the same alterTable spec; apply the addColumn first, then generate addIndex separately.",
+            "ALTER TABLE actions to render in order. Do not add an index on a column added or dropped in the same alterTable spec; use separate generate/apply cycles.",
         },
       },
       additionalProperties: false,

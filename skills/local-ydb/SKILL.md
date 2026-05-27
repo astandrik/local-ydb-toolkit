@@ -36,9 +36,9 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - When `local-ydb` behavior is unclear, search upstream `ydb-platform/ydb` source with `gh api search/code` and read matching files through `gh api repos/ydb-platform/ydb/contents/...`; use pinned commits from project docs when matching documented proto shapes.
 - Do not hardcode dynamic node IDs. Discover them through monitoring/node-list APIs.
 - For new table schema DDL, prefer `local_ydb_generate_schema` with structured input, review/validate the generated script, then use `local_ydb_apply_schema`; applying still requires `confirm=true`.
-- For generated column tables, use `partitionByHash` only with `store: "column"` and primary key columns. Use top-level `store` instead of `with.STORE`; keep secondary and vector indexes on row-oriented tables, use global secondary indexes, and keep unique indexes synchronous.
+- For generated column tables, use `partitionByHash` only with `store: "column"` and primary key columns. Use top-level `store` instead of `with.STORE`; keep secondary and vector indexes on row-oriented tables, use global secondary indexes without creation-time `with` settings, and keep unique indexes synchronous.
+- Keep indexes off columns added or dropped in the same `alterTable` spec; use separate generate/apply cycles for those changes.
 - Prefer adding vector indexes after representative data is loaded; treat generated `CREATE TABLE` vector-index warnings as actionable.
-- If an index needs a newly added column, generate/apply the `addColumn` first, then generate/apply a separate `addIndex`.
 - Do not treat `POSTGRES_USER` or `POSTGRES_PASSWORD` as native YDB gRPC protection. They are for PostgreSQL compatibility.
 - Do not publish YDB gRPC publicly unless the user explicitly requests that topology and accepts the risk. The hardened default is YDB gRPC internal-only, with monitoring exposed only through a protected HTTPS reverse proxy when needed.
 - Do not claim anonymous `viewer/json` commands work after mandatory auth. In a hardened topology anonymous `viewer/json` should return `401`; commands need an authenticated UI/session path or must be marked as pre-auth/local-dev examples.
