@@ -3,7 +3,7 @@
   "name": "io.github.astandrik/local-ydb-mcp",
   "title": "Local YDB MCP",
   "description": "Operate local-ydb deployments through local or SSH-backed MCP tools.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "websiteUrl": "https://github.com/astandrik/local-ydb-toolkit#readme",
   "repository": {
     "url": "https://github.com/astandrik/local-ydb-toolkit",
@@ -16,7 +16,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@astandrik/local-ydb-mcp",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {

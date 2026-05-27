@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.10.0...mcp-server-v0.11.0) (2026-05-27)
+
+
+### Features
+
+* add local YDB schema apply tool ([#80](https://github.com/astandrik/local-ydb-toolkit/issues/80)) ([b40132f](https://github.com/astandrik/local-ydb-toolkit/commit/b40132f7cbd47b783ceca4b78b77efcba231b964))
+
 ## [0.10.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.9.7...mcp-server-v0.10.0) (2026-05-20)
 
 
