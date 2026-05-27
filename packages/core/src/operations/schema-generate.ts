@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { applySchema } from "./schema.js";
+import { applySchema, MAX_SCHEMA_SCRIPT_CHARS } from "./schema.js";
 import type {
   AlterTableSchemaAction,
   CreateTableSchemaStatementSpec,
@@ -112,6 +112,35 @@ const STRING_CONSTRUCTOR_DEFAULT_TYPES = new Set([
   "Interval64",
 ]);
 
+const COLUMN_TABLE_PRIMARY_KEY_TYPES = new Set([
+  "Date",
+  "Datetime",
+  "Timestamp",
+  "Int32",
+  "Int64",
+  "Uint8",
+  "Uint16",
+  "Uint32",
+  "Uint64",
+  "Utf8",
+  "String",
+]);
+
+const COLUMN_TABLE_COLUMN_TYPES = new Set([
+  ...COLUMN_TABLE_PRIMARY_KEY_TYPES,
+  "Bool",
+  "Decimal",
+  "Double",
+  "Float",
+  "Int8",
+  "Int16",
+  "Interval",
+  "JsonDocument",
+  "Json",
+  "Uuid",
+  "Yson",
+]);
+
 const BARE_SETTING_TOKEN = Symbol("BARE_SETTING_TOKEN");
 
 interface BareSettingToken {
@@ -129,6 +158,9 @@ export async function generateSchema(
   const databasePath = normalizeDatabasePath(ctx, options.databasePath);
   const rendered = statements.map(renderStatement);
   const script = rendered.map(({ sql }) => sql).join("\n\n");
+  if (script.length > MAX_SCHEMA_SCRIPT_CHARS) {
+    throw new Error(`script must be at most ${MAX_SCHEMA_SCRIPT_CHARS} characters`);
+  }
   const warnings = unique(rendered.flatMap(({ warnings }) => warnings));
   const kinds = unique(rendered.map(({ kind }) => kind));
   const statementCount = rendered.reduce((count, statement) => count + statement.statementCount, 0);
@@ -237,6 +269,7 @@ function renderCreateTable(statement: CreateTableSchemaStatementSpec): string {
     }
   }
   validateColumnNullability(columns, primaryKeyNames, statement.store);
+  validateColumnStoreTypes(columns, primaryKeyNames, statement.store);
   validateIndexNames(indexes);
   for (const index of indexes) {
     validateIndexColumns(index, columnNames);
@@ -317,9 +350,25 @@ function validateAlterTableActions(actions: AlterTableSchemaAction[]): void {
   const droppedColumns = new Set<string>();
   for (const action of actions) {
     if (action.kind === "addColumn") {
-      addedColumns.add(normalizeIdentifier(action.column.name));
+      const name = normalizeIdentifier(action.column.name);
+      validateColumnName(name);
+      normalizeColumnType(action.column.type);
+      if (action.column.notNull) {
+        throw new Error(`ALTER TABLE ADD COLUMN ${name} cannot include notNull`);
+      }
+      if (action.column.default !== undefined) {
+        throw new Error(`ALTER TABLE ADD COLUMN ${name} cannot include default`);
+      }
+      if (addedColumns.has(name)) {
+        throw new Error(`Duplicate ALTER TABLE ADD COLUMN name: ${name}`);
+      }
+      addedColumns.add(name);
     } else if (action.kind === "dropColumn") {
-      droppedColumns.add(normalizeIdentifier(action.name));
+      const name = normalizeIdentifier(action.name);
+      if (droppedColumns.has(name)) {
+        throw new Error(`Duplicate ALTER TABLE DROP COLUMN name: ${name}`);
+      }
+      droppedColumns.add(name);
     }
   }
   validateIndexNames(actions.flatMap((action) => action.kind === "addIndex" ? [action.index] : []));
@@ -354,6 +403,7 @@ function normalizeColumns(columns: SchemaColumnSpec[] | undefined): SchemaColumn
   const names = new Set<string>();
   for (const column of columns) {
     const name = normalizeIdentifier(column.name);
+    validateColumnName(name);
     if (names.has(name)) {
       throw new Error(`Duplicate column name: ${name}`);
     }
@@ -383,6 +433,12 @@ function validateColumnNullability(
   }
 }
 
+function validateColumnName(name: string): void {
+  if (name.toLowerCase().startsWith("__ydb_")) {
+    throw new Error(`Column name ${name} must not start with reserved prefix __ydb_`);
+  }
+}
+
 function validateIndexNames(indexes: SchemaIndexSpec[]): void {
   const names = new Set<string>();
   for (const index of indexes) {
@@ -392,6 +448,31 @@ function validateIndexNames(indexes: SchemaIndexSpec[]): void {
     }
     names.add(name);
   }
+}
+
+function validateColumnStoreTypes(
+  columns: SchemaColumnSpec[],
+  primaryKeyNames: Set<string>,
+  store: CreateTableSchemaStatementSpec["store"],
+): void {
+  if (store !== "column") {
+    return;
+  }
+  for (const column of columns) {
+    const name = normalizeIdentifier(column.name);
+    const typeName = columnStoreTypeName(normalizeColumnType(column.type));
+    if (primaryKeyNames.has(name)) {
+      if (!COLUMN_TABLE_PRIMARY_KEY_TYPES.has(typeName)) {
+        throw new Error(`column-oriented table primaryKey column ${name} type ${typeName} is not supported`);
+      }
+    } else if (!COLUMN_TABLE_COLUMN_TYPES.has(typeName)) {
+      throw new Error(`column-oriented table column ${name} type ${typeName} is not supported`);
+    }
+  }
+}
+
+function columnStoreTypeName(columnType: string): string {
+  return columnType.startsWith("Decimal(") ? "Decimal" : columnType;
 }
 
 function renderColumn(column: SchemaColumnSpec): string {

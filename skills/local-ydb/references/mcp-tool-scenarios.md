@@ -149,6 +149,7 @@ Expected:
 - confirmed apply reports script SHA-256, statement kinds, validation/execution status, risk, rollback, and verification without echoing raw DDL or credential paths
 - `DROP TABLE` and destructive `ALTER TABLE ... DROP ...` actions are high risk
 - `partitionByHash` is used only with `store: "column"` and primary key columns; row tables use row partitioning `WITH` settings instead
+- column names with the reserved `__ydb_` prefix, unsupported column-oriented table types, `ALTER TABLE ADD COLUMN` `notNull`/`default`, duplicate add/drop column actions, and generated scripts over 1 MiB are rejected before validation/application
 - If an index needs a newly added column, generate/apply the `addColumn` first, then run a separate generate/apply call for `addIndex`; do not add an index on a column dropped in the same `alterTable` spec
 - `vector_kmeans_tree` indexes include `global: true`, `sync: "sync"`, no `unique`, and complete `with` settings: `vector_dimension`, `vector_type`, either `distance` or `similarity`, `clusters`, and `levels`
 - normal secondary indexes are global-only, do not accept creation-time `with` settings, unique indexes are synchronous, and creating a table with a vector index returns a warning that adding the vector index after loading representative data is preferred
@@ -177,7 +178,7 @@ Expected:
 
 - each positive generated script validates, then goes through `local_ydb_apply_schema action=apply confirm=false` before any confirmed apply
 - created probe tables are described with `local_ydb_scheme action=describe` and then cleaned up with validated/confirmed `DROP TABLE`
-- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, local secondary indexes, secondary index `with` settings, async unique indexes, unique vector indexes, same-spec add/drop column references from indexes, `with.STORE`, missing primary/index columns, invalid types, and invalid setting tokens before rendering
+- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, unsupported column-store key/non-key types, local secondary indexes, secondary index `with` settings, async unique indexes, unique vector indexes, same-spec add/drop column references from indexes, duplicate add/drop column actions, `ALTER TABLE ADD COLUMN` `notNull`/`default`, `with.STORE`, reserved `__ydb_` column names, missing primary/index columns, invalid types, invalid setting tokens, and scripts over 1 MiB before rendering or validation
 
 ## Scenario 1B: Published Image Tags
 

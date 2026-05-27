@@ -827,6 +827,30 @@ describe("mcp tools", () => {
     });
   });
 
+  it("exposes ALTER ADD COLUMN constraints in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    const statements = tool?.inputSchema.properties?.statements as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    };
+    const alterTableSchema = statements.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "alterTable";
+    });
+    const actions = alterTableSchema?.properties?.actions as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    } | undefined;
+    const addColumnAction = actions?.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "addColumn";
+    });
+    const addColumn = addColumnAction?.properties?.column as { not?: unknown } | undefined;
+
+    expect(addColumn?.not).toEqual({
+      anyOf: [
+        { required: ["notNull"] },
+        { required: ["default"] }
+      ]
+    });
+  });
+
   it("exposes index mode constraints in the tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
     const statements = tool?.inputSchema.properties?.statements as {
@@ -1387,6 +1411,78 @@ describe("mcp tools", () => {
     }, {
       config: ConfigSchema.parse({})
     })).rejects.toThrow(/Duplicate YDB setting name: AUTO_PARTITIONING_BY_SIZE/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{ kind: "addColumn", column: { name: "status", type: "Utf8", notNull: true } }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/ALTER TABLE ADD COLUMN status cannot include notNull/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{ kind: "addColumn", column: { name: "status", type: "Utf8", default: "new" } }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/ALTER TABLE ADD COLUMN status cannot include default/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "addColumn", column: { name: "status", type: "Utf8" } },
+          { kind: "addColumn", column: { name: " status ", type: "Utf8" } }
+        ]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate ALTER TABLE ADD COLUMN name: status/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "dropColumn", name: "status" },
+          { kind: "dropColumn", name: " status " }
+        ]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate ALTER TABLE DROP COLUMN name: status/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "enabled", type: "Bool", notNull: true },
+          { name: "value", type: "Utf8" }
+        ],
+        primaryKey: ["enabled"],
+        store: "column"
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/column-oriented table primaryKey column enabled type Bool is not supported/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "__ydb_id", type: "Uint64", notNull: true }],
+        primaryKey: ["__ydb_id"]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Column name __ydb_id must not start with reserved prefix __ydb_/);
   });
 
   it("rejects empty schema arrays through the MCP handler", async () => {

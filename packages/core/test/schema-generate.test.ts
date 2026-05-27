@@ -175,6 +175,23 @@ describe("schema generation", () => {
     expect(response.script).toBe("DROP TABLE `orders`;");
   });
 
+  it("rejects generated scripts above the apply schema size limit", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+    const columns = [
+      { name: "id", type: "Uint64", notNull: true },
+      ...Array.from({ length: 70_000 }, (_, index) => ({ name: `field_${index}`, type: "Utf8" })),
+    ];
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "oversized",
+        columns,
+        primaryKey: ["id"],
+      }],
+    })).rejects.toThrow(/script must be at most 1048576 characters/);
+  });
+
   it("quotes path identifiers and escapes backticks", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 
@@ -509,6 +526,36 @@ describe("schema generation", () => {
     })).rejects.toThrow(/column-oriented table primaryKey column tenant_id must be NOT NULL/);
   });
 
+  it("rejects unsupported column-oriented table types", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "enabled", type: "Bool", notNull: true },
+          { name: "value", type: "Utf8" },
+        ],
+        primaryKey: ["enabled"],
+        store: "column",
+      }],
+    })).rejects.toThrow(/column-oriented table primaryKey column enabled type Bool is not supported/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "created_on", type: "Date32" },
+        ],
+        primaryKey: ["id"],
+        store: "column",
+      }],
+    })).rejects.toThrow(/column-oriented table column created_on type Date32 is not supported/);
+  });
+
   it("rejects invalid setting tokens before rendering", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 
@@ -681,6 +728,27 @@ describe("schema generation", () => {
     })).rejects.toThrow(/YDB identifiers cannot contain ASCII control characters/);
   });
 
+  it("rejects reserved YDB column prefixes", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "__ydb_id", type: "Uint64", notNull: true }],
+        primaryKey: ["__ydb_id"],
+      }],
+    })).rejects.toThrow(/Column name __ydb_id must not start with reserved prefix __ydb_/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{ kind: "addColumn", column: { name: "__ydb_status", type: "Utf8" } }],
+      }],
+    })).rejects.toThrow(/Column name __ydb_status must not start with reserved prefix __ydb_/);
+  });
+
   it("rejects incomplete vector index settings", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 
@@ -785,6 +853,52 @@ describe("schema generation", () => {
         ],
       }],
     })).rejects.toThrow(/index orders_by_status cannot reference column status added in the same alterTable spec/);
+  });
+
+  it("rejects unsupported ALTER TABLE ADD COLUMN constraints", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{ kind: "addColumn", column: { name: "status", type: "Utf8", notNull: true } }],
+      }],
+    })).rejects.toThrow(/ALTER TABLE ADD COLUMN status cannot include notNull/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{ kind: "addColumn", column: { name: "status", type: "Utf8", default: "new" } }],
+      }],
+    })).rejects.toThrow(/ALTER TABLE ADD COLUMN status cannot include default/);
+  });
+
+  it("rejects duplicate ALTER TABLE column actions", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "addColumn", column: { name: "status", type: "Utf8" } },
+          { kind: "addColumn", column: { name: " status ", type: "Utf8" } },
+        ],
+      }],
+    })).rejects.toThrow(/Duplicate ALTER TABLE ADD COLUMN name: status/);
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "dropColumn", name: "status" },
+          { kind: "dropColumn", name: " status " },
+        ],
+      }],
+    })).rejects.toThrow(/Duplicate ALTER TABLE DROP COLUMN name: status/);
   });
 
   it("rejects indexes that reference columns dropped in the same ALTER TABLE spec", async () => {

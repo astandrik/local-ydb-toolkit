@@ -208,6 +208,17 @@ const columnSchema = {
   additionalProperties: false,
 };
 
+const alterAddColumnSchema = {
+  ...columnSchema,
+  description: "Column to add with ALTER TABLE. Only name and type are supported; NOT NULL and DEFAULT are rejected.",
+  not: {
+    anyOf: [
+      { required: ["notNull"] },
+      { required: ["default"] },
+    ],
+  },
+};
+
 const indexSchema = {
   type: "object",
   required: ["name", "columns"],
@@ -401,7 +412,7 @@ const schemaStatementSchema = {
                 required: ["kind", "column"],
                 properties: {
                   kind: { type: "string", const: "addColumn" },
-                  column: columnSchema,
+                  column: alterAddColumnSchema,
                 },
                 additionalProperties: false,
               },
