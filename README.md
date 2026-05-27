@@ -1,5 +1,6 @@
 # local-ydb-toolkit
 
+[![Listed on Awesome MCP Servers](https://img.shields.io/badge/Awesome%20MCP%20Servers-listed-blue?logo=github)](https://github.com/punkpeye/awesome-mcp-servers#databases)
 [![Listed on CuratedMCP](https://www.curatedmcp.com/api/badge/local-ydb-unofficial-mcp-server)](https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server)
 [![MCP Badge](https://lobehub.com/badge/mcp/astandrik-local-ydb-toolkit)](https://lobehub.com/mcp/astandrik-local-ydb-toolkit)
 [![local-ydb-toolkit MCP server](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit/badges/score.svg)](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit)
@@ -14,7 +15,13 @@ It includes:
 - an unofficial local stdio MCP server published as `@astandrik/local-ydb-mcp`;
 - a Marketplace GitHub Action, [`astandrik/setup-local-ydb`](https://github.com/astandrik/setup-local-ydb), for booting disposable YDB tenants in CI.
 
-Directory listing: [Local YDB MCP on Skiln](https://skiln.co/mcp/mcp-io-github-astandrik-local-ydb-mcp).
+Directory listings: [Awesome MCP Servers](https://github.com/punkpeye/awesome-mcp-servers#databases), [Glama](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit), and [Skiln](https://skiln.co/mcp/mcp-io-github-astandrik-local-ydb-mcp).
+
+## Relationship to `ydb/ydb-mcp`
+
+Local YDB MCP is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` when an agent needs YDB database-level tools such as SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
+
+Use this toolkit when the agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, auth hardening, storage workflows, dump/restore, and version upgrades. Mutating MCP tools are plan-first and require `confirm: true` before they execute changes.
 
 ## Codex Skill Quick Start
 

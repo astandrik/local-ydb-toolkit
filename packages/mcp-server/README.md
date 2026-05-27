@@ -2,6 +2,12 @@
 
 Unofficial stdio MCP server for operating Docker-based `local-ydb` deployments.
 
+## Relationship to `ydb/ydb-mcp`
+
+This package is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` for YDB database-level tools such as SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
+
+Use `@astandrik/local-ydb-mcp` when an agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, auth hardening, storage workflows, dump/restore, and version upgrades. Mutating tools are plan-first and require `confirm: true` before they execute changes.
+
 ## MCP Client Config
 
 Use `npx` so clients can run the server without a manual checkout:
