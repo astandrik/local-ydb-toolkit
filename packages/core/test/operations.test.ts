@@ -177,7 +177,9 @@ describe("read-only checks", () => {
   it("routes healthcheck through dynamic CLI for tenant and static CLI for root database", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const specs: CommandSpec[] = [];
     executor.run = async (_profile, spec) => {
+      specs.push(spec);
       const command = executor.display(_profile, spec);
       executor.commands.push(command);
       return {
@@ -197,6 +199,32 @@ describe("read-only checks", () => {
     expect(executor.commands[0]).toContain("-d /local/example");
     expect(executor.commands[1]).toContain("grpc://localhost:2136");
     expect(executor.commands[1]).toContain("-d /local");
+    expect(specs[0]?.timeoutMs).toBe(125_000);
+    expect(specs[1]?.timeoutMs).toBe(125_000);
+  });
+
+  it("honors custom healthcheck timeouts in the command executor", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    let specTimeoutMs: number | undefined;
+    executor.run = async (_profile, spec) => {
+      specTimeoutMs = spec.timeoutMs;
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: JSON.stringify({ self_check_result: "GOOD" }),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    await healthcheck(ctx, { timeoutMs: 240_000 });
+
+    expect(executor.commands[0]).toContain("--timeout 240000");
+    expect(specTimeoutMs).toBe(245_000);
   });
 
   it("reports invalid JSON from YDB healthcheck without treating it as ok", async () => {

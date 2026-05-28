@@ -5,6 +5,7 @@ import type { HealthcheckOptions, HealthcheckResponse, ToolkitContext } from "./
 
 const DEFAULT_HEALTHCHECK_TIMEOUT_MS = 120_000;
 const MAX_HEALTHCHECK_TIMEOUT_MS = 600_000;
+const HEALTHCHECK_PROCESS_TIMEOUT_GRACE_MS = 5_000;
 const DEFAULT_MAX_HEALTHCHECK_ISSUES = 100;
 
 export async function inventory(ctx: ToolkitContext) {
@@ -76,9 +77,13 @@ export async function healthcheck(
     ...(options.noCache ? ["--no-cache"] : []),
     ...(options.noMerge ? ["--no-merge"] : []),
   ];
-  const result = await ctx.client.run(databasePath === ctx.profile.rootDatabase
+  const commandSpec = databasePath === ctx.profile.rootDatabase
     ? ydbRootCli(ctx.profile, args, "Run YDB healthcheck")
-    : ydbCli(ctx.profile, args, databasePath, "Run YDB healthcheck"));
+    : ydbCli(ctx.profile, args, databasePath, "Run YDB healthcheck");
+  const result = await ctx.client.run({
+    ...commandSpec,
+    timeoutMs: Math.max(commandSpec.timeoutMs ?? 0, timeoutMs + HEALTHCHECK_PROCESS_TIMEOUT_GRACE_MS),
+  });
   const stdout = capText(result.stdout, maxOutputBytes);
   const stderr = capText(result.stderr, maxOutputBytes);
   const base = {
