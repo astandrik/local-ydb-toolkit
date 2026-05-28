@@ -1,6 +1,12 @@
-import { ydbCli, ydbdAdmin } from "./commands.js";
+import { ydbCli, ydbdAdmin, ydbRootCli } from "./commands.js";
 import { collectGraphShardTabletIds, publicProfile, readPath } from "./helpers.js";
-import type { ToolkitContext } from "./types.js";
+import { capText, normalizeMaxOutputBytes } from "./output.js";
+import type { HealthcheckOptions, HealthcheckResponse, ToolkitContext } from "./types.js";
+
+const DEFAULT_HEALTHCHECK_TIMEOUT_MS = 120_000;
+const MAX_HEALTHCHECK_TIMEOUT_MS = 600_000;
+const HEALTHCHECK_PROCESS_TIMEOUT_GRACE_MS = 5_000;
+const DEFAULT_MAX_HEALTHCHECK_ISSUES = 100;
 
 export async function inventory(ctx: ToolkitContext) {
   const containers = await ctx.client.dockerPs();
@@ -20,12 +26,14 @@ export async function statusReport(ctx: ToolkitContext) {
   const authStatus = await authCheck(ctx);
   const tenant = await tenantCheck(ctx);
   const nodes = await nodesCheck(ctx);
+  const health = await healthcheck(ctx);
   return {
-    summary: `Status report for ${ctx.profile.name}: tenant=${tenant.ok ? "ok" : "not-ok"}, nodes=${nodes.ok ? "ok" : "not-ok"}.`,
+    summary: `Status report for ${ctx.profile.name}: tenant=${tenant.ok ? "ok" : "not-ok"}, nodes=${nodes.ok ? "ok" : "not-ok"}, health=${health.selfCheckResult ?? "unavailable"}.`,
     inventory: inv,
     auth: authStatus,
     tenant,
-    nodes
+    nodes,
+    healthcheck: health
   };
 }
 
@@ -49,6 +57,170 @@ export async function databaseStatus(ctx: ToolkitContext) {
     stdout: result.stdout,
     stderr: result.stderr
   };
+}
+
+export async function healthcheck(
+  ctx: ToolkitContext,
+  options: HealthcheckOptions = {}
+): Promise<HealthcheckResponse> {
+  const databasePath = normalizeHealthcheckDatabasePath(ctx, options.databasePath);
+  const timeoutMs = normalizeHealthcheckTimeoutMs(options.timeoutMs);
+  const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes);
+  const maxIssues = normalizeMaxIssues(options.maxIssues);
+  const args = [
+    "monitoring",
+    "healthcheck",
+    "--format",
+    "json",
+    "--timeout",
+    String(timeoutMs),
+    ...(options.noCache ? ["--no-cache"] : []),
+    ...(options.noMerge ? ["--no-merge"] : []),
+  ];
+  const commandSpec = databasePath === ctx.profile.rootDatabase
+    ? ydbRootCli(ctx.profile, args, "Run YDB healthcheck")
+    : ydbCli(ctx.profile, args, databasePath, "Run YDB healthcheck");
+  const result = await ctx.client.run({
+    ...commandSpec,
+    timeoutMs: Math.max(commandSpec.timeoutMs ?? 0, timeoutMs + HEALTHCHECK_PROCESS_TIMEOUT_GRACE_MS),
+  });
+  const stdout = capText(result.stdout, maxOutputBytes);
+  const stderr = capText(result.stderr, maxOutputBytes);
+  const base = {
+    command: result.command,
+    databasePath,
+    stdout: stdout.text,
+    stderr: stderr.text,
+    stdoutBytes: stdout.bytes,
+    stderrBytes: stderr.bytes,
+    stdoutTruncated: stdout.truncated,
+    stderrTruncated: stderr.truncated,
+    maxOutputBytes,
+    maxIssues,
+  };
+
+  if (!result.ok) {
+    return {
+      ...base,
+      summary: `YDB healthcheck for ${databasePath} failed.`,
+      ok: false,
+      commandOk: false,
+      healthy: false,
+      issueCount: 0,
+      issueStatusCounts: {},
+      issueTypes: [],
+      issues: [],
+      issuesTruncated: false,
+    };
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(result.stdout);
+  } catch (error) {
+    return {
+      ...base,
+      summary: `YDB healthcheck for ${databasePath} returned invalid JSON.`,
+      ok: false,
+      commandOk: true,
+      healthy: false,
+      issueCount: 0,
+      issueStatusCounts: {},
+      issueTypes: [],
+      issues: [],
+      issuesTruncated: false,
+      parseError: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const selfCheckResult = readStringField(data, "self_check_result", "selfCheckResult");
+  const issueLog = readIssueLog(data);
+  const issues = issueLog.slice(0, maxIssues);
+  const issuesTruncated = issueLog.length > issues.length;
+  const healthy = selfCheckResult === "GOOD";
+  return {
+    ...base,
+    summary: healthy
+      ? `YDB healthcheck for ${databasePath} returned GOOD.`
+      : `YDB healthcheck for ${databasePath} returned ${selfCheckResult ?? "unknown"} with ${issueLog.length} issue(s).`,
+    ok: true,
+    commandOk: true,
+    healthy,
+    selfCheckResult,
+    issueCount: issueLog.length,
+    issueStatusCounts: issueStatusCounts(issueLog),
+    issueTypes: issueTypes(issueLog),
+    issues,
+    issuesTruncated,
+  };
+}
+
+function normalizeHealthcheckDatabasePath(ctx: ToolkitContext, path: string | undefined): string {
+  const databasePath = path === undefined ? ctx.profile.tenantPath : path.trim();
+  if (!databasePath) {
+    throw new Error("databasePath must be non-empty");
+  }
+  if (databasePath !== ctx.profile.tenantPath && databasePath !== ctx.profile.rootDatabase) {
+    throw new Error(`databasePath must be exactly ${ctx.profile.tenantPath} or ${ctx.profile.rootDatabase}`);
+  }
+  return databasePath;
+}
+
+function normalizeHealthcheckTimeoutMs(timeoutMs: number | undefined): number {
+  const value = timeoutMs ?? DEFAULT_HEALTHCHECK_TIMEOUT_MS;
+  if (!Number.isInteger(value) || value <= 0 || value > MAX_HEALTHCHECK_TIMEOUT_MS) {
+    throw new Error(`timeoutMs must be a positive integer no greater than ${MAX_HEALTHCHECK_TIMEOUT_MS}`);
+  }
+  return value;
+}
+
+function normalizeMaxIssues(maxIssues: number | undefined): number {
+  const value = maxIssues ?? DEFAULT_MAX_HEALTHCHECK_ISSUES;
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error("maxIssues must be a positive integer");
+  }
+  return value;
+}
+
+function readIssueLog(data: unknown): unknown[] {
+  if (!data || typeof data !== "object") {
+    return [];
+  }
+  const record = data as Record<string, unknown>;
+  const issueLog = record.issue_log ?? record.issueLog;
+  return Array.isArray(issueLog) ? issueLog : [];
+}
+
+function readStringField(data: unknown, ...names: string[]): string | undefined {
+  if (!data || typeof data !== "object") {
+    return undefined;
+  }
+  const record = data as Record<string, unknown>;
+  for (const name of names) {
+    const value = record[name];
+    if (typeof value === "string") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function issueStatusCounts(issues: unknown[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const issue of issues) {
+    const status = readStringField(issue, "status");
+    if (status) {
+      counts[status] = (counts[status] ?? 0) + 1;
+    }
+  }
+  return Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function issueTypes(issues: unknown[]): string[] {
+  return Array.from(new Set(issues
+    .map((issue) => readStringField(issue, "type"))
+    .filter((value): value is string => Boolean(value))))
+    .sort((left, right) => left.localeCompare(right));
 }
 
 export async function nodesCheck(ctx: ToolkitContext) {

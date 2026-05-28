@@ -2,6 +2,15 @@
 
 ## Tenant and Node State
 
+Use the MCP tool first when available:
+
+```json
+{ "tool": "local_ydb_status_report", "arguments": { "profile": "<profile>" } }
+{ "tool": "local_ydb_healthcheck", "arguments": { "profile": "<profile>" } }
+```
+
+`local_ydb_healthcheck` wraps YDB's built-in `monitoring healthcheck --format json` self-check. Treat `selfCheckResult=GOOD` as the main database-level green signal; for other results, route by issue type before trying ad hoc shell diagnostics.
+
 Unauthenticated local-dev examples:
 
 ```bash

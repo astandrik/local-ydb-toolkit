@@ -169,8 +169,8 @@ Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH 
 
 The MCP server exposes tools for local-ydb operations and prompts for guided
 workflows. Prompt templates cover stack diagnosis, root database bootstrap,
-tenant topology bootstrap, schema generation/apply, version upgrades, auth
-hardening, and storage group reduction. Prompts do not execute commands; they
+database diagnostics, tenant topology bootstrap, schema generation/apply,
+version upgrades, auth hardening, and storage group reduction. Prompts do not execute commands; they
 return workflow instructions that guide the MCP client toward the existing
 `local_ydb_*` tools.
 
@@ -197,9 +197,11 @@ SSH profiles use existing SSH agent/key/known_hosts configuration. The toolkit d
 
 ### Operations
 
-Read-only tools collect inventory, tenant state, schema objects, generated table DDL, schema permissions, node state, GraphShard state, auth posture, storage placement, leftover storage candidates, published `local-ydb` image tags, and background image-pull status.
+Read-only tools collect inventory, tenant state, YDB healthcheck/self-check output, schema objects, generated table DDL, schema permissions, node state, GraphShard state, auth posture, storage placement, leftover storage candidates, published `local-ydb` image tags, and background image-pull status.
 
 `local_ydb_check_prerequisites` is the expected first step on a new host or profile. It checks `docker`, `curl`, `ruby`, and auth-file prerequisites. With `confirm: true`, it can auto-install supported host helpers such as `curl` and `ruby` through `apt-get`; Docker is reported but must still be installed manually.
+
+`local_ydb_healthcheck` runs YDB's built-in `monitoring healthcheck --format json` against the configured tenant path by default. It returns `selfCheckResult`, whether the database is healthy, issue counts by status, issue types, capped raw stdout/stderr, and truncated `issue_log` entries. Use it after `local_ydb_status_report` for database-level diagnostics, then route storage, compute, scheme, auth, or log checks from the reported issue types.
 
 Mutating tools include image pulls, root-database bootstrap, tenant topology bootstrap, tenant creation, dynamic-node startup, restart, table schema DDL application, schema permissions changes, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, version upgrade by dump/rebuild/restore, and explicit storage cleanup. They are plan-only unless called with:
 

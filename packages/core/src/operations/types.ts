@@ -85,6 +85,15 @@ export interface SchemeOptions {
   maxOutputBytes?: number;
 }
 
+export interface HealthcheckOptions {
+  databasePath?: string;
+  noCache?: boolean;
+  noMerge?: boolean;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  maxIssues?: number;
+}
+
 export type SchemaAction = "validate" | "apply";
 
 export type SchemaStatementKind = "PRAGMA" | "CREATE TABLE" | "ALTER TABLE" | "DROP TABLE";
@@ -425,6 +434,30 @@ export interface SchemeResponse {
   stderrTruncated: boolean;
   /** Maximum bytes returned in each stdout/stderr field. */
   maxOutputBytes: number;
+}
+
+export interface HealthcheckResponse {
+  summary: string;
+  ok: boolean;
+  commandOk: boolean;
+  healthy: boolean;
+  databasePath: string;
+  command: string;
+  selfCheckResult?: string;
+  issueCount: number;
+  issueStatusCounts: Record<string, number>;
+  issueTypes: string[];
+  issues: unknown[];
+  issuesTruncated: boolean;
+  parseError?: string;
+  stdout: string;
+  stderr: string;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  maxOutputBytes: number;
+  maxIssues: number;
 }
 
 export interface PermissionsListResponse {
