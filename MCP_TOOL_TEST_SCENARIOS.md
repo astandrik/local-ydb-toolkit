@@ -157,6 +157,7 @@ Expected:
 - confirmed apply returns a script SHA-256, statement count/kinds, validation result, execution result, risk, rollback notes, and verification steps.
 - the response does not echo the raw DDL script or configured credential paths.
 - `DROP TABLE` and destructive `ALTER TABLE ... DROP ...` actions are reported as high risk.
+- `CREATE TABLE` `notNull` is used only for columns that are part of `primaryKey`; non-key required business fields should be enforced by application validation or a later YDB feature path.
 - `partitionByHash` is used only with `store: "column"` and primary key columns; row tables use row partitioning `WITH` settings instead.
 - column names with the reserved `__ydb_` prefix, unsupported column-oriented table types, `ALTER TABLE ADD COLUMN` `notNull`/`default`, duplicate add/drop column actions, and generated scripts over 1 MiB are rejected before validation/application.
 - If an index needs a newly added column, generate/apply the `addColumn` first, then run a separate generate/apply call for `addIndex`; do not add an index on a column dropped in the same `alterTable` spec.

@@ -199,7 +199,7 @@ const columnSchema = {
     },
     notNull: {
       type: "boolean",
-      description: "Emit NOT NULL for the column.",
+      description: "Emit NOT NULL for the column. Supported only for columns that are part of the CREATE TABLE primaryKey.",
     },
     default: {
       ...scalarSchema,
