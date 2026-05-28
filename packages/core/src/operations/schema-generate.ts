@@ -348,6 +348,7 @@ function renderAlterTable(tableName: string, actions: AlterTableSchemaAction[] |
 function validateAlterTableActions(actions: AlterTableSchemaAction[]): void {
   const addedColumns = new Set<string>();
   const droppedColumns = new Set<string>();
+  const droppedIndexes = new Set<string>();
   for (const action of actions) {
     if (action.kind === "addColumn") {
       const name = normalizeIdentifier(action.column.name);
@@ -369,6 +370,12 @@ function validateAlterTableActions(actions: AlterTableSchemaAction[]): void {
         throw new Error(`Duplicate ALTER TABLE DROP COLUMN name: ${name}`);
       }
       droppedColumns.add(name);
+    } else if (action.kind === "dropIndex") {
+      const name = normalizeIdentifier(action.name);
+      if (droppedIndexes.has(name)) {
+        throw new Error(`Duplicate ALTER TABLE DROP INDEX name: ${name}`);
+      }
+      droppedIndexes.add(name);
     }
   }
   validateIndexNames(actions.flatMap((action) => action.kind === "addIndex" ? [action.index] : []));

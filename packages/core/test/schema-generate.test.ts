@@ -901,6 +901,21 @@ describe("schema generation", () => {
     })).rejects.toThrow(/Duplicate ALTER TABLE DROP COLUMN name: status/);
   });
 
+  it("rejects duplicate ALTER TABLE DROP INDEX actions", async () => {
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(generateSchema(ctx, {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "dropIndex", name: "orders_by_status" },
+          { kind: "dropIndex", name: " orders_by_status " },
+        ],
+      }],
+    })).rejects.toThrow(/Duplicate ALTER TABLE DROP INDEX name: orders_by_status/);
+  });
+
   it("rejects indexes that reference columns dropped in the same ALTER TABLE spec", async () => {
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
 

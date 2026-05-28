@@ -38,7 +38,7 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - For new table schema DDL, prefer `local_ydb_generate_schema` with structured input, review/validate the generated script, then use `local_ydb_apply_schema`; applying still requires `confirm=true`.
 - For generated column tables, use `partitionByHash` only with `store: "column"` and primary key columns. Keep primary keys `NOT NULL` and within YDB's documented column-store key types. Use top-level `store` instead of `with.STORE`; keep secondary and vector indexes on row-oriented tables, use global secondary indexes without creation-time `with` settings, and keep unique indexes synchronous.
 - Keep generated column names away from the reserved `__ydb_` prefix. For `ALTER TABLE ADD COLUMN`, generate only name/type; do not add `notNull` or `default`.
-- Keep indexes off columns added or dropped in the same `alterTable` spec; reject duplicate add/drop column actions and use separate generate/apply cycles for those changes.
+- Keep indexes off columns added or dropped in the same `alterTable` spec; reject duplicate add/drop column or index actions and use separate generate/apply cycles for those changes.
 - Prefer adding vector indexes after representative data is loaded; treat generated `CREATE TABLE` vector-index warnings as actionable.
 - Do not treat `POSTGRES_USER` or `POSTGRES_PASSWORD` as native YDB gRPC protection. They are for PostgreSQL compatibility.
 - Do not publish YDB gRPC publicly unless the user explicitly requests that topology and accepts the risk. The hardened default is YDB gRPC internal-only, with monitoring exposed only through a protected HTTPS reverse proxy when needed.

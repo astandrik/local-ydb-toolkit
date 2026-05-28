@@ -778,7 +778,17 @@ describe("mcp tools", () => {
     });
     const tableWith = (createTableSchema?.properties?.with as {
       additionalProperties?: { oneOf?: unknown[] };
+      propertyNames?: unknown;
     } | undefined)?.additionalProperties;
+    const tableWithSchema = createTableSchema?.properties?.with as {
+      propertyNames?: unknown;
+    } | undefined;
+    const indexes = createTableSchema?.properties?.indexes as {
+      items?: { properties?: Record<string, unknown> };
+    } | undefined;
+    const indexWithSchema = indexes?.items?.properties?.with as {
+      propertyNames?: unknown;
+    } | undefined;
 
     expect(tableWith?.oneOf).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -793,6 +803,8 @@ describe("mcp tools", () => {
         })
       })
     ]));
+    expect(tableWithSchema?.propertyNames).toEqual({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" });
+    expect(indexWithSchema?.propertyNames).toEqual({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" });
   });
 
   it("exposes non-empty schema array constraints in the tool schema", () => {
@@ -1414,6 +1426,47 @@ describe("mcp tools", () => {
 
     await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
       statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
+        primaryKey: ["id"],
+        with: { "bad-name": 1 }
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Invalid YDB setting name: bad-name/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_embedding_idx",
+          columns: ["embedding"],
+          global: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            "bad-name": 1,
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Invalid YDB setting name: bad-name/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
         kind: "alterTable",
         tableName: "orders",
         actions: [{ kind: "addColumn", column: { name: "status", type: "Utf8", notNull: true } }]
@@ -1457,6 +1510,19 @@ describe("mcp tools", () => {
     }, {
       config: ConfigSchema.parse({})
     })).rejects.toThrow(/Duplicate ALTER TABLE DROP COLUMN name: status/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "dropIndex", name: "orders_by_status" },
+          { kind: "dropIndex", name: " orders_by_status " }
+        ]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate ALTER TABLE DROP INDEX name: orders_by_status/);
 
     await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
       statements: [{

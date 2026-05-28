@@ -178,7 +178,7 @@ Expected:
 
 - each positive generated script validates, then goes through `local_ydb_apply_schema action=apply confirm=false` before any confirmed apply
 - created probe tables are described with `local_ydb_scheme action=describe` and then cleaned up with validated/confirmed `DROP TABLE`
-- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, unsupported column-store key/non-key types, local secondary indexes, secondary index `with` settings, async unique indexes, unique vector indexes, same-spec add/drop column references from indexes, duplicate add/drop column actions, `ALTER TABLE ADD COLUMN` `notNull`/`default`, `with.STORE`, reserved `__ydb_` column names, missing primary/index columns, invalid types, invalid setting tokens, and scripts over 1 MiB before rendering or validation
+- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, unsupported column-store key/non-key types, local secondary indexes, secondary index `with` settings, async unique indexes, unique vector indexes, same-spec add/drop column references from indexes, duplicate add/drop column/index actions, `ALTER TABLE ADD COLUMN` `notNull`/`default`, `with.STORE`, reserved `__ydb_` column names, missing primary/index columns, invalid types, invalid setting names/tokens, and scripts over 1 MiB before rendering or validation
 
 ## Scenario 1B: Published Image Tags
 

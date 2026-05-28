@@ -161,6 +161,8 @@ const scalarSchema = {
   ],
 };
 
+const settingNameSchema = { pattern: "^[A-Za-z_][A-Za-z0-9_]*$" };
+
 const settingValueSchema = {
   oneOf: [
     ...scalarSchema.oneOf,
@@ -267,6 +269,7 @@ const indexSchema = {
     },
     with: {
       type: "object",
+      propertyNames: settingNameSchema,
       additionalProperties: settingValueSchema,
       description:
         "Optional vector index WITH settings. Strings render as quoted YQL literals; vector_kmeans_tree requires vector_dimension, vector_type, distance or similarity, clusters, and levels.",
@@ -382,6 +385,7 @@ const schemaStatementSchema = {
         },
         with: {
           type: "object",
+          propertyNames: settingNameSchema,
           additionalProperties: settingValueSchema,
           description: "Optional table WITH settings. Strings render as quoted YQL literals; use { token: \"ENABLED\" } for bare tokens. Use store instead of STORE in WITH settings.",
         },

@@ -34,6 +34,7 @@ const SchemaSettingTokenValue = z.object({
   token: z.string().min(1).regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
 }).strict();
 const SchemaSettingValue = z.union([SchemaScalarValue, SchemaSettingTokenValue]);
+const SchemaSettingNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const SchemaColumnArgs = z.object({
   name: z.string().min(1),
@@ -220,7 +221,15 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
     }
     const seen = new Set<string>();
     Object.keys(settings).forEach((name) => {
-      const normalized = nameCase === "upper" ? name.trim().toUpperCase() : name.trim();
+      const trimmed = name.trim();
+      const normalized = nameCase === "upper" ? trimmed.toUpperCase() : trimmed;
+      if (!SchemaSettingNamePattern.test(trimmed)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path,
+          message: `Invalid YDB setting name: ${name}`,
+        });
+      }
       if (seen.has(normalized)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -398,6 +407,7 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
       const addedIndexes = statement.actions.flatMap((action) => action.kind === "addIndex" ? [action.index] : []);
       const addedColumns = new Set<string>();
       const droppedColumns = new Set<string>();
+      const droppedIndexes = new Set<string>();
       validateIndexNames(addedIndexes, ["statements", statementIndex, "actions"]);
       statement.actions.forEach((action, actionIndex) => {
         if (action.kind === "addColumn") {
@@ -438,6 +448,18 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
             });
           }
           droppedColumns.add(name);
+        }
+        if (action.kind === "dropIndex") {
+          const name = normalizedName(action.name);
+          validateIdentifier(action.name, ["statements", statementIndex, "actions", actionIndex, "name"]);
+          if (droppedIndexes.has(name)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["statements", statementIndex, "actions", actionIndex, "name"],
+              message: `Duplicate ALTER TABLE DROP INDEX name: ${name}`,
+            });
+          }
+          droppedIndexes.add(name);
         }
         if (action.kind === "addIndex") {
           validateIndex(action.index, ["statements", statementIndex, "actions", actionIndex, "index"]);
