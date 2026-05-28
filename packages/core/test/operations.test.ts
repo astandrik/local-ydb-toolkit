@@ -96,10 +96,31 @@ class ScriptRewritingShellExecutor implements CommandExecutor {
 }
 
 describe("read-only checks", () => {
-  it("treats an empty viewer node-list as not ok", async () => {
+  it("uses tenantinfo when viewer nodelist is empty", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
-    ctx.client.viewerGet = async () => ({ status: "ok", data: [] });
+    ctx.client.viewerGet = async (path) => path.includes("tenantinfo")
+      ? { status: "ok", data: { TenantInfo: [{ AliveNodes: 1, NodeIds: [50000] }] } }
+      : { status: "ok", data: [] };
+
+    const response = await nodesCheck(ctx);
+
+    expect(response).toMatchObject({
+      summary: "Tenant /local/example reports 1 alive node; viewer nodelist returned 0 nodes.",
+      ok: true,
+      nodes: [],
+      tenantAliveNodes: 1,
+      tenantNodeIds: [50000],
+      warning: "Viewer nodelist returned no nodes; tenantinfo confirmed alive tenant nodes.",
+    });
+  });
+
+  it("treats an empty viewer node-list as not ok when tenantinfo has no alive nodes", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    ctx.client.viewerGet = async (path) => path.includes("tenantinfo")
+      ? { status: "ok", data: { TenantInfo: [{ AliveNodes: 0, NodeIds: [] }] } }
+      : { status: "ok", data: [] };
 
     const response = await nodesCheck(ctx);
 
@@ -107,22 +128,26 @@ describe("read-only checks", () => {
       summary: "Viewer returned 0 nodes.",
       ok: false,
       nodes: [],
+      tenantAliveNodes: 0,
+      tenantNodeIds: [],
       error: "Viewer nodelist returned no nodes; dynamic node registration was not confirmed.",
     });
   });
 
-  it("surfaces empty node-list failures in the aggregate status report", async () => {
+  it("surfaces tenantinfo-confirmed nodes in the aggregate status report", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
-    ctx.client.viewerGet = async () => ({ status: "ok", data: [] });
+    ctx.client.viewerGet = async (path) => path.includes("tenantinfo")
+      ? { status: "ok", data: { TenantInfo: [{ AliveNodes: 1, NodeIds: [50000] }] } }
+      : { status: "ok", data: [] };
 
     const response = await statusReport(ctx);
 
-    expect(response.summary).toBe("Status report for default: tenant=ok, nodes=not-ok.");
+    expect(response.summary).toBe("Status report for default: tenant=ok, nodes=ok.");
     expect(response.nodes).toMatchObject({
-      summary: "Viewer returned 0 nodes.",
-      ok: false,
-      error: "Viewer nodelist returned no nodes; dynamic node registration was not confirmed.",
+      summary: "Tenant /local/example reports 1 alive node; viewer nodelist returned 0 nodes.",
+      ok: true,
+      warning: "Viewer nodelist returned no nodes; tenantinfo confirmed alive tenant nodes.",
     });
   });
 });

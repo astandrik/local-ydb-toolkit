@@ -53,25 +53,78 @@ export async function databaseStatus(ctx: ToolkitContext) {
 
 export async function nodesCheck(ctx: ToolkitContext) {
   const database = encodeURIComponent(ctx.profile.tenantPath);
-  const response = await ctx.client.viewerGet(`/viewer/json/nodelist?database=${database}&enums=true&type=any`, Boolean(ctx.profile.rootPasswordFile));
+  const authenticated = Boolean(ctx.profile.rootPasswordFile);
+  const response = await ctx.client.viewerGet(`/viewer/json/nodelist?database=${database}&enums=true&type=any`, authenticated);
+  const tenantInfo = await ctx.client.viewerGet(`/viewer/json/tenantinfo?database=${database}&path=${database}&tablets=false&storage=false&memory=false`, authenticated);
   const hasNodeArray = response.status === "ok" && Array.isArray(response.data);
   const nodes: unknown[] = hasNodeArray ? response.data as unknown[] : [];
-  const emptyNodesError = hasNodeArray && nodes.length === 0
-    ? "Viewer nodelist returned no nodes; dynamic node registration was not confirmed."
-    : undefined;
-  const invalidResponseError = response.status === "ok" && !Array.isArray(response.data)
+  const tenantNodes = readTenantNodes(tenantInfo.data);
+  const tenantInfoConfirmsNodes = tenantNodes.aliveNodes > 0;
+  const nodelistConfirmsNodes = hasNodeArray && nodes.length > 0;
+  const invalidResponseMessage = response.status === "ok" && !Array.isArray(response.data)
     ? "Expected viewer nodelist response to be an array."
     : undefined;
+  const emptyNodesError = hasNodeArray && nodes.length === 0 && !tenantInfoConfirmsNodes
+    ? "Viewer nodelist returned no nodes; dynamic node registration was not confirmed."
+    : undefined;
+  const tenantInfoError = tenantInfo.status === "error"
+    ? tenantInfo.error
+    : !tenantNodes.found
+      ? "Expected viewer tenantinfo response to contain TenantInfo."
+      : undefined;
+  const responseError = response.status === "error" && !tenantInfoConfirmsNodes ? response.error : undefined;
+  const nodelistWarning = hasNodeArray && nodes.length === 0 && tenantInfoConfirmsNodes
+    ? "Viewer nodelist returned no nodes; tenantinfo confirmed alive tenant nodes."
+    : undefined;
+  const warning = nodelistWarning
+    ?? (response.status === "error" && tenantInfoConfirmsNodes ? response.error : undefined)
+    ?? (tenantInfoError && nodelistConfirmsNodes ? tenantInfoError : undefined)
+    ?? (invalidResponseMessage && tenantInfoConfirmsNodes ? invalidResponseMessage : undefined);
   return {
-    summary: response.status === "ok"
-      ? hasNodeArray
-        ? `Viewer returned ${nodes.length} nodes.`
-        : "Viewer node-list check returned a non-array response."
-      : "Viewer node-list check failed.",
-    ok: hasNodeArray && nodes.length > 0,
+    summary: nodelistConfirmsNodes
+      ? `Viewer returned ${nodes.length} nodes.`
+      : tenantInfoConfirmsNodes
+        ? `Tenant ${ctx.profile.tenantPath} reports ${tenantNodes.aliveNodes} alive node${tenantNodes.aliveNodes === 1 ? "" : "s"}; viewer nodelist returned ${nodes.length} nodes.`
+        : response.status === "ok"
+          ? hasNodeArray
+            ? `Viewer returned ${nodes.length} nodes.`
+            : "Viewer node-list check returned a non-array response."
+          : "Viewer node-list check failed.",
+    ok: nodelistConfirmsNodes || tenantInfoConfirmsNodes,
     nodes,
-    error: response.error ?? emptyNodesError ?? invalidResponseError
+    tenantAliveNodes: tenantNodes.aliveNodes,
+    tenantNodeIds: tenantNodes.nodeIds,
+    warning,
+    error: responseError ?? emptyNodesError ?? (tenantInfoConfirmsNodes ? undefined : invalidResponseMessage) ?? (nodelistConfirmsNodes ? undefined : tenantInfoError)
   };
+}
+
+function readTenantNodes(data: unknown): { found: boolean; aliveNodes: number; nodeIds: number[] } {
+  const tenantInfo = readPath(data, ["TenantInfo"]);
+  if (!Array.isArray(tenantInfo) || tenantInfo.length === 0) {
+    return { found: false, aliveNodes: 0, nodeIds: [] };
+  }
+  const tenant = tenantInfo[0];
+  if (!tenant || typeof tenant !== "object") {
+    return { found: false, aliveNodes: 0, nodeIds: [] };
+  }
+  const obj = tenant as Record<string, unknown>;
+  const aliveNodes = toNumber(obj.AliveNodes) ?? 0;
+  const nodeIds = Array.isArray(obj.NodeIds)
+    ? obj.NodeIds.map(toNumber).filter((value): value is number => typeof value === "number")
+    : [];
+  return { found: true, aliveNodes, nodeIds };
+}
+
+function toNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  }
+  return undefined;
 }
 
 export async function graphshardCheck(ctx: ToolkitContext) {
