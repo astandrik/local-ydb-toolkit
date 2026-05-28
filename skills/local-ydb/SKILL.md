@@ -1,17 +1,17 @@
 ---
 name: local-ydb
-description: Operate local-ydb deployments, especially Docker setups using ghcr.io/ydb-platform/local-ydb, CMS-created tenants, GraphShard metrics, dynamic nodes, YDB static credentials, auth hardening, monitoring exposure, storage pool changes, single-disk rebuilds, rollback planning, upstream ydb-platform/ydb source lookup through gh api, and troubleshooting local-ydb readiness, TLS, anonymous access, or viewer/json graph endpoints.
+description: Operate local-ydb deployments, especially Docker setups using ghcr.io/ydb-platform/local-ydb, CMS-created tenants, GraphShard metrics, dynamic nodes, structured table DDL generation/validation/application, YDB static credentials, auth hardening, monitoring exposure, storage pool changes, single-disk rebuilds, rollback planning, upstream ydb-platform/ydb source lookup through gh api, and troubleshooting local-ydb readiness, TLS, anonymous access, or viewer/json graph endpoints.
 ---
 
 # Local YDB
 
 ## Purpose
 
-Use this skill to inspect, document, run, harden, or troubleshoot `local-ydb` deployments. Keep reusable operational recipes separate from one-off cutover notes, host paths, timestamps, and secrets.
+Use this skill to inspect, document, run, harden, troubleshoot, or generate and apply table schemas for `local-ydb` deployments. Keep reusable operational recipes separate from one-off cutover notes, host paths, timestamps, and secrets.
 
 ## First Steps
 
-1. Identify the task type: documentation cleanup, local bootstrap, live inspection, auth hardening, storage expansion, monitoring exposure, TLS investigation, or troubleshooting.
+1. Identify the task type: documentation cleanup, local bootstrap, live inspection, schema generation/apply, auth hardening, storage expansion, monitoring exposure, TLS investigation, or troubleshooting.
 2. Determine whether the target is repo documentation, a local Docker stack, or a live remote host. Treat live Docker/YDB changes as medium to high risk; collect read-only state first and ask before destructive or externally visible mutations.
 3. Check nearby project docs before editing reusable runbooks. Prefer existing setup, runbook, and auth notes over inventing a new topology.
 4. Keep secrets and private host details out of public docs and skill output. Use placeholders for password files, private keys, IPs, domains, users, and backup paths unless the user explicitly asks for private operational notes.
@@ -22,6 +22,7 @@ Use this skill to inspect, document, run, harden, or troubleshoot `local-ydb` de
 - Read `references/auth-hardening.md` when working on mandatory auth, static username/password credentials, monitoring access, reverse-proxy exposure, or TLS.
 - Read `references/storage-migration.md` when adding PDisks, changing storage placement, moving storage onto one physical disk, creating replacement tenants, migrating data, decommissioning groups, reclaiming space, cleaning old Docker volumes/PDisks/dumps, or debugging why UI and BSC disagree about storage.
 - Read `references/verification.md` when checking health, tenant state, GraphShard, graph data, storage, or auth behavior.
+- Read `references/mcp-tool-scenarios.md` when testing MCP tools, planning structured schema generation/apply flows, or building reusable generate-then-validate-then-apply examples.
 - Read `references/history-and-non-goals.md` when cleaning docs, deciding what is reusable versus artifact noise, or reconciling stale hardening plans with final topology.
 - For exact-GHCR `26.1.1.6` local runs, combine `topology.md`, `auth-hardening.md`, and `verification.md`; they contain field-proven steps for fresh bootstrap, restore, auth rollout, and the nightly-vs-stable pitfalls we hit in practice.
 - Prefer the MCP read-only tools `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, and `local_ydb_storage_placement` over ad hoc shell diagnostics when they are available.
@@ -34,6 +35,11 @@ Use this skill to inspect, document, run, harden, or troubleshoot `local-ydb` de
 - Prefer exact GHCR patch tags such as `ghcr.io/ydb-platform/local-ydb:26.1.1.6`. Do not assume floating aliases like `:26.1` exist or are pullable.
 - When `local-ydb` behavior is unclear, search upstream `ydb-platform/ydb` source with `gh api search/code` and read matching files through `gh api repos/ydb-platform/ydb/contents/...`; use pinned commits from project docs when matching documented proto shapes.
 - Do not hardcode dynamic node IDs. Discover them through monitoring/node-list APIs.
+- For new table schema DDL, prefer `local_ydb_generate_schema` with structured input, review/validate the generated script, then use `local_ydb_apply_schema`; applying still requires `confirm=true`.
+- For generated column tables, use `partitionByHash` only with `store: "column"` and primary key columns. Keep primary keys `NOT NULL` and within YDB's documented column-store key types. Use top-level `store` instead of `with.STORE`; keep secondary and vector indexes on row-oriented tables, use global secondary indexes without creation-time `with` settings, and keep unique indexes synchronous.
+- Keep generated column names away from the reserved `__ydb_` prefix. For `ALTER TABLE ADD COLUMN`, generate only name/type; do not add `notNull` or `default`.
+- Keep indexes off columns added or dropped in the same `alterTable` spec; reject duplicate add/drop column or index actions and use separate generate/apply cycles for those changes.
+- Prefer adding vector indexes after representative data is loaded; treat generated `CREATE TABLE` vector-index warnings as actionable.
 - Do not treat `POSTGRES_USER` or `POSTGRES_PASSWORD` as native YDB gRPC protection. They are for PostgreSQL compatibility.
 - Do not publish YDB gRPC publicly unless the user explicitly requests that topology and accepts the risk. The hardened default is YDB gRPC internal-only, with monitoring exposed only through a protected HTTPS reverse proxy when needed.
 - Do not claim anonymous `viewer/json` commands work after mandatory auth. In a hardened topology anonymous `viewer/json` should return `401`; commands need an authenticated UI/session path or must be marked as pre-auth/local-dev examples.

@@ -21,7 +21,7 @@ Directory listings: [Awesome MCP Servers](https://github.com/punkpeye/awesome-mc
 
 Local YDB MCP is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` when an agent needs general YDB database-level tools such as ad hoc SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
 
-Use this toolkit when the agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, table DDL validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Mutating MCP tools are plan-first and require `confirm: true` before they execute changes.
+Use this toolkit when the agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, table DDL generation/validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Mutating MCP tools are plan-first and require `confirm: true` before they execute changes.
 
 ## Codex Skill Quick Start
 
@@ -169,9 +169,10 @@ Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH 
 
 The MCP server exposes tools for local-ydb operations and prompts for guided
 workflows. Prompt templates cover stack diagnosis, root database bootstrap,
-tenant topology bootstrap, version upgrades, auth hardening, and storage group
-reduction. Prompts do not execute commands; they return workflow instructions
-that guide the MCP client toward the existing `local_ydb_*` tools.
+tenant topology bootstrap, schema generation/apply, version upgrades, auth
+hardening, and storage group reduction. Prompts do not execute commands; they
+return workflow instructions that guide the MCP client toward the existing
+`local_ydb_*` tools.
 
 Mutating tools remain plan-only unless called with `confirm: true`. Static MCP
 resources are intentionally left for a separate follow-up so the server does not
@@ -196,7 +197,7 @@ SSH profiles use existing SSH agent/key/known_hosts configuration. The toolkit d
 
 ### Operations
 
-Read-only tools collect inventory, tenant state, schema objects, schema permissions, node state, GraphShard state, auth posture, storage placement, leftover storage candidates, published `local-ydb` image tags, and background image-pull status.
+Read-only tools collect inventory, tenant state, schema objects, generated table DDL, schema permissions, node state, GraphShard state, auth posture, storage placement, leftover storage candidates, published `local-ydb` image tags, and background image-pull status.
 
 `local_ydb_check_prerequisites` is the expected first step on a new host or profile. It checks `docker`, `curl`, `ruby`, and auth-file prerequisites. With `confirm: true`, it can auto-install supported host helpers such as `curl` and `ruby` through `apt-get`; Docker is reported but must still be installed manually.
 
@@ -213,6 +214,8 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 `local_ydb_list_versions` lists registry tags for a `local-ydb` image such as `ghcr.io/ydb-platform/local-ydb`. It follows OCI/Docker Registry V2 pagination and bearer-token challenges, then returns numeric version tags newest first so the MCP client can discover concrete tags before changing a profile version.
 
 `local_ydb_scheme` lists or describes schema objects with the YDB CLI. It defaults to `scheme ls` at the configured tenant root, supports `recursive`, `long`, and `onePerLine` list options, and supports `stats` for `scheme describe`. Large stdout/stderr streams are capped per stream and returned with original uncapped byte counts and truncation flags so MCP responses stay usable.
+
+`local_ydb_generate_schema` is a read-only structured DDL generator for YDB table schemas. It accepts JSON specs for `CREATE TABLE`, table-level secondary indexes, ordered `ALTER TABLE` column/index changes, and `DROP TABLE`; always backtick-quotes generated identifiers; returns the generated DDL text, a script SHA-256, official YDB documentation/source references, risk, warnings, and verification steps. With `validate: true`, it runs the generated script through the same YDB JS SDK validation path used by `local_ydb_apply_schema`, but it never applies DDL. Generated scripts use the same 1 MiB size limit as `local_ydb_apply_schema`. In `with` settings, setting names must be YQL-style identifiers, string values render as quoted YQL literals, use `{ "token": "ENABLED" }` for bare-token settings such as `AUTO_PARTITIONING_BY_SIZE = ENABLED`, and use the top-level `store` field instead of `with.STORE`. Column names cannot use the reserved `__ydb_` prefix. `partitionByHash` is accepted only for `store: "column"` and primary key columns, column-oriented table primary keys must be `NOT NULL` and use the documented supported key types, secondary and vector indexes are kept to row-oriented tables, normal secondary indexes are global-only and do not accept `with` settings during creation, unique indexes must be synchronous, `ALTER TABLE ADD COLUMN` accepts only a name and type, duplicate add/drop column/index actions are rejected in one `alterTable` spec, indexes cannot target columns added or dropped in the same `alterTable` spec, `vector_kmeans_tree` requires a non-unique `global: true`, `sync: "sync"` index with the full documented settings, `CREATE TABLE` with a vector index returns a warning because adding the vector index after loading representative data is preferred, and column defaults are rendered as type-aware YQL defaults such as `Utf8('x')`, `Uint64('1')`, or `Date('2026-05-27')`.
 
 `local_ydb_apply_schema` validates or applies YDB table DDL through the official YDB JS SDK (`@ydbjs/*`). It accepts raw YQL DDL for `PRAGMA`, `CREATE TABLE`, `ALTER TABLE`, and `DROP TABLE`; the server delegates exact syntax validation to YDB instead of maintaining a partial SQL parser. `action: "validate"` never applies changes. `action: "apply"` validates first and applies only when `confirm: true` is supplied. Responses return a script SHA-256, statement kinds, validation/execution status, capped issue text, risk, rollback notes, and verification steps without echoing the raw script or configured credential paths.
 

@@ -1,7 +1,7 @@
 import { bash, shellQuote, type CommandResult } from "../api-client.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { nodesCheck } from "./checks.js";
-import { dynamicNodeStartSpecs, ydbCli } from "./commands.js";
+import { dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
 import {
   assertPort,
   assertPositiveInteger,
@@ -64,7 +64,7 @@ export async function addDynamicNodes(ctx: ToolkitContext, options: AddDynamicNo
     completedNodes += 1;
   }
 
-  results.push(await ctx.client.run(ydbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
+  results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
   return addDynamicNodesResponse(ctx, plans, nodeChecks, results, rollback, verification, completedNodes);
 }
 
@@ -118,7 +118,7 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
     completedNodes += 1;
   }
 
-  results.push(await ctx.client.run(ydbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
+  results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
   return removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes);
 }
 

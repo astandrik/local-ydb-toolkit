@@ -653,6 +653,66 @@ describe("mutating operations", () => {
     await expect(removeDynamicNodes(ctx, { nodeIds: [50000] })).rejects.toThrow("port 19002 is not a removable extra dynamic node");
   });
 
+  it("retries tenant metadata verification after confirmed dynamic node removal", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '{"Names":"ydb-dyn-example-2"}\n',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("docker inspect")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Name":"/ydb-dyn-example-2","Args":["-lc","exec /ydbd --ic-port 19003"]}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.includes("viewer/json/nodelist")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Id":50000,"Port":19002}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await removeDynamicNodes(ctx, { confirm: true });
+
+    expect(response.executed).toBe(true);
+    expect(executor.commands.some((command) => {
+      return command.includes("scheme ls /local/example") && command.includes("TRANSPORT_UNAVAILABLE");
+    })).toBe(true);
+  });
+
   it("plans increasing NumGroups for the tenant storage pool", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({

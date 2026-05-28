@@ -163,6 +163,34 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
       ].join("\n\n");
     },
   },
+  {
+    name: "local_ydb_schema_generate_apply_workflow",
+    title: "Generate and apply YDB table schema",
+    description: "Guide structured table DDL generation, validation, plan-only apply, approved apply, inspection, and cleanup.",
+    arguments: [
+      ...commonOptionalArguments,
+      {
+        name: "scenario",
+        description: "Optional schema scenario label, for example row table, secondary index, column partition, alter table, drop table, or vector index.",
+        required: false,
+      },
+      {
+        name: "tableName",
+        description: "Optional table name to use as data when generating the structured schema spec.",
+        required: false,
+      },
+    ],
+    render: (args) => [
+      "Plan a YDB table schema generate-validate-apply workflow.",
+      argumentBlock(args),
+      workflowSafety,
+      "Run local_ydb_status_report first, then inspect the tenant root or target object with local_ydb_scheme before generating DDL. For live probes, use temporary table names and plan a cleanup DROP TABLE after inspection.",
+      "Build a strict JSON spec for local_ydb_generate_schema with validate=true. Choose the scenario from the user's request or prompt arguments: row table, row table with secondary index, column table, column table with partitionByHash, ALTER TABLE add/drop column/index, DROP TABLE, or vector index.",
+      "After generation, review script, scriptSha256, warnings, applyRisk, and validation. Then call local_ydb_apply_schema action=validate with the generated script. For execution, call local_ydb_apply_schema action=apply with confirm=false first, and use confirm=true only after the user explicitly approves that exact plan.",
+      "After approved apply, verify with local_ydb_scheme action=describe. For temporary probes, generate or write the matching DROP TABLE cleanup, validate it, plan it without confirm, and execute it only after approval.",
+      "Schema constraints to preserve: generated scripts have the same 1 MiB limit as apply_schema; WITH setting names must be YQL-style identifiers; use { token: \"ENABLED\" } for bare table WITH tokens; string WITH values remain string literals; use the top-level store field instead of with.STORE; column names must not start with the reserved __ydb_ prefix; partitionByHash only with store: \"column\" and primaryKey columns; column-oriented primary keys must be NOT NULL and use supported key types; secondary indexes and vector indexes are for row-oriented tables; normal secondary indexes are global-only and do not accept creation-time with settings; unique indexes must be synchronous; ALTER TABLE ADD COLUMN supports only name/type, not notNull/default; do not repeat add/drop column or index names in one alterTable spec; do not add an index on a column added or dropped in the same alterTable spec; vector_kmeans_tree requires non-unique GLOBAL SYNC plus vector_dimension, vector_type, exactly one of distance or similarity, clusters, and levels; prefer adding vector indexes after loading representative data and treat CREATE TABLE vector-index warnings as actionable; destructive DROP TABLE and DROP COLUMN/DROP INDEX warnings are high-risk signals.",
+    ].join("\n\n"),
+  },
 ] as const;
 
 export const localYdbPrompts: Prompt[] = localYdbPromptDefinitions.map(

@@ -144,6 +144,97 @@ export interface ApplySchemaResponse extends OperationPlan {
   maxOutputBytes: number;
 }
 
+export type GeneratedSchemaStatementKind = "CREATE TABLE" | "ALTER TABLE" | "DROP TABLE";
+
+export interface SchemaColumnSpec {
+  name: string;
+  type: string;
+  notNull?: boolean;
+  default?: string | number | boolean;
+}
+
+export interface SchemaIndexSpec {
+  name: string;
+  columns: string[];
+  cover?: string[];
+  global?: boolean;
+  local?: boolean;
+  unique?: boolean;
+  sync?: "sync" | "async";
+  using?: "secondary" | "vector_kmeans_tree";
+  with?: Record<string, SchemaSettingValue>;
+}
+
+export interface SchemaSettingTokenValue {
+  token: string;
+}
+
+export type SchemaSettingValue = string | number | boolean | SchemaSettingTokenValue;
+
+export interface CreateTableSchemaStatementSpec {
+  kind: "createTable";
+  tableName: string;
+  ifNotExists?: boolean;
+  columns: SchemaColumnSpec[];
+  primaryKey: string[];
+  indexes?: SchemaIndexSpec[];
+  partitionByHash?: string[];
+  store?: "row" | "column";
+  with?: Record<string, SchemaSettingValue>;
+}
+
+export type AlterTableSchemaAction =
+  | { kind: "addColumn"; column: SchemaColumnSpec }
+  | { kind: "dropColumn"; name: string }
+  | { kind: "addIndex"; index: SchemaIndexSpec }
+  | { kind: "dropIndex"; name: string };
+
+export interface AlterTableSchemaStatementSpec {
+  kind: "alterTable";
+  tableName: string;
+  actions: AlterTableSchemaAction[];
+}
+
+export interface DropTableSchemaStatementSpec {
+  kind: "dropTable";
+  tableName: string;
+}
+
+export type SchemaStatementSpec =
+  | CreateTableSchemaStatementSpec
+  | AlterTableSchemaStatementSpec
+  | DropTableSchemaStatementSpec;
+
+export interface GenerateSchemaOptions {
+  databasePath?: string;
+  statements: SchemaStatementSpec[];
+  validate?: boolean;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  sdkExecutor?: SchemaSdkExecutor;
+}
+
+export interface SchemaReference {
+  label: string;
+  url: string;
+}
+
+export interface GenerateSchemaResponse {
+  summary: string;
+  databasePath: string;
+  script: string;
+  scriptSha256: string;
+  statements: {
+    count: number;
+    kinds: GeneratedSchemaStatementKind[];
+  };
+  references: SchemaReference[];
+  warnings: string[];
+  applyRisk: OperationPlan["risk"];
+  verification: string[];
+  validation?: SchemaOperationResult;
+}
+
 export type PermissionsAction =
   | "list"
   | "grant"

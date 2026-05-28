@@ -123,6 +123,7 @@ describe("mcp tools", () => {
       "local_ydb_database_status",
       "local_ydb_destroy_stack",
       "local_ydb_dump_tenant",
+      "local_ydb_generate_schema",
       "local_ydb_graphshard_check",
       "local_ydb_inventory",
       "local_ydb_list_versions",
@@ -258,6 +259,7 @@ describe("mcp tools", () => {
       "local_ydb_auth_check",
       "local_ydb_container_logs",
       "local_ydb_database_status",
+      "local_ydb_generate_schema",
       "local_ydb_graphshard_check",
       "local_ydb_inventory",
       "local_ydb_list_versions",
@@ -335,7 +337,8 @@ describe("mcp tools", () => {
       "local_ydb_bootstrap_tenant_workflow",
       "local_ydb_upgrade_version_workflow",
       "local_ydb_auth_hardening_workflow",
-      "local_ydb_reduce_storage_groups_workflow"
+      "local_ydb_reduce_storage_groups_workflow",
+      "local_ydb_schema_generate_apply_workflow"
     ]);
   });
 
@@ -422,6 +425,28 @@ describe("mcp tools", () => {
     expect(text).toContain("Storage pool not found");
     expect(text).not.toContain("storage pool was not found");
     expect(text).not.toContain("storage groups to keep");
+  });
+
+  it("renders schema generation workflow prompt", () => {
+    const result = getLocalYdbPrompt("local_ydb_schema_generate_apply_workflow", {
+      profile: "ghcr261-auth",
+      scenario: "column partition",
+      tableName: "tmp_probe"
+    });
+    const text = result.messages[0]?.content.type === "text"
+      ? result.messages[0].content.text
+      : "";
+
+    expect(text).toContain("local_ydb_status_report");
+    expect(text).toContain("local_ydb_generate_schema with validate=true");
+    expect(text).toContain("local_ydb_apply_schema action=validate");
+    expect(text).toContain("action=apply with confirm=false");
+    expect(text).toContain("confirm=true only after");
+    expect(text).toContain("with.STORE");
+    expect(text).toContain("partitionByHash only with store: \"column\" and primaryKey columns");
+    expect(text).toContain("vector_kmeans_tree");
+    expect(text).toContain("\"scenario\": \"column partition\"");
+    expect(text).toContain("\"tableName\": \"tmp_probe\"");
   });
 
   it("renders bootstrap prompts with plan-only prerequisites first", () => {
@@ -724,6 +749,188 @@ describe("mcp tools", () => {
     });
   });
 
+  it("exposes schema generation options in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    expect(tool?.inputSchema.required).toContain("statements");
+    expect(tool?.inputSchema.properties?.databasePath).toMatchObject({ type: "string" });
+    expect(tool?.inputSchema.properties?.validate).toMatchObject({ type: "boolean" });
+    expect(tool?.inputSchema.properties?.statements).toMatchObject({
+      type: "array",
+      minItems: 1
+    });
+    expect(tool?.inputSchema.properties?.timeoutMs).toMatchObject({
+      type: "integer",
+      maximum: 600_000
+    });
+    expect(tool?.inputSchema.properties?.maxOutputBytes).toMatchObject({
+      type: "integer",
+      maximum: 1_048_576
+    });
+  });
+
+  it("exposes schema setting token values in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    const statements = tool?.inputSchema.properties?.statements as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    };
+    const createTableSchema = statements.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "createTable";
+    });
+    const tableWith = (createTableSchema?.properties?.with as {
+      additionalProperties?: { oneOf?: unknown[] };
+      propertyNames?: unknown;
+    } | undefined)?.additionalProperties;
+    const tableWithSchema = createTableSchema?.properties?.with as {
+      propertyNames?: unknown;
+    } | undefined;
+    const indexes = createTableSchema?.properties?.indexes as {
+      items?: { properties?: Record<string, unknown> };
+    } | undefined;
+    const indexWithSchema = indexes?.items?.properties?.with as {
+      propertyNames?: unknown;
+    } | undefined;
+
+    expect(tableWith?.oneOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "object",
+        required: ["token"],
+        additionalProperties: false,
+        properties: expect.objectContaining({
+          token: expect.objectContaining({
+            type: "string",
+            minLength: 1
+          })
+        })
+      })
+    ]));
+    expect(tableWithSchema?.propertyNames).toEqual({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" });
+    expect(indexWithSchema?.propertyNames).toEqual({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" });
+  });
+
+  it("exposes non-empty schema array constraints in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    const statements = tool?.inputSchema.properties?.statements as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    };
+    const createTableSchema = statements.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "createTable";
+    });
+    const indexes = createTableSchema?.properties?.indexes as { items?: { properties?: Record<string, unknown> } } | undefined;
+
+    expect(indexes?.items?.properties?.cover).toMatchObject({
+      type: "array",
+      minItems: 1,
+      uniqueItems: true
+    });
+    expect(indexes?.items?.properties?.columns).toMatchObject({
+      type: "array",
+      minItems: 1,
+      uniqueItems: true
+    });
+    expect(createTableSchema?.properties?.primaryKey).toMatchObject({
+      type: "array",
+      minItems: 1,
+      uniqueItems: true
+    });
+    expect(createTableSchema?.properties?.partitionByHash).toMatchObject({
+      type: "array",
+      minItems: 1,
+      uniqueItems: true
+    });
+  });
+
+  it("exposes ALTER ADD COLUMN constraints in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    const statements = tool?.inputSchema.properties?.statements as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    };
+    const alterTableSchema = statements.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "alterTable";
+    });
+    const actions = alterTableSchema?.properties?.actions as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    } | undefined;
+    const addColumnAction = actions?.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "addColumn";
+    });
+    const addColumn = addColumnAction?.properties?.column as { not?: unknown } | undefined;
+
+    expect(addColumn?.not).toEqual({
+      anyOf: [
+        { required: ["notNull"] },
+        { required: ["default"] }
+      ]
+    });
+  });
+
+  it("exposes index mode constraints in the tool schema", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+    const statements = tool?.inputSchema.properties?.statements as {
+      items?: { oneOf?: Array<{ properties?: Record<string, unknown> }> };
+    };
+    const createTableSchema = statements.items?.oneOf?.find((schema) => {
+      return (schema.properties?.kind as { const?: string } | undefined)?.const === "createTable";
+    });
+    const indexes = createTableSchema?.properties?.indexes as { items?: { allOf?: unknown[] } } | undefined;
+
+    expect(indexes?.items?.allOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        if: expect.objectContaining({
+          required: ["using"],
+          properties: expect.objectContaining({
+            using: { const: "vector_kmeans_tree" }
+          })
+        }),
+        then: expect.objectContaining({
+          required: ["global", "sync"],
+          properties: expect.objectContaining({
+            global: { const: true },
+            sync: { const: "sync" },
+            local: { const: false },
+            unique: { const: false }
+          })
+        })
+      }),
+      expect.objectContaining({
+        if: expect.objectContaining({
+          anyOf: expect.arrayContaining([
+            expect.objectContaining({
+              not: { required: ["using"] }
+            }),
+            expect.objectContaining({
+              required: ["using"],
+              properties: expect.objectContaining({
+                using: { const: "secondary" }
+              })
+            })
+          ])
+        }),
+        then: expect.objectContaining({
+          required: ["global"],
+          properties: expect.objectContaining({
+            global: { const: true },
+            local: { const: false }
+          }),
+          not: { required: ["with"] }
+        })
+      }),
+      expect.objectContaining({
+        if: expect.objectContaining({
+          required: ["unique"],
+          properties: expect.objectContaining({
+            unique: { const: true }
+          })
+        }),
+        then: expect.objectContaining({
+          required: ["sync"],
+          properties: expect.objectContaining({
+            sync: { const: "sync" }
+          })
+        })
+      })
+    ]));
+  });
+
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
     expect(tool?.inputSchema.required).toContain("version");
@@ -837,6 +1044,547 @@ describe("mcp tools", () => {
     expect(result.validation.ok).toBe(true);
   });
 
+  it("can generate schema DDL through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "users",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "email", type: "Utf8" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "users_by_email",
+          columns: ["email"],
+          global: true
+        }],
+        with: {
+          AUTO_PARTITIONING_BY_SIZE: { token: "ENABLED" }
+        }
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    }) as { script: string; applyRisk: string; statements: { kinds: string[] }; references: Array<{ label: string }> };
+
+    expect(result.script).toBe([
+      "CREATE TABLE `users` (",
+      "  `id` Uint64 NOT NULL,",
+      "  `email` Utf8,",
+      "  INDEX `users_by_email` GLOBAL ON (`email`),",
+      "  PRIMARY KEY (`id`)",
+      ")",
+      "WITH (",
+      "  AUTO_PARTITIONING_BY_SIZE = ENABLED",
+      ");",
+    ].join("\n"));
+    expect(result.applyRisk).toBe("low");
+    expect(result.statements.kinds).toEqual(["CREATE TABLE"]);
+    expect(result.references.map((reference) => reference.label)).toContain("YDB CREATE TABLE syntax");
+  });
+
+  it("can validate generated schema DDL through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_generate_schema", {
+      validate: true,
+      statements: [{
+        kind: "createTable",
+        tableName: "users",
+        columns: [{ name: "id", type: "Uint64" }],
+        primaryKey: ["id"]
+      }]
+    }, {
+      config: ConfigSchema.parse({}),
+      sdkExecutor: async () => ({
+        ok: true,
+        status: "SUCCESS",
+        issues: ""
+      })
+    }) as { validation?: { ok: boolean; status: string }; script: string };
+
+    expect(result.script).toContain("CREATE TABLE `users`");
+    expect(result.validation).toMatchObject({
+      ok: true,
+      status: "SUCCESS"
+    });
+  });
+
+  it("rejects generated column table partitioning outside the primary key through the MCP handler", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "bucket", type: "Uint32" }
+        ],
+        primaryKey: ["id"],
+        store: "column",
+        partitionByHash: ["bucket"]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/partitionByHash column bucket must be part of primaryKey/);
+  });
+
+  it("rejects ambiguous generated schema specs through the MCP handler", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64" }],
+        primaryKey: ["id"],
+        store: "column",
+        with: {
+          STORE: { token: "ROW" }
+        }
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Use the store field instead of with\.STORE/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx must be sync/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx must be global/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          local: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx cannot be local/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "embedding_vector_idx",
+          columns: ["embedding"],
+          global: true,
+          unique: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/vector_kmeans_tree index embedding_vector_idx cannot be unique/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{
+          kind: "addIndex",
+          index: {
+            name: "orders_by_created_at",
+            columns: ["created_at"],
+            local: true
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/secondary index orders_by_created_at cannot be local/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{
+          kind: "addIndex",
+          index: {
+            name: "orders_by_created_at",
+            columns: ["created_at"]
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/secondary index orders_by_created_at must be global/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{
+          kind: "addIndex",
+          index: {
+            name: "orders_by_created_at",
+            columns: ["created_at"],
+            global: true,
+            with: {
+              AUTO_PARTITIONING_BY_SIZE: { token: "ENABLED" }
+            }
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/secondary index orders_by_created_at cannot have WITH settings/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "order_no", type: "Utf8" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_by_order_no",
+          columns: ["order_no"],
+          unique: true,
+          global: true,
+          sync: "async"
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "order_no", type: "Utf8" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_by_order_no",
+          columns: ["order_no"],
+          unique: true,
+          global: true
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/unique index orders_by_order_no must be sync/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8" }
+        ],
+        primaryKey: ["id"],
+        indexes: [
+          { name: "orders_by_status", columns: ["status"], global: true, sync: "sync" },
+          { name: " orders_by_status ", columns: ["id"], global: true, sync: "sync" }
+        ]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate index name: orders_by_status/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8" }
+        ],
+        primaryKey: ["id", " id "]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/primaryKey contains duplicate name: id/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "status", type: "Utf8", notNull: true }
+        ],
+        primaryKey: ["id"]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/NOT NULL column status must be part of primaryKey/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "tenant_id", type: "Utf8" },
+          { name: "ts", type: "Timestamp", notNull: true }
+        ],
+        primaryKey: ["tenant_id", "ts"],
+        store: "column"
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/column-oriented table primaryKey column tenant_id must be NOT NULL/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
+        primaryKey: ["id"],
+        with: {
+          AUTO_PARTITIONING_BY_SIZE: { token: "ENABLED" },
+          auto_partitioning_by_size: { token: "DISABLED" }
+        }
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate YDB setting name: AUTO_PARTITIONING_BY_SIZE/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
+        primaryKey: ["id"],
+        with: { "bad-name": 1 }
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Invalid YDB setting name: bad-name/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [
+          { name: "id", type: "Uint64", notNull: true },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "orders_embedding_idx",
+          columns: ["embedding"],
+          global: true,
+          sync: "sync",
+          using: "vector_kmeans_tree",
+          with: {
+            "bad-name": 1,
+            distance: "cosine",
+            vector_type: "float",
+            vector_dimension: 3,
+            clusters: 2,
+            levels: 1
+          }
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Invalid YDB setting name: bad-name/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{ kind: "addColumn", column: { name: "status", type: "Utf8", notNull: true } }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/ALTER TABLE ADD COLUMN status cannot include notNull/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [{ kind: "addColumn", column: { name: "status", type: "Utf8", default: "new" } }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/ALTER TABLE ADD COLUMN status cannot include default/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "addColumn", column: { name: "status", type: "Utf8" } },
+          { kind: "addColumn", column: { name: " status ", type: "Utf8" } }
+        ]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate ALTER TABLE ADD COLUMN name: status/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "dropColumn", name: "status" },
+          { kind: "dropColumn", name: " status " }
+        ]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate ALTER TABLE DROP COLUMN name: status/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "alterTable",
+        tableName: "orders",
+        actions: [
+          { kind: "dropIndex", name: "orders_by_status" },
+          { kind: "dropIndex", name: " orders_by_status " }
+        ]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Duplicate ALTER TABLE DROP INDEX name: orders_by_status/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [
+          { name: "enabled", type: "Bool", notNull: true },
+          { name: "value", type: "Utf8" }
+        ],
+        primaryKey: ["enabled"],
+        store: "column"
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/column-oriented table primaryKey column enabled type Bool is not supported/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "orders",
+        columns: [{ name: "__ydb_id", type: "Uint64", notNull: true }],
+        primaryKey: ["__ydb_id"]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Column name __ydb_id must not start with reserved prefix __ydb_/);
+  });
+
+  it("rejects empty schema arrays through the MCP handler", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "items",
+        columns: [
+          { name: "id", type: "Uint64" },
+          { name: "embedding", type: "String" }
+        ],
+        primaryKey: ["id"],
+        indexes: [{
+          name: "items_by_embedding",
+          columns: ["embedding"],
+          cover: []
+        }]
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Array must contain at least 1 element/);
+
+    await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
+      statements: [{
+        kind: "createTable",
+        tableName: "metrics",
+        columns: [{ name: "id", type: "Uint64" }],
+        primaryKey: ["id"],
+        store: "column",
+        partitionByHash: []
+      }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow(/Array must contain at least 1 element/);
+  });
+
   it("advertises schema apply as a mutating destructive tool", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_apply_schema");
 
@@ -845,6 +1593,17 @@ describe("mcp tools", () => {
       destructiveHint: true
     });
     expect(localYdbInstructions).toContain("local_ydb_apply_schema");
+  });
+
+  it("advertises schema generation as a read-only tool", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_generate_schema");
+
+    expect(tool?.annotations).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false
+    });
+    expect(localYdbInstructions).toContain("local_ydb_generate_schema");
+    expect(localYdbInstructions).toContain("generate_schema");
   });
 
   it("can list permissions through the MCP handler without confirm", async () => {
