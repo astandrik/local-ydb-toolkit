@@ -15,6 +15,7 @@ import {
   createTenant,
   destroyStack,
   dumpTenant,
+  nodesCheck,
   prepareAuthConfig,
   pullImage,
   pullImageStatus,
@@ -25,6 +26,7 @@ import {
   ShellCommandExecutor,
   shellQuote,
   startDynamicNode,
+  statusReport,
   setRootPassword,
   writeDynamicNodeAuthConfig,
   type CommandExecutor,
@@ -92,6 +94,38 @@ class ScriptRewritingShellExecutor implements CommandExecutor {
     };
   }
 }
+
+describe("read-only checks", () => {
+  it("treats an empty viewer node-list as not ok", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    ctx.client.viewerGet = async () => ({ status: "ok", data: [] });
+
+    const response = await nodesCheck(ctx);
+
+    expect(response).toMatchObject({
+      summary: "Viewer returned 0 nodes.",
+      ok: false,
+      nodes: [],
+      error: "Viewer nodelist returned no nodes; dynamic node registration was not confirmed.",
+    });
+  });
+
+  it("surfaces empty node-list failures in the aggregate status report", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    ctx.client.viewerGet = async () => ({ status: "ok", data: [] });
+
+    const response = await statusReport(ctx);
+
+    expect(response.summary).toBe("Status report for default: tenant=ok, nodes=not-ok.");
+    expect(response.nodes).toMatchObject({
+      summary: "Viewer returned 0 nodes.",
+      ok: false,
+      error: "Viewer nodelist returned no nodes; dynamic node registration was not confirmed.",
+    });
+  });
+});
 
 describe("mutating operations", () => {
   it("does not execute bootstrap without confirm=true", async () => {

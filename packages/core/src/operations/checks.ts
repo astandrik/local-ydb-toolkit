@@ -54,12 +54,23 @@ export async function databaseStatus(ctx: ToolkitContext) {
 export async function nodesCheck(ctx: ToolkitContext) {
   const database = encodeURIComponent(ctx.profile.tenantPath);
   const response = await ctx.client.viewerGet(`/viewer/json/nodelist?database=${database}&enums=true&type=any`, Boolean(ctx.profile.rootPasswordFile));
-  const nodes = response.status === "ok" && Array.isArray(response.data) ? response.data : [];
+  const hasNodeArray = response.status === "ok" && Array.isArray(response.data);
+  const nodes: unknown[] = hasNodeArray ? response.data as unknown[] : [];
+  const emptyNodesError = hasNodeArray && nodes.length === 0
+    ? "Viewer nodelist returned no nodes; dynamic node registration was not confirmed."
+    : undefined;
+  const invalidResponseError = response.status === "ok" && !Array.isArray(response.data)
+    ? "Expected viewer nodelist response to be an array."
+    : undefined;
   return {
-    summary: response.status === "ok" ? `Viewer returned ${nodes.length} nodes.` : "Viewer node-list check failed.",
-    ok: response.status === "ok",
+    summary: response.status === "ok"
+      ? hasNodeArray
+        ? `Viewer returned ${nodes.length} nodes.`
+        : "Viewer node-list check returned a non-array response."
+      : "Viewer node-list check failed.",
+    ok: hasNodeArray && nodes.length > 0,
     nodes,
-    error: response.error
+    error: response.error ?? emptyNodesError ?? invalidResponseError
   };
 }
 
