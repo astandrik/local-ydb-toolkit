@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.11.0...mcp-server-v0.12.0) (2026-05-28)
+
+
+### Features
+
+* **mcp-server:** add structured YDB schema generator ([b0c6e93](https://github.com/astandrik/local-ydb-toolkit/commit/b0c6e9350edf7a85f6af2bc4d5e85db0792346f6))
+
 ## [0.11.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.10.0...mcp-server-v0.11.0) (2026-05-27)
 
 
