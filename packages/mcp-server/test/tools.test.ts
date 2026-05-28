@@ -125,6 +125,7 @@ describe("mcp tools", () => {
       "local_ydb_dump_tenant",
       "local_ydb_generate_schema",
       "local_ydb_graphshard_check",
+      "local_ydb_healthcheck",
       "local_ydb_inventory",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
@@ -261,6 +262,7 @@ describe("mcp tools", () => {
       "local_ydb_database_status",
       "local_ydb_generate_schema",
       "local_ydb_graphshard_check",
+      "local_ydb_healthcheck",
       "local_ydb_inventory",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
@@ -306,6 +308,7 @@ describe("mcp tools", () => {
       "local_ydb_database_status",
       "local_ydb_dump_tenant",
       "local_ydb_graphshard_check",
+      "local_ydb_healthcheck",
       "local_ydb_inventory",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
@@ -333,6 +336,7 @@ describe("mcp tools", () => {
   it("registers stable public local-ydb prompts", () => {
     expect(localYdbPrompts.map((prompt) => prompt.name)).toEqual([
       "local_ydb_diagnose_stack",
+      "local_ydb_diagnose_database",
       "local_ydb_bootstrap_root_workflow",
       "local_ydb_bootstrap_tenant_workflow",
       "local_ydb_upgrade_version_workflow",
@@ -392,6 +396,23 @@ describe("mcp tools", () => {
     expect(text).toContain("Call mutating tools without confirm first");
     expect(text).toContain("confirm=true only after the user explicitly approves");
     expect(text).toContain("\"profile\": \"demo\"");
+  });
+
+  it("renders database diagnostics prompt with healthcheck-first guidance", () => {
+    const result = getLocalYdbPrompt("local_ydb_diagnose_database", {
+      profile: "demo",
+      databasePath: "/local/example"
+    });
+    const text = result.messages[0]?.content.type === "text"
+      ? result.messages[0].content.text
+      : "";
+
+    expect(result.description).toContain("database diagnostics");
+    expect(text).toContain("local_ydb_healthcheck");
+    expect(text).toContain("Then route by healthcheck issue type");
+    expect(text).toContain("STORAGE");
+    expect(text).toContain("COMPUTE");
+    expect(text).toContain("\"databasePath\": \"/local/example\"");
   });
 
   it("renders auth hardening artifact creation before apply", () => {
@@ -475,6 +496,7 @@ describe("mcp tools", () => {
 
   it("renders every listed prompt", () => {
     const promptArgs: Record<string, Record<string, string>> = {
+      local_ydb_diagnose_database: { databasePath: "/local/example" },
       local_ydb_upgrade_version_workflow: { version: "26.1.2.0" },
       local_ydb_reduce_storage_groups_workflow: { count: "2" }
     };

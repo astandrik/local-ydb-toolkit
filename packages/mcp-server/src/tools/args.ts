@@ -10,6 +10,15 @@ export const LogsArgs = ProfileArgs.extend({
   lines: z.number().int().positive().optional(),
 });
 
+export const HealthcheckArgs = ProfileArgs.extend({
+  databasePath: z.string().min(1).optional(),
+  noCache: z.boolean().optional(),
+  noMerge: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().max(600_000).optional(),
+  maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+  maxIssues: z.number().int().positive().optional(),
+});
+
 export const SchemeArgs = ProfileArgs.extend({
   action: z.enum(["list", "describe"]).optional(),
   path: z.string().min(1).optional(),

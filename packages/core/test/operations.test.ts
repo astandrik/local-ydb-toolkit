@@ -15,6 +15,7 @@ import {
   createTenant,
   destroyStack,
   dumpTenant,
+  healthcheck,
   nodesCheck,
   prepareAuthConfig,
   pullImage,
@@ -96,6 +97,202 @@ class ScriptRewritingShellExecutor implements CommandExecutor {
 }
 
 describe("read-only checks", () => {
+  it("parses a GOOD YDB healthcheck as healthy", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: JSON.stringify({
+          self_check_result: "GOOD",
+          location: { id: 50000, host: "localhost", port: 2137 },
+        }),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await healthcheck(ctx);
+
+    expect(response).toMatchObject({
+      summary: "YDB healthcheck for /local/example returned GOOD.",
+      ok: true,
+      commandOk: true,
+      healthy: true,
+      databasePath: "/local/example",
+      selfCheckResult: "GOOD",
+      issueCount: 0,
+      issueStatusCounts: {},
+      issueTypes: [],
+      issues: [],
+      issuesTruncated: false,
+    });
+    expect(executor.commands[0]).toContain("monitoring healthcheck --format json");
+    expect(executor.commands[0]).toContain("grpc://localhost:2137");
+  });
+
+  it("parses a degraded YDB healthcheck with issue counts and types", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: JSON.stringify({
+          self_check_result: "DEGRADED",
+          issue_log: [
+            { id: "YELLOW-1", status: "YELLOW", type: "DATABASE", message: "Database has multiple issues" },
+            { id: "YELLOW-2", status: "YELLOW", type: "COMPUTE", message: "Compute is overloaded" },
+            { id: "ORANGE-1", status: "ORANGE", type: "STORAGE", message: "Storage is degraded" },
+          ],
+        }),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await healthcheck(ctx);
+
+    expect(response).toMatchObject({
+      summary: "YDB healthcheck for /local/example returned DEGRADED with 3 issue(s).",
+      ok: true,
+      commandOk: true,
+      healthy: false,
+      selfCheckResult: "DEGRADED",
+      issueCount: 3,
+      issueStatusCounts: { ORANGE: 1, YELLOW: 2 },
+      issueTypes: ["COMPUTE", "DATABASE", "STORAGE"],
+      issuesTruncated: false,
+    });
+    expect(response.issues).toHaveLength(3);
+  });
+
+  it("routes healthcheck through dynamic CLI for tenant and static CLI for root database", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: JSON.stringify({ self_check_result: "GOOD" }),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    await healthcheck(ctx, { databasePath: "/local/example" });
+    await healthcheck(ctx, { databasePath: "/local" });
+
+    expect(executor.commands[0]).toContain("grpc://localhost:2137");
+    expect(executor.commands[0]).toContain("-d /local/example");
+    expect(executor.commands[1]).toContain("grpc://localhost:2136");
+    expect(executor.commands[1]).toContain("-d /local");
+  });
+
+  it("reports invalid JSON from YDB healthcheck without treating it as ok", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: "{not-json",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await healthcheck(ctx, { maxOutputBytes: 4 });
+
+    expect(response).toMatchObject({
+      summary: "YDB healthcheck for /local/example returned invalid JSON.",
+      ok: false,
+      commandOk: true,
+      healthy: false,
+      stdout: "{not",
+      stdoutBytes: 9,
+      stdoutTruncated: true,
+      issueCount: 0,
+    });
+    expect(response.parseError).toContain("JSON");
+  });
+
+  it("reports failed YDB healthcheck commands with capped output", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 1,
+        stdout: "",
+        stderr: "healthcheck failed hard",
+        ok: false,
+        timedOut: false
+      };
+    };
+
+    const response = await healthcheck(ctx, { maxOutputBytes: 12 });
+
+    expect(response).toMatchObject({
+      summary: "YDB healthcheck for /local/example failed.",
+      ok: false,
+      commandOk: false,
+      healthy: false,
+      stderr: "healthcheck ",
+      stderrBytes: 23,
+      stderrTruncated: true,
+    });
+  });
+
+  it("truncates returned healthcheck issues deterministically", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: JSON.stringify({
+          self_check_result: "DEGRADED",
+          issue_log: [
+            { id: "YELLOW-1", status: "YELLOW", type: "DATABASE" },
+            { id: "YELLOW-2", status: "YELLOW", type: "COMPUTE" },
+            { id: "RED-1", status: "RED", type: "STORAGE" },
+          ],
+        }),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+
+    const response = await healthcheck(ctx, { maxIssues: 2 });
+
+    expect(response.issueCount).toBe(3);
+    expect(response.issues).toEqual([
+      { id: "YELLOW-1", status: "YELLOW", type: "DATABASE" },
+      { id: "YELLOW-2", status: "YELLOW", type: "COMPUTE" },
+    ]);
+    expect(response.issuesTruncated).toBe(true);
+    expect(response.issueStatusCounts).toEqual({ RED: 1, YELLOW: 2 });
+  });
+
   it("uses tenantinfo when viewer nodelist is empty", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -137,13 +334,27 @@ describe("read-only checks", () => {
   it("surfaces tenantinfo-confirmed nodes in the aggregate status report", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: command.includes("monitoring healthcheck")
+          ? JSON.stringify({ self_check_result: "GOOD" })
+          : "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
     ctx.client.viewerGet = async (path) => path.includes("tenantinfo")
       ? { status: "ok", data: { TenantInfo: [{ AliveNodes: 1, NodeIds: [50000] }] } }
       : { status: "ok", data: [] };
 
     const response = await statusReport(ctx);
 
-    expect(response.summary).toBe("Status report for default: tenant=ok, nodes=ok.");
+    expect(response.summary).toBe("Status report for default: tenant=ok, nodes=ok, health=GOOD.");
     expect(response.nodes).toMatchObject({
       summary: "Tenant /local/example reports 1 alive node; viewer nodelist returned 0 nodes.",
       ok: true,

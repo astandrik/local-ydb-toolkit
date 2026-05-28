@@ -10,6 +10,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 
 - `local_ydb_inventory`
 - `local_ydb_database_status`
+- `local_ydb_healthcheck`
 - `local_ydb_container_logs`
 - `local_ydb_destroy_stack`
 - `local_ydb_status_report`
@@ -110,6 +111,7 @@ Calls:
 { "tool": "local_ydb_inventory", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_storage_leftovers", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_status_report", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_healthcheck", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-clean" } }
 ```
@@ -118,7 +120,8 @@ Expected:
 
 - `inventory` returns the profile shape and current container list.
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
-- `status_report` returns a structured snapshot even when the stack is not yet healthy.
+- `status_report` returns a structured snapshot, including healthcheck output, even when the stack is not yet healthy.
+- `healthcheck` returns the YDB `selfCheckResult`, issue counts, issue types, capped raw output, and truncated `issue_log` entries when present.
 - `scheme` and `permissions` default to the tenant root for read-only schema and ACL inspection.
 
 Avoid:
@@ -332,6 +335,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_database_status", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_healthcheck", "arguments": { "profile": "ghcr261-clean", "noCache": true } }
 { "tool": "local_ydb_container_logs", "arguments": { "profile": "ghcr261-clean", "target": "static", "lines": 120 } }
 { "tool": "local_ydb_container_logs", "arguments": { "profile": "ghcr261-clean", "target": "dynamic", "lines": 120 } }
 { "tool": "local_ydb_nodes_check", "arguments": { "profile": "ghcr261-clean" } }
@@ -341,6 +345,7 @@ Calls:
 
 Expected:
 
+- `healthcheck` gives the official YDB self-check status and issue hierarchy before falling back to narrower local heuristics.
 - `container_logs(dynamic)` shows whether the node:
   registered,
   fetched config,
@@ -780,7 +785,7 @@ Avoid:
 - Auth rollout:
   `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_permissions`, `local_ydb_auth_check`
 - Read-only diagnostics:
-  `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_permissions`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
+  `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_healthcheck`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_permissions`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
 - Cleanup:
   `local_ydb_cleanup_storage`
 

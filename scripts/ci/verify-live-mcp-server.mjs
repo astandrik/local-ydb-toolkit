@@ -96,6 +96,7 @@ async function verifyToolRegistry(client) {
       "local_ydb_status_report",
       "local_ydb_inventory",
       "local_ydb_database_status",
+      "local_ydb_healthcheck",
       "local_ydb_tenant_check",
       "local_ydb_nodes_check",
       "local_ydb_scheme",
@@ -168,6 +169,10 @@ async function verifyLiveTools(client) {
 
   const databaseStatus = await callTool(client, "local_ydb_database_status", { profile });
   assert(databaseStatus.ok === true, databaseStatus.stderr || "database status failed");
+
+  const healthcheck = await callTool(client, "local_ydb_healthcheck", { profile });
+  assert(healthcheck.ok === true, healthcheck.stderr || healthcheck.parseError || "healthcheck failed");
+  assert(typeof healthcheck.selfCheckResult === "string", "healthcheck did not return a selfCheckResult.");
 
   const tenantCheck = await callTool(client, "local_ydb_tenant_check", { profile });
   assert(tenantCheck.ok === true, tenantCheck.stderr || "tenant check failed");

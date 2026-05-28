@@ -15,6 +15,7 @@ import {
   dumpTenant,
   generateSchema,
   graphshardCheck,
+  healthcheck,
   inspectScheme,
   inventory,
   listVersions,
@@ -49,6 +50,7 @@ import {
   DumpArgs,
   DynamicAuthConfigArgs,
   GenerateSchemaArgs,
+  HealthcheckArgs,
   ListVersionsArgs,
   LogsArgs,
   MutatingArgs,
@@ -74,6 +76,7 @@ import {
   dumpSchema,
   dynamicAuthConfigSchema,
   generateSchemaSchema,
+  healthcheckSchema,
   listVersionsSchema,
   logsSchema,
   mutatingSchema,
@@ -183,6 +186,17 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "checks",
+    name: "local_ydb_healthcheck",
+    description:
+      "Read-only YDB monitoring healthcheck for the configured tenant or root database. Uses the official YDB CLI SelfCheck path, returns selfCheckResult, issue counts, issue types, capped raw output, and whether the database is healthy; use after local_ydb_status_report for database-level diagnostics.",
+    inputSchema: healthcheckSchema(),
+    annotations: readOnlyAnnotations(),
+    handler: withContext(HealthcheckArgs, (context, parsed) =>
+      healthcheck(context, parsed),
+    ),
+  }),
+  defineTool({
+    group: "checks",
     name: "local_ydb_container_logs",
     description:
       "Read recent Docker logs from the configured static or primary dynamic local-ydb container. Use when bootstrap, restart, or readiness checks fail; target selects the container role and lines controls the tail length.",
@@ -196,7 +210,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_status_report",
     description:
-      "Read-only aggregate report for quick diagnosis. Runs local_ydb_inventory, local_ydb_auth_check, local_ydb_tenant_check, and local_ydb_nodes_check, returning each result; use this first for broad stack health, then run focused checks for database status, GraphShard, storage, or logs.",
+      "Read-only aggregate report for quick diagnosis. Runs local_ydb_inventory, local_ydb_auth_check, local_ydb_tenant_check, local_ydb_nodes_check, and local_ydb_healthcheck, returning each result; use this first for broad stack health, then run focused checks for database status, GraphShard, storage, or logs.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => statusReport(context)),

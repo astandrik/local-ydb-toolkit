@@ -6,7 +6,7 @@ Unofficial stdio MCP server for operating Docker-based `local-ydb` deployments.
 
 This package is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` for general YDB database-level tools such as ad hoc SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
 
-Use `@astandrik/local-ydb-mcp` when an agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, table DDL generation/validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Mutating tools are plan-first and require `confirm: true` before they execute changes.
+Use `@astandrik/local-ydb-mcp` when an agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, database healthcheck diagnostics, dynamic-node lifecycle, GraphShard checks, table DDL generation/validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Mutating tools are plan-first and require `confirm: true` before they execute changes.
 
 ## MCP Client Config
 
@@ -38,8 +38,8 @@ Official MCP Registry metadata uses the name `io.github.astandrik/local-ydb-mcp`
 
 The server exposes local-ydb operation tools and static MCP prompts. Prompt
 templates guide stack diagnosis, root database bootstrap, tenant topology
-bootstrap, schema generation/apply, version upgrades, auth hardening, and
-storage group reduction. Prompts return workflow instructions only; they do not
+bootstrap, database diagnostics, schema generation/apply, version upgrades,
+auth hardening, and storage group reduction. Prompts return workflow instructions only; they do not
 execute commands.
 
 Mutating tools remain plan-only unless called with `confirm: true`.
@@ -64,7 +64,7 @@ For a reproducible local comparison of representative response fixtures:
 npm run compare:formats -w @astandrik/local-ydb-mcp
 ```
 
-Manual agent smoke check: run the MCP server once with `LOCAL_YDB_MCP_CONTENT_FORMAT=json` and once with `toon`, then call the same tools in both sessions: `local_ydb_inventory`, `local_ydb_status_report`, `local_ydb_bootstrap_root_database` without `confirm`, `local_ydb_scheme`, `local_ydb_generate_schema` with `validate=true`, `local_ydb_apply_schema` with `action=validate`, `local_ydb_permissions` with a plan-only mutation, `local_ydb_list_versions`, and `local_ydb_nodes_check`. Record whether the agent extracts the same status, planned commands, risks, and next steps. Treat this as qualitative evidence; the benchmark command is the reproducible metric.
+Manual agent smoke check: run the MCP server once with `LOCAL_YDB_MCP_CONTENT_FORMAT=json` and once with `toon`, then call the same tools in both sessions: `local_ydb_inventory`, `local_ydb_status_report`, `local_ydb_healthcheck`, `local_ydb_bootstrap_root_database` without `confirm`, `local_ydb_scheme`, `local_ydb_generate_schema` with `validate=true`, `local_ydb_apply_schema` with `action=validate`, `local_ydb_permissions` with a plan-only mutation, `local_ydb_list_versions`, and `local_ydb_nodes_check`. Record whether the agent extracts the same status, planned commands, risks, and next steps. Treat this as qualitative evidence; the benchmark command is the reproducible metric.
 
 ## Global Install
 

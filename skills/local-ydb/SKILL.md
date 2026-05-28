@@ -25,7 +25,7 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - Read `references/mcp-tool-scenarios.md` when testing MCP tools, planning structured schema generation/apply flows, or building reusable generate-then-validate-then-apply examples.
 - Read `references/history-and-non-goals.md` when cleaning docs, deciding what is reusable versus artifact noise, or reconciling stale hardening plans with final topology.
 - For exact-GHCR `26.1.1.6` local runs, combine `topology.md`, `auth-hardening.md`, and `verification.md`; they contain field-proven steps for fresh bootstrap, restore, auth rollout, and the nightly-vs-stable pitfalls we hit in practice.
-- Prefer the MCP read-only tools `local_ydb_database_status`, `local_ydb_container_logs`, `local_ydb_status_report`, and `local_ydb_storage_placement` over ad hoc shell diagnostics when they are available.
+- Prefer the MCP read-only tools `local_ydb_status_report`, `local_ydb_healthcheck`, `local_ydb_database_status`, `local_ydb_container_logs`, and `local_ydb_storage_placement` over ad hoc shell diagnostics when they are available.
 
 ## Core Rules
 
@@ -35,6 +35,7 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - Prefer exact GHCR patch tags such as `ghcr.io/ydb-platform/local-ydb:26.1.1.6`. Do not assume floating aliases like `:26.1` exist or are pullable.
 - When `local-ydb` behavior is unclear, search upstream `ydb-platform/ydb` source with `gh api search/code` and read matching files through `gh api repos/ydb-platform/ydb/contents/...`; use pinned commits from project docs when matching documented proto shapes.
 - Do not hardcode dynamic node IDs. Discover them through monitoring/node-list APIs.
+- For database-level diagnosis, run `local_ydb_status_report` first and then `local_ydb_healthcheck`; use `selfCheckResult`, issue types, and issue counts to decide whether to inspect storage, nodes, scheme, auth, or logs.
 - For new table schema DDL, prefer `local_ydb_generate_schema` with structured input, review/validate the generated script, then use `local_ydb_apply_schema`; applying still requires `confirm=true`.
 - For generated `CREATE TABLE`, use `notNull` only on primary key columns. Enforce non-key required business fields in application validation unless the target YDB feature set and generator contract explicitly support more.
 - For generated column tables, use `partitionByHash` only with `store: "column"` and primary key columns. Keep primary keys `NOT NULL` and within YDB's documented column-store key types. Use top-level `store` instead of `with.STORE`; keep secondary and vector indexes on row-oriented tables, use global secondary indexes without creation-time `with` settings, and keep unique indexes synchronous.

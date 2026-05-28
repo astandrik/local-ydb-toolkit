@@ -60,6 +60,52 @@ export function logsSchema(): Tool["inputSchema"] {
   };
 }
 
+export function healthcheckSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      databasePath: {
+        type: "string",
+        description:
+          "YDB database path to check. Defaults to the configured tenant path; only the configured tenant path or root database path are accepted.",
+      },
+      noCache: {
+        type: "boolean",
+        description:
+          "Pass --no-cache to force YDB to bypass cached healthcheck results.",
+      },
+      noMerge: {
+        type: "boolean",
+        description:
+          "Pass --no-merge to keep individual YDB healthcheck issue records separate.",
+      },
+      timeoutMs: {
+        type: "integer",
+        minimum: 1,
+        maximum: 600_000,
+        description:
+          "Server-side YDB healthcheck timeout in milliseconds. Defaults to 120000.",
+      },
+      maxOutputBytes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 1_048_576,
+        description:
+          "Maximum UTF-8 bytes returned per raw stdout/stderr stream. Defaults to 65536.",
+      },
+      maxIssues: {
+        type: "integer",
+        minimum: 1,
+        description:
+          "Maximum number of issue_log entries returned in the issues field. Counts still cover the full response. Defaults to 100.",
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
 export function schemeSchema(): Tool["inputSchema"] {
   return {
     type: "object",
