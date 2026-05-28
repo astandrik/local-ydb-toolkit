@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.12.1...mcp-server-v0.12.2) (2026-05-28)
+
+
+### Bug Fixes
+
+* **core:** fail nodes check for empty nodelist ([85ecbb1](https://github.com/astandrik/local-ydb-toolkit/commit/85ecbb198ae0e645ce04abee133bc489fb1695aa))
+
 ## [0.12.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.12.0...mcp-server-v0.12.1) (2026-05-28)
 
 
