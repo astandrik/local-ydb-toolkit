@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.12.3...mcp-server-v0.13.0) (2026-05-28)
+
+
+### Features
+
+* Add YDB healthcheck diagnostics ([#89](https://github.com/astandrik/local-ydb-toolkit/issues/89)) ([5267cfa](https://github.com/astandrik/local-ydb-toolkit/commit/5267cfafddbbb169a10267ab3f69f574a4ee7a90))
+
 ## [0.12.3](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.12.2...mcp-server-v0.12.3) (2026-05-28)
 
 
