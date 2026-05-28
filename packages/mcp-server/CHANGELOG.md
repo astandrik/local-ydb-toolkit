@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.12.0...mcp-server-v0.12.1) (2026-05-28)
+
+
+### Bug Fixes
+
+* **schema:** clarify notNull primary key constraint ([a3d5de6](https://github.com/astandrik/local-ydb-toolkit/commit/a3d5de68db1225aa1fe2708d3eed662f533f7eaf))
+
 ## [0.12.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.11.0...mcp-server-v0.12.0) (2026-05-28)
 
 
