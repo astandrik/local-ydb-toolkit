@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.12.2...mcp-server-v0.12.3) (2026-05-28)
+
+
+### Bug Fixes
+
+* **core:** confirm tenant nodes via tenantinfo ([91df2af](https://github.com/astandrik/local-ydb-toolkit/commit/91df2af5e1762b1f47678ac64e21214d3500add9))
+
 ## [0.12.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.12.1...mcp-server-v0.12.2) (2026-05-28)
 
 
