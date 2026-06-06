@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Run Local YDB in GitHub Actions</title>
+    <meta name="description" content="Use astandrik/setup-local-ydb to start a disposable local YDB tenant in GitHub Actions CI jobs.">
+    <link rel="canonical" href="https://astandrik.github.io/local-ydb-toolkit/setup-local-ydb-github-actions.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap topnav">
+        <a class="brand" href="./">Local YDB Toolkit</a>
+        <nav class="navlinks" aria-label="Primary">
+          <a href="local-ydb-mcp-vs-ydb-mcp.html">MCP comparison</a>
+          <a href="diagnose-local-ydb-mcp.html">Diagnostics</a>
+          <a href="ydb-schema-ddl-mcp.html">Schema DDL</a>
+          <a href="best-tools-local-ydb-ai-agents.html">Tool roundup</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <div class="eyebrow">GitHub Actions</div>
+        <h1>Start a disposable local YDB tenant in CI.</h1>
+        <p class="lead"><code>astandrik/setup-local-ydb</code> boots <code>ghcr.io/ydb-platform/local-ydb</code>, creates a tenant database, waits for readiness, and exports endpoint variables for later workflow steps.</p>
+      </section>
+
+      <section>
+        <h2>Minimal workflow step</h2>
+        <pre><code>- uses: astandrik/setup-local-ydb@v1
+  id: ydb
+  with:
+    version: 26.1.1.6
+    tenant: /local/test
+
+- run: |
+    echo "$LOCAL_YDB_ENDPOINT"
+    echo "$LOCAL_YDB_DATABASE"</code></pre>
+      </section>
+
+      <section>
+        <h2>Exported variables</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Variable</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>LOCAL_YDB_ENDPOINT</code></td>
+              <td>gRPC endpoint for the disposable local YDB stack.</td>
+            </tr>
+            <tr>
+              <td><code>LOCAL_YDB_DATABASE</code></td>
+              <td>Tenant database path, such as <code>/local/test</code>.</td>
+            </tr>
+            <tr>
+              <td><code>LOCAL_YDB_MONITORING_URL</code></td>
+              <td>Local monitoring URL exposed for the job.</td>
+            </tr>
+            <tr>
+              <td><code>LOCAL_YDB_USER</code> and <code>LOCAL_YDB_PASSWORD_FILE</code></td>
+              <td>Exported only when <code>auth: true</code> is enabled. The raw password value is not printed.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>When to use auth</h2>
+        <p>Add <code>auth: true</code> only when the CI job needs native YDB auth behavior. Keep unauthenticated local test stacks simpler when auth is not part of the test contract.</p>
+      </section>
+
+      <section>
+        <h2>Related MCP workflow</h2>
+        <p>After a stack is running, <code>@astandrik/local-ydb-mcp</code> can inspect health, scheme objects, auth posture, node registration, storage placement, and plan-only schema or lifecycle changes.</p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">Action repository: <a href="https://github.com/astandrik/setup-local-ydb">github.com/astandrik/setup-local-ydb</a></div>
+    </footer>
+  </body>
+</html>

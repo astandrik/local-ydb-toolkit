@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://astandrik.github.io/local-ydb-toolkit/</loc>
+  </url>
+  <url>
+    <loc>https://astandrik.github.io/local-ydb-toolkit/local-ydb-mcp-vs-ydb-mcp.html</loc>
+  </url>
+  <url>
+    <loc>https://astandrik.github.io/local-ydb-toolkit/setup-local-ydb-github-actions.html</loc>
+  </url>
+  <url>
+    <loc>https://astandrik.github.io/local-ydb-toolkit/diagnose-local-ydb-mcp.html</loc>
+  </url>
+  <url>
+    <loc>https://astandrik.github.io/local-ydb-toolkit/ydb-schema-ddl-mcp.html</loc>
+  </url>
+  <url>
+    <loc>https://astandrik.github.io/local-ydb-toolkit/best-tools-local-ydb-ai-agents.html</loc>
+  </url>
+</urlset>

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Generate and Apply YDB Table Schema DDL Safely</title>
+    <meta name="description" content="Generate, validate, plan, and apply YDB table DDL through @astandrik/local-ydb-mcp with confirm gates.">
+    <link rel="canonical" href="https://astandrik.github.io/local-ydb-toolkit/ydb-schema-ddl-mcp.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap topnav">
+        <a class="brand" href="./">Local YDB Toolkit</a>
+        <nav class="navlinks" aria-label="Primary">
+          <a href="local-ydb-mcp-vs-ydb-mcp.html">MCP comparison</a>
+          <a href="setup-local-ydb-github-actions.html">GitHub Actions</a>
+          <a href="diagnose-local-ydb-mcp.html">Diagnostics</a>
+          <a href="best-tools-local-ydb-ai-agents.html">Tool roundup</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <div class="eyebrow">Schema DDL</div>
+        <h1>Generate YDB table DDL from structured specs, then validate before applying.</h1>
+        <p class="lead"><code>local_ydb_generate_schema</code> is read-only. <code>local_ydb_apply_schema</code> validates first and applies only when <code>action: "apply"</code> and <code>confirm: true</code> are supplied.</p>
+      </section>
+
+      <section>
+        <h2>Safe schema workflow</h2>
+        <ol>
+          <li>Inspect the target tenant with <code>local_ydb_status_report</code> and <code>local_ydb_scheme</code>.</li>
+          <li>Call <code>local_ydb_generate_schema</code> with a strict JSON table spec and <code>validate: true</code>.</li>
+          <li>Review generated DDL, script SHA-256, warnings, risk, and SDK validation status.</li>
+          <li>Call <code>local_ydb_apply_schema</code> with <code>action: "validate"</code>.</li>
+          <li>Call <code>local_ydb_apply_schema</code> with <code>action: "apply"</code> and <code>confirm: false</code> to return the plan.</li>
+          <li>Execute only after approval with the exact same apply call plus <code>confirm: true</code>.</li>
+          <li>Verify with <code>local_ydb_scheme</code> using <code>action: "describe"</code>.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Example generator spec</h2>
+        <pre><code>{
+  "validate": true,
+  "statements": [
+    {
+      "kind": "createTable",
+      "tableName": "schema_apply_smoke",
+      "columns": [
+        { "name": "id", "type": "Uint64", "notNull": true },
+        { "name": "value", "type": "Utf8" }
+      ],
+      "primaryKey": ["id"],
+      "indexes": [
+        {
+          "name": "schema_apply_smoke_by_value",
+          "columns": ["value"],
+          "global": true
+        }
+      ]
+    }
+  ]
+}</code></pre>
+      </section>
+
+      <section>
+        <h2>Important constraints</h2>
+        <ul>
+          <li>Use <code>notNull</code> only for primary key columns in generated <code>CREATE TABLE</code> specs.</li>
+          <li>Use the top-level <code>store</code> field instead of <code>with.STORE</code>.</li>
+          <li>Keep secondary and vector indexes on row-oriented tables.</li>
+          <li>Do not add an index on a column added or dropped in the same <code>ALTER TABLE</code> spec.</li>
+          <li>Prefer adding vector indexes after representative data is loaded.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap"><a href="./">Back to Local YDB Toolkit</a></div>
+    </footer>
+  </body>
+</html>

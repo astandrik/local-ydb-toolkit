@@ -7,13 +7,15 @@
 [![GitHub Action: setup-local-ydb](https://img.shields.io/badge/GitHub%20Action-setup--local--ydb-2088FF?logo=githubactions&logoColor=white)](https://github.com/astandrik/setup-local-ydb)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-setup--local--ydb-blue?logo=github)](https://github.com/marketplace/actions/setup-local-ydb)
 
-Toolkit for operating `local-ydb` deployments across Codex, MCP clients, and GitHub Actions CI.
+`local-ydb-toolkit` helps AI coding agents operate Docker-based `local-ydb` environments across Codex, MCP clients, and GitHub Actions CI. It includes a plan-first stdio MCP server for Docker-based `local-ydb` diagnostics, bootstrap, schema DDL, auth, storage, backup/restore, and upgrades.
 
 It includes:
 
 - a reusable Codex skill for local and SSH `local-ydb` operations;
 - an unofficial local stdio MCP server published as `@astandrik/local-ydb-mcp`;
 - a Marketplace GitHub Action, [`astandrik/setup-local-ydb`](https://github.com/astandrik/setup-local-ydb), for booting disposable YDB tenants in CI.
+
+Docs site: [Local YDB Toolkit for AI coding agents](https://astandrik.github.io/local-ydb-toolkit/).
 
 Directory listings: [Awesome MCP Servers](https://github.com/punkpeye/awesome-mcp-servers#databases), [Glama](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit), and [Skiln](https://skiln.co/mcp/mcp-io-github-astandrik-local-ydb-mcp).
 

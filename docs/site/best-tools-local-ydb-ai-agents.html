@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Best Tools for Local YDB AI-Agent Workflows</title>
+    <meta name="description" content="A practical comparison of local-ydb-mcp, ydb-mcp, setup-local-ydb, YDB CLI, and the local-ydb Docker image for AI-agent workflows.">
+    <link rel="canonical" href="https://astandrik.github.io/local-ydb-toolkit/best-tools-local-ydb-ai-agents.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap topnav">
+        <a class="brand" href="./">Local YDB Toolkit</a>
+        <nav class="navlinks" aria-label="Primary">
+          <a href="local-ydb-mcp-vs-ydb-mcp.html">MCP comparison</a>
+          <a href="setup-local-ydb-github-actions.html">GitHub Actions</a>
+          <a href="diagnose-local-ydb-mcp.html">Diagnostics</a>
+          <a href="ydb-schema-ddl-mcp.html">Schema DDL</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <div class="eyebrow">Tool roundup</div>
+        <h1>Best tools for local YDB workflows with AI coding agents.</h1>
+        <p class="lead">Different tools solve different parts of the local YDB workflow. This roundup is intentionally practical: use the smallest tool that matches the job.</p>
+      </section>
+
+      <section>
+        <h2>Recommended tools</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>Best for</th>
+              <th>Limit</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>@astandrik/local-ydb-mcp</code></td>
+              <td>AI-agent operation of Docker local-ydb stacks: diagnostics, bootstrap, schema DDL, auth, storage, backup/restore, and upgrades.</td>
+              <td>It is an unofficial local stdio MCP server, not a hosted remote service.</td>
+            </tr>
+            <tr>
+              <td><code>ydb-platform/ydb-mcp</code></td>
+              <td>Database-level YDB interaction such as SQL, query help, directory listing, and path inspection.</td>
+              <td>It is not focused on Docker local-ydb lifecycle management.</td>
+            </tr>
+            <tr>
+              <td><code>astandrik/setup-local-ydb</code></td>
+              <td>Disposable local YDB tenants in GitHub Actions CI.</td>
+              <td>It is a CI provisioning action, not an interactive MCP diagnostic server.</td>
+            </tr>
+            <tr>
+              <td>YDB CLI</td>
+              <td>Direct command-line access for humans and scripted checks.</td>
+              <td>Agents need extra guardrails to avoid unsafe mutations.</td>
+            </tr>
+            <tr>
+              <td><code>ghcr.io/ydb-platform/local-ydb</code></td>
+              <td>The upstream Docker image used to run local YDB.</td>
+              <td>It provides the runtime image, not agent-facing orchestration or workflow prompts.</td>
+            </tr>
+            <tr>
+              <td><code>skills/local-ydb</code></td>
+              <td>Codex operational rules for local-ydb topology, auth, storage, verification, and safe runbooks.</td>
+              <td>It guides Codex behavior but does not expose MCP tools by itself.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Best default stack</h2>
+        <p>For AI coding agents working on a repository that needs local YDB, combine the upstream local-ydb Docker image, <code>@astandrik/local-ydb-mcp</code> for operational tooling, and <code>astandrik/setup-local-ydb</code> for CI. Add the official <code>ydb-platform/ydb-mcp</code> when the agent also needs query-level database interaction.</p>
+      </section>
+
+      <section>
+        <h2>Why plan-first matters</h2>
+        <p>Local database operations can touch containers, volumes, auth files, storage pools, and dumps. A plan-first MCP server lets agents inspect and explain the exact command plan before executing any mutation.</p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap"><a href="./">Back to Local YDB Toolkit</a></div>
+    </footer>
+  </body>
+</html>

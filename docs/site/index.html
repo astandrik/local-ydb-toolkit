@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Local YDB Toolkit for AI Coding Agents</title>
+    <meta name="description" content="Install and use local-ydb-toolkit, a plan-first MCP server, Codex skill, and GitHub Action for Docker-based local-ydb workflows.">
+    <link rel="canonical" href="https://astandrik.github.io/local-ydb-toolkit/">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap topnav">
+        <a class="brand" href="./">Local YDB Toolkit</a>
+        <nav class="navlinks" aria-label="Primary">
+          <a href="local-ydb-mcp-vs-ydb-mcp.html">MCP comparison</a>
+          <a href="setup-local-ydb-github-actions.html">GitHub Actions</a>
+          <a href="diagnose-local-ydb-mcp.html">Diagnostics</a>
+          <a href="ydb-schema-ddl-mcp.html">Schema DDL</a>
+          <a href="best-tools-local-ydb-ai-agents.html">Tool roundup</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <div class="eyebrow">MCP server, Codex skill, GitHub Action</div>
+        <h1>Operate Docker-based local YDB from AI coding agents.</h1>
+        <p class="lead">local-ydb-toolkit includes a plan-first stdio MCP server for Docker-based local-ydb diagnostics, bootstrap, schema DDL, auth, storage, backup/restore, and upgrades, plus a reusable Codex skill and a GitHub Action for disposable CI tenants.</p>
+        <div class="cta-row">
+          <a class="button" href="https://github.com/astandrik/local-ydb-toolkit">View repository</a>
+          <a class="button secondary" href="https://www.npmjs.com/package/@astandrik/local-ydb-mcp">npm package</a>
+        </div>
+      </section>
+
+      <section>
+        <h2>Install the MCP server</h2>
+        <p>Use the npm package from any MCP client that can run a local stdio server.</p>
+        <pre><code>{
+  "mcpServers": {
+    "local-ydb": {
+      "command": "npx",
+      "args": ["-y", "--prefer-online", "@astandrik/local-ydb-mcp@latest"],
+      "env": {
+        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json",
+        "LOCAL_YDB_MCP_CONTENT_FORMAT": "toon"
+      }
+    }
+  }
+}</code></pre>
+        <p class="note">Mutating tools return planned commands by default. They execute only when the exact tool call includes <code>confirm: true</code>.</p>
+      </section>
+
+      <section>
+        <h2>What agents can do</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Diagnose local-ydb</h3>
+            <p>Run stack inventory, YDB healthcheck, tenant status, node checks, GraphShard checks, auth checks, storage placement, and container logs.</p>
+          </article>
+          <article class="card">
+            <h3>Bootstrap test stacks</h3>
+            <p>Plan and start root-only <code>/local</code> databases or CMS tenant topologies with dynamic nodes when GraphShard or tenant storage is required.</p>
+          </article>
+          <article class="card">
+            <h3>Generate schema DDL</h3>
+            <p>Generate and validate YDB table DDL from structured JSON specs before applying changes through the official YDB JavaScript SDK path.</p>
+          </article>
+          <article class="card">
+            <h3>Manage risky workflows</h3>
+            <p>Use plan-first flows for auth hardening, dump/restore, storage group changes, version upgrades, and stack teardown.</p>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <h2>Install the Codex skill</h2>
+        <pre><code>$skill-installer install https://github.com/astandrik/local-ydb-toolkit/tree/main/skills/local-ydb</code></pre>
+        <p>The skill gives Codex reusable operational rules for Docker local-ydb, CMS tenants, dynamic nodes, auth hardening, storage workflows, and safe verification.</p>
+      </section>
+
+      <section>
+        <h2>Use local YDB in GitHub Actions</h2>
+        <p>Use <a href="https://github.com/astandrik/setup-local-ydb">astandrik/setup-local-ydb</a> when CI needs a disposable YDB tenant.</p>
+        <pre><code>- uses: astandrik/setup-local-ydb@v1
+  id: ydb
+  with:
+    version: 26.1.1.6
+    tenant: /local/test</code></pre>
+      </section>
+
+      <section>
+        <h2>Guides</h2>
+        <div class="grid">
+          <article class="card">
+            <h3><a href="local-ydb-mcp-vs-ydb-mcp.html">local-ydb-mcp vs ydb-mcp</a></h3>
+            <p>Choose the local operations server or the official database-level YDB MCP server.</p>
+          </article>
+          <article class="card">
+            <h3><a href="setup-local-ydb-github-actions.html">Run local YDB in CI</a></h3>
+            <p>Start a disposable local YDB tenant in GitHub Actions and consume exported connection variables.</p>
+          </article>
+          <article class="card">
+            <h3><a href="diagnose-local-ydb-mcp.html">Diagnose local-ydb</a></h3>
+            <p>Use read-only MCP tools to find stack, health, storage, compute, scheme, and auth issues.</p>
+          </article>
+          <article class="card">
+            <h3><a href="ydb-schema-ddl-mcp.html">Generate YDB schema DDL</a></h3>
+            <p>Generate, validate, plan, apply, inspect, and clean up table DDL safely.</p>
+          </article>
+          <article class="card">
+            <h3><a href="best-tools-local-ydb-ai-agents.html">Best local YDB AI-agent tools</a></h3>
+            <p>An honest roundup of MCP, CLI, Docker image, Codex skill, and GitHub Action options.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">Source: <a href="https://github.com/astandrik/local-ydb-toolkit">github.com/astandrik/local-ydb-toolkit</a></div>
+    </footer>
+  </body>
+</html>

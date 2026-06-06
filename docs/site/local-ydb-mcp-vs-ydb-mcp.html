@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>local-ydb-mcp vs ydb-platform/ydb-mcp</title>
+    <meta name="description" content="Compare @astandrik/local-ydb-mcp with the official ydb-platform/ydb-mcp server for AI coding agent workflows.">
+    <link rel="canonical" href="https://astandrik.github.io/local-ydb-toolkit/local-ydb-mcp-vs-ydb-mcp.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap topnav">
+        <a class="brand" href="./">Local YDB Toolkit</a>
+        <nav class="navlinks" aria-label="Primary">
+          <a href="setup-local-ydb-github-actions.html">GitHub Actions</a>
+          <a href="diagnose-local-ydb-mcp.html">Diagnostics</a>
+          <a href="ydb-schema-ddl-mcp.html">Schema DDL</a>
+          <a href="best-tools-local-ydb-ai-agents.html">Tool roundup</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <div class="eyebrow">Comparison</div>
+        <h1>Use local-ydb-mcp for local-ydb operations. Use ydb-mcp for database queries.</h1>
+        <p class="lead">The two MCP servers are complementary. <code>@astandrik/local-ydb-mcp</code> operates Docker-based local-ydb environments. The official <code>ydb-platform/ydb-mcp</code> server is for database-level tools against an existing YDB endpoint.</p>
+      </section>
+
+      <section>
+        <h2>Quick decision table</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Need</th>
+              <th>Use</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Check Docker containers, local-ydb readiness, logs, storage placement, auth posture, or healthcheck status</td>
+              <td><code>@astandrik/local-ydb-mcp</code></td>
+              <td>It knows local and SSH-backed Docker profiles and wraps local-ydb operational checks.</td>
+            </tr>
+            <tr>
+              <td>Bootstrap a root <code>/local</code> database or CMS tenant with dynamic nodes</td>
+              <td><code>@astandrik/local-ydb-mcp</code></td>
+              <td>It plans and executes local-ydb lifecycle workflows with <code>confirm: true</code> gates.</td>
+            </tr>
+            <tr>
+              <td>Run ad hoc SQL, explain queries, inspect paths, or interact with an existing YDB database</td>
+              <td><code>ydb-platform/ydb-mcp</code></td>
+              <td>The official server focuses on database-level interaction rather than Docker local-ydb lifecycle.</td>
+            </tr>
+            <tr>
+              <td>Generate and validate YDB table DDL from structured JSON specs</td>
+              <td><code>@astandrik/local-ydb-mcp</code></td>
+              <td>It provides a read-only generator and an apply path that validates before confirmed execution.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Install local-ydb-mcp</h2>
+        <pre><code>{
+  "mcpServers": {
+    "local-ydb": {
+      "command": "npx",
+      "args": ["-y", "--prefer-online", "@astandrik/local-ydb-mcp@latest"]
+    }
+  }
+}</code></pre>
+      </section>
+
+      <section>
+        <h2>Safety model</h2>
+        <p><code>@astandrik/local-ydb-mcp</code> is plan-first. Mutating tools return planned commands, risk, rollback notes, and verification steps unless the caller supplies <code>confirm: true</code>. This is useful when AI agents need to inspect a local database stack before changing containers, volumes, auth files, or storage topology.</p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap"><a href="./">Back to Local YDB Toolkit</a></div>
+    </footer>
+  </body>
+</html>
