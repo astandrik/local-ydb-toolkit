@@ -4,6 +4,7 @@
 [![Listed on CuratedMCP](https://www.curatedmcp.com/api/badge/local-ydb-unofficial-mcp-server)](https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server)
 [![MCP Badge](https://lobehub.com/badge/mcp/astandrik-local-ydb-toolkit)](https://lobehub.com/mcp/astandrik-local-ydb-toolkit)
 [![local-ydb-toolkit MCP server](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit/badges/score.svg)](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit)
+[![Available on CodeGuilds](https://img.shields.io/badge/Available_on-CodeGuilds-6366f1?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN2wxMCA1IDEwLTV6TTIgMTdsMTAgNSAxMC01TTIgMTJsMTAgNSAxMC01Ii8+PC9zdmc+)](https://codeguilds.dev/packages/local-ydb-toolkit)
 [![GitHub Action: setup-local-ydb](https://img.shields.io/badge/GitHub%20Action-setup--local--ydb-2088FF?logo=githubactions&logoColor=white)](https://github.com/astandrik/setup-local-ydb)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-setup--local--ydb-blue?logo=github)](https://github.com/marketplace/actions/setup-local-ydb)
 
