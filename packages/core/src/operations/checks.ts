@@ -1,4 +1,4 @@
-import { ydbCli, ydbdAdmin, ydbRootCli } from "./commands.js";
+import { waitForYdbCli, ydbCli, ydbdAdmin, ydbRootCli } from "./commands.js";
 import { collectGraphShardTabletIds, publicProfile, readPath } from "./helpers.js";
 import { capText, normalizeMaxOutputBytes } from "./output.js";
 import type { HealthcheckOptions, HealthcheckResponse, ToolkitContext } from "./types.js";
@@ -38,7 +38,7 @@ export async function statusReport(ctx: ToolkitContext) {
 }
 
 export async function tenantCheck(ctx: ToolkitContext) {
-  const result = await ctx.client.run(ydbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Check tenant metadata"));
+  const result = await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Check tenant metadata"));
   return {
     summary: result.ok ? `Tenant ${ctx.profile.tenantPath} metadata is reachable.` : `Tenant ${ctx.profile.tenantPath} metadata check failed.`,
     ok: result.ok,

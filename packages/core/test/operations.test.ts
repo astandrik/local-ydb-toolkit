@@ -28,6 +28,7 @@ import {
   shellQuote,
   startDynamicNode,
   statusReport,
+  tenantCheck,
   setRootPassword,
   writeDynamicNodeAuthConfig,
   type CommandExecutor,
@@ -97,6 +98,24 @@ class ScriptRewritingShellExecutor implements CommandExecutor {
 }
 
 describe("read-only checks", () => {
+  it("uses retrying YDB CLI command for tenant metadata checks", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const response = await tenantCheck(ctx);
+
+    expect(response).toMatchObject({
+      summary: "Tenant /local/example metadata is reachable.",
+      ok: true,
+      stdout: "",
+      stderr: "",
+    });
+    expect(executor.commands).toHaveLength(1);
+    expect(executor.commands[0]).toContain("scheme ls /local/example");
+    expect(executor.commands[0]).toContain("for attempt in $(seq 1 30)");
+    expect(executor.commands[0]).toContain("TRANSPORT_UNAVAILABLE");
+  });
+
   it("parses a GOOD YDB healthcheck as healthy", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
