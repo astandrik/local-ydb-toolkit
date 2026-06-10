@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.13.0...mcp-server-v0.13.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* **core:** retry tenant metadata checks ([1e35eaf](https://github.com/astandrik/local-ydb-toolkit/commit/1e35eaf9aa694ba905466117d7ccc35554185c22))
+
 ## [0.13.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.12.3...mcp-server-v0.13.0) (2026-05-28)
 
 
