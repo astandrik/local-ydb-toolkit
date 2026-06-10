@@ -1,6 +1,8 @@
 # @astandrik/local-ydb-mcp
 
-Unofficial stdio MCP server for operating Docker-based `local-ydb` deployments.
+Plan-first stdio MCP server for Docker-based `local-ydb` diagnostics, bootstrap, schema DDL, auth, storage, backup/restore, and upgrades.
+
+`@astandrik/local-ydb-mcp` lets AI coding agents inspect and operate local or SSH-backed `local-ydb` profiles while keeping mutating tools plan-only until `confirm: true` is supplied.
 
 ## Relationship to `ydb/ydb-mcp`
 

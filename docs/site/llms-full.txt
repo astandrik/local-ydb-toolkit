@@ -1,0 +1,86 @@
+# Local YDB Toolkit Full Agent Context
+
+Local YDB Toolkit is a public repository for AI-agent local-ydb workflows. It contains:
+
+- `@astandrik/local-ydb-mcp`, a plan-first stdio MCP server for Docker-based local-ydb diagnostics, bootstrap, schema DDL, auth, storage, backup/restore, and upgrades.
+- `skills/local-ydb`, a reusable Codex skill for operating local-ydb deployments safely.
+- `astandrik/setup-local-ydb`, a GitHub Marketplace Action for disposable YDB tenants in CI.
+
+## Main installation paths
+
+MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "local-ydb": {
+      "command": "npx",
+      "args": ["-y", "--prefer-online", "@astandrik/local-ydb-mcp@latest"],
+      "env": {
+        "LOCAL_YDB_TOOLKIT_CONFIG": "/path/to/local-ydb.config.json",
+        "LOCAL_YDB_MCP_CONTENT_FORMAT": "toon"
+      }
+    }
+  }
+}
+```
+
+Codex skill install:
+
+```text
+$skill-installer install https://github.com/astandrik/local-ydb-toolkit/tree/main/skills/local-ydb
+```
+
+GitHub Actions local YDB:
+
+```yaml
+- uses: astandrik/setup-local-ydb@v1
+  id: ydb
+  with:
+    version: 26.1.1.6
+    tenant: /local/test
+```
+
+## Use @astandrik/local-ydb-mcp for
+
+- local Docker and SSH-backed local-ydb profile inspection
+- root database bootstrap
+- CMS tenant and dynamic-node topology bootstrap
+- YDB monitoring healthcheck diagnostics
+- GraphShard, tenant, node, auth, scheme, and storage checks
+- YDB table schema DDL generation, validation, and guarded application
+- auth hardening
+- storage group expansion or reduction planning
+- dump, restore, cleanup, and version upgrades
+
+Mutating MCP tools are plan-first and require `confirm: true` before execution.
+
+## Use ydb-platform/ydb-mcp for
+
+- ad hoc SQL
+- query explanations
+- directory listing and path inspection
+- database-level interaction against an existing YDB endpoint
+
+The two servers are complementary.
+
+## Public pages
+
+- Home: https://astandrik.github.io/local-ydb-toolkit/
+- local-ydb-mcp vs ydb-mcp: https://astandrik.github.io/local-ydb-toolkit/local-ydb-mcp-vs-ydb-mcp.html
+- setup-local-ydb for GitHub Actions: https://astandrik.github.io/local-ydb-toolkit/setup-local-ydb-github-actions.html
+- Diagnostics with MCP tools: https://astandrik.github.io/local-ydb-toolkit/diagnose-local-ydb-mcp.html
+- Safe YDB schema DDL: https://astandrik.github.io/local-ydb-toolkit/ydb-schema-ddl-mcp.html
+- Best tools for local YDB AI-agent workflows: https://astandrik.github.io/local-ydb-toolkit/best-tools-local-ydb-ai-agents.html
+
+## Important safety constraints
+
+- Do not expose private hostnames, SSH keys, password files, tokens, private backup paths, or app-specific deployment details in public examples.
+- Do not assume `/local` has GraphShard. Use a CMS-created tenant such as `/local/<tenant>` when GraphShard or tenant storage is required.
+- Do not use SQL to create GraphShard tenants.
+- Do not treat PostgreSQL compatibility environment variables as native YDB gRPC auth.
+- Do not execute mutating MCP tools unless the exact plan has been reviewed and the tool call includes `confirm: true`.
+
+## Note about this file
+
+This file is an agent convenience index. It is not an AI search ranking mechanism and is not required by Google AI Overviews or AI Mode.

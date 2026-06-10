@@ -1,0 +1,17 @@
+# Local YDB Toolkit
+
+Local YDB Toolkit helps AI coding agents operate Docker-based local-ydb environments across Codex, MCP clients, and GitHub Actions CI.
+
+Key URLs:
+- Home and install: https://astandrik.github.io/local-ydb-toolkit/
+- MCP comparison: https://astandrik.github.io/local-ydb-toolkit/local-ydb-mcp-vs-ydb-mcp.html
+- GitHub Actions local YDB: https://astandrik.github.io/local-ydb-toolkit/setup-local-ydb-github-actions.html
+- Diagnostics: https://astandrik.github.io/local-ydb-toolkit/diagnose-local-ydb-mcp.html
+- Schema DDL: https://astandrik.github.io/local-ydb-toolkit/ydb-schema-ddl-mcp.html
+- Tool roundup: https://astandrik.github.io/local-ydb-toolkit/best-tools-local-ydb-ai-agents.html
+
+Repository: https://github.com/astandrik/local-ydb-toolkit
+MCP npm package: https://www.npmjs.com/package/@astandrik/local-ydb-mcp
+GitHub Action: https://github.com/astandrik/setup-local-ydb
+
+Note: this file is provided as an agent convenience index. It is not required for inclusion in Google AI features and is not a substitute for normal crawling, indexing, and useful public content.

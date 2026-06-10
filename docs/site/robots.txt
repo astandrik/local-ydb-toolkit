@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://astandrik.github.io/local-ydb-toolkit/sitemap.xml

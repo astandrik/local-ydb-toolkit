@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Diagnose local-ydb with MCP Tools</title>
+    <meta name="description" content="Use @astandrik/local-ydb-mcp read-only tools to diagnose Docker local-ydb stacks before repair.">
+    <link rel="canonical" href="https://astandrik.github.io/local-ydb-toolkit/diagnose-local-ydb-mcp.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap topnav">
+        <a class="brand" href="./">Local YDB Toolkit</a>
+        <nav class="navlinks" aria-label="Primary">
+          <a href="local-ydb-mcp-vs-ydb-mcp.html">MCP comparison</a>
+          <a href="setup-local-ydb-github-actions.html">GitHub Actions</a>
+          <a href="ydb-schema-ddl-mcp.html">Schema DDL</a>
+          <a href="best-tools-local-ydb-ai-agents.html">Tool roundup</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <div class="eyebrow">Diagnostics</div>
+        <h1>Start broad, read-only, then route by the YDB health signal.</h1>
+        <p class="lead"><code>@astandrik/local-ydb-mcp</code> gives AI agents a safe diagnostic path for Docker-based local-ydb stacks. The preferred flow is status report, YDB healthcheck, then targeted checks based on issue type.</p>
+      </section>
+
+      <section>
+        <h2>Recommended diagnostic order</h2>
+        <ol>
+          <li>Run <code>local_ydb_check_prerequisites</code> on a new host or profile.</li>
+          <li>Run <code>local_ydb_status_report</code> to capture Docker, tenant, node, auth, and health context.</li>
+          <li>Run <code>local_ydb_healthcheck</code> when a fresh YDB self-check is needed.</li>
+          <li>Route by issue type instead of repairing automatically.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Route by symptom</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Symptom or issue type</th>
+              <th>Next read-only tools</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Storage issues</td>
+              <td><code>local_ydb_storage_placement</code>, then <code>local_ydb_container_logs</code></td>
+            </tr>
+            <tr>
+              <td>Compute, compute pool, tablet, or node issues</td>
+              <td><code>local_ydb_nodes_check</code>, <code>local_ydb_tenant_check</code>, and dynamic container logs</td>
+            </tr>
+            <tr>
+              <td>Database or scheme symptoms</td>
+              <td><code>local_ydb_database_status</code> and <code>local_ydb_scheme</code></td>
+            </tr>
+            <tr>
+              <td>Auth symptoms</td>
+              <td><code>local_ydb_auth_check</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Agent prompt</h2>
+        <p>The MCP server includes a <code>local_ydb_diagnose_stack</code> prompt. It instructs the client to inspect current state, summarize observed evidence, and avoid automatic repair.</p>
+        <p class="note">Mutating repair tools should be called first without <code>confirm</code>. Execute with <code>confirm: true</code> only after the exact plan is approved.</p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap"><a href="./">Back to Local YDB Toolkit</a></div>
+    </footer>
+  </body>
+</html>

@@ -2,7 +2,7 @@
   "name": "@astandrik/local-ydb-mcp",
   "version": "0.13.0",
   "mcpName": "io.github.astandrik/local-ydb-mcp",
-  "description": "Unofficial stdio MCP server for operating local-ydb deployments.",
+  "description": "Plan-first stdio MCP server for Docker-based local-ydb diagnostics, bootstrap, schema DDL, auth, storage, backup/restore, and upgrades.",
   "type": "module",
   "bin": {
     "local-ydb-mcp": "./dist/index.js"
@@ -28,7 +28,12 @@
     "ydb",
     "mcp",
     "model-context-protocol",
-    "codex"
+    "codex",
+    "ai-agents",
+    "docker",
+    "database",
+    "devops",
+    "github-actions"
   ],
   "engines": {
     "node": ">=20.19.0"
