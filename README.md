@@ -4,6 +4,7 @@
 [![Official MCP Registry](https://img.shields.io/badge/Official%20MCP%20Registry-active-16a34a)](https://registry.modelcontextprotocol.io/?q=io.github.astandrik%2Flocal-ydb-mcp)
 [![npm package](https://img.shields.io/npm/v/@astandrik/local-ydb-mcp?label=npm%20%40astandrik%2Flocal-ydb-mcp)](https://www.npmjs.com/package/@astandrik/local-ydb-mcp)
 [![GitHub Action: setup-local-ydb](https://img.shields.io/badge/GitHub%20Action-setup--local--ydb-2088FF?logo=githubactions&logoColor=white)](https://github.com/astandrik/setup-local-ydb)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-setup--local--ydb-blue?logo=github)](https://github.com/marketplace/actions/setup-local-ydb)
 
 Toolkit for operating `local-ydb` deployments across Codex, MCP clients, and GitHub Actions CI.
 
@@ -17,20 +18,14 @@ It includes:
 
 ## Discovery and trust
 
-<p>
-  <a href="https://wmcp.sh/mcp/grade/npm%3A%40astandrik%2Flocal-ydb-mcp"><img alt="MCP Trust Grade A" src="https://wmcp.sh/mcp/grade/npm%3A%40astandrik%2Flocal-ydb-mcp/badge.svg"></a>
-  <a href="https://mcp-sentinelweb-production.up.railway.app/servers/astandrik-local-ydb-mcp"><img alt="Audited by MCP Sentinel" src="https://img.shields.io/badge/MCP%20Sentinel-audited-16a34a"></a>
-  <a href="https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server"><img alt="Listed on CuratedMCP" src="https://www.curatedmcp.com/api/badge/local-ydb-unofficial-mcp-server"></a>
-  <a href="https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit"><img alt="Glama MCP score" src="https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit/badges/score.svg"></a>
-  <a href="https://lobehub.com/mcp/astandrik-local-ydb-toolkit"><img alt="Available on LobeHub" src="https://lobehub.com/badge/mcp/astandrik-local-ydb-toolkit"></a>
-</p>
-
 Full listing hub: [local-ydb-toolkit.ydb-qdrant.tech/#mcp-registries](https://local-ydb-toolkit.ydb-qdrant.tech/#mcp-registries).
 
-- **Official registries and lists:** [Official MCP Registry](https://registry.modelcontextprotocol.io/?q=io.github.astandrik%2Flocal-ydb-mcp), [Awesome MCP Servers](https://github.com/punkpeye/awesome-mcp-servers#databases), [Awesome Skills](https://www.awesomeskills.dev/en/skill/astandrik-local-ydb-toolkit).
-- **Trust and audit:** [wmcp.sh](https://wmcp.sh/mcp/grade/npm%3A%40astandrik%2Flocal-ydb-mcp), [MCP Sentinel](https://mcp-sentinelweb-production.up.railway.app/servers/astandrik-local-ydb-mcp), [CuratedMCP](https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server), [Glama](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit), [PolicyLayer](https://policylayer.com/tools/local-ydb).
-- **MCP directories:** [Enterprise DNA](https://enterprisedna.co/directories/mcp/astandrik-local-ydb-toolkit/), [LobeHub](https://lobehub.com/mcp/astandrik-local-ydb-toolkit), [MCP.so](https://mcp.so/server/local-ydb-mcp/astandrik), [MCP Toplist](https://mcptoplist.com/server/io.github.astandrik%2Flocal-ydb-mcp), [Claude Code Marketplaces](https://claudemarketplaces.com/mcp/io.github.astandrik/local-ydb-mcp), [CodeGuilds](https://codeguilds.dev/packages/local-ydb-toolkit), [Skiln](https://skiln.co/mcp/mcp-io-github-astandrik-local-ydb-mcp).
-- **Claimable listing:** [Timeahead MCPScore](https://timeahead.in/mcp/local-ydb-mcp) has a [claim path](https://timeahead.in/mcp/claim/local-ydb-mcp) for owner verification.
+| Surface | Badges |
+| --- | --- |
+| Official registries and lists | [![Official MCP Registry](https://img.shields.io/badge/Official%20MCP%20Registry-active-16a34a)](https://registry.modelcontextprotocol.io/?q=io.github.astandrik%2Flocal-ydb-mcp) [![Listed on Awesome MCP Servers](https://img.shields.io/badge/Awesome%20MCP%20Servers-listed-blue?logo=github)](https://github.com/punkpeye/awesome-mcp-servers#databases) [![Listed on Awesome Skills](https://img.shields.io/badge/Awesome%20Skills-listed-111827)](https://www.awesomeskills.dev/en/skill/astandrik-local-ydb-toolkit) |
+| Trust and audit | <a href="https://wmcp.sh/mcp/grade/npm%3A%40astandrik%2Flocal-ydb-mcp"><img alt="MCP Trust Grade A" src="https://wmcp.sh/mcp/grade/npm%3A%40astandrik%2Flocal-ydb-mcp/badge.svg"></a> [![Audited by MCP Sentinel](https://img.shields.io/badge/MCP%20Sentinel-audited-16a34a)](https://mcp-sentinelweb-production.up.railway.app/servers/astandrik-local-ydb-mcp) [![Listed on CuratedMCP](https://www.curatedmcp.com/api/badge/local-ydb-unofficial-mcp-server)](https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server) [![local-ydb-toolkit MCP server](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit/badges/score.svg)](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit) [![PolicyLayer](https://img.shields.io/badge/PolicyLayer-policy%20catalog-7c3aed)](https://policylayer.com/tools/local-ydb) |
+| MCP directories | [![Listed on Enterprise DNA](https://img.shields.io/badge/Enterprise%20DNA-listed-111827)](https://enterprisedna.co/directories/mcp/astandrik-local-ydb-toolkit/) [![Available on LobeHub](https://lobehub.com/badge/mcp/astandrik-local-ydb-toolkit)](https://lobehub.com/mcp/astandrik-local-ydb-toolkit) [![Listed on MCP.so](https://img.shields.io/badge/MCP.so-listed-2563eb)](https://mcp.so/server/local-ydb-mcp/astandrik) [![Listed on MCP Toplist](https://img.shields.io/badge/MCP%20Toplist-listed-0ea5e9)](https://mcptoplist.com/server/io.github.astandrik%2Flocal-ydb-mcp) [![Listed on Claude Code Marketplaces](https://img.shields.io/badge/Claude%20Code%20Marketplaces-listed-8b5cf6)](https://claudemarketplaces.com/mcp/io.github.astandrik/local-ydb-mcp) [![Available on CodeGuilds](https://img.shields.io/badge/Available_on-CodeGuilds-6366f1)](https://codeguilds.dev/packages/local-ydb-toolkit) [![Listed on Skiln](https://img.shields.io/badge/Skiln-listed-0f766e)](https://skiln.co/mcp/mcp-io-github-astandrik-local-ydb-mcp) |
+| Claimable listing | [![Timeahead MCPScore](https://img.shields.io/badge/Timeahead%20MCPScore-claim%20available-f97316)](https://timeahead.in/mcp/local-ydb-mcp) [claim path](https://timeahead.in/mcp/claim/local-ydb-mcp) |
 
 ## Relationship to `ydb/ydb-mcp`
 
