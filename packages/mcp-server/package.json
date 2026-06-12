@@ -22,7 +22,7 @@
   "bugs": {
     "url": "https://github.com/astandrik/local-ydb-toolkit/issues"
   },
-  "homepage": "https://github.com/astandrik/local-ydb-toolkit#readme",
+  "homepage": "https://local-ydb-toolkit.ydb-qdrant.tech/",
   "keywords": [
     "local-ydb",
     "ydb",
