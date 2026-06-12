@@ -535,10 +535,19 @@ export const DestroyStackArgs = MutatingArgs.extend({
 
 export const DumpArgs = MutatingArgs.extend({
   dumpName: z.string().optional(),
+  path: z.string().optional(),
 });
+
+const RestoreCountQueryArgs = z.object({
+  label: z.string().min(1).optional(),
+  query: z.string().min(1).max(4096),
+}).strict();
 
 export const RestoreArgs = MutatingArgs.extend({
   dumpName: z.string(),
+  path: z.string().optional(),
+  describePaths: z.array(z.string().min(1)).optional(),
+  countQueries: z.array(RestoreCountQueryArgs).optional(),
 });
 
 export const AuthHardeningArgs = MutatingArgs.extend({

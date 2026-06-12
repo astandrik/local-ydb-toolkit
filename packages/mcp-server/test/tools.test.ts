@@ -127,6 +127,7 @@ describe("mcp tools", () => {
       "local_ydb_graphshard_check",
       "local_ydb_healthcheck",
       "local_ydb_inventory",
+      "local_ydb_list_dumps",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
       "local_ydb_permissions",
@@ -264,6 +265,7 @@ describe("mcp tools", () => {
       "local_ydb_graphshard_check",
       "local_ydb_healthcheck",
       "local_ydb_inventory",
+      "local_ydb_list_dumps",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
       "local_ydb_pull_status",
@@ -310,6 +312,7 @@ describe("mcp tools", () => {
       "local_ydb_graphshard_check",
       "local_ydb_healthcheck",
       "local_ydb_inventory",
+      "local_ydb_list_dumps",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
       "local_ydb_permissions",
@@ -541,6 +544,58 @@ describe("mcp tools", () => {
     }) as { executed: boolean; plannedCommands: string[] };
     expect(result.executed).toBe(false);
     expect(result.plannedCommands.length).toBeGreaterThan(0);
+  });
+
+  it("lists dumps through the public MCP handler", async () => {
+    const executor = new RecordingExecutor();
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return { command, exitCode: 0, stdout: "mcp-smoke\n", stderr: "", ok: true, timedOut: false };
+    };
+
+    const result = await callLocalYdbToolForTest("local_ydb_list_dumps", {}, {
+      config: ConfigSchema.parse({}),
+      executor
+    }) as { ok: boolean; dumps: Array<{ name: string; tenantDumpPath: string }> };
+
+    expect(result.ok).toBe(true);
+    expect(result.dumps).toEqual([
+      {
+        name: "mcp-smoke",
+        hostPath: "/tmp/local-ydb-dump/mcp-smoke",
+        tenantDumpPath: "/tmp/local-ydb-dump/mcp-smoke/tenant"
+      }
+    ]);
+  });
+
+  it("passes path-level dump args through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_dump_tenant", {
+      dumpName: "path-smoke",
+      path: "dir/table"
+    }, {
+      config: ConfigSchema.parse({})
+    }) as { executed: boolean; plannedCommands: string[] };
+
+    expect(result.executed).toBe(false);
+    expect(result.plannedCommands.join("\n")).toContain("tools dump -p dir/table");
+  });
+
+  it("passes restore verification hooks through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      path: "restore-root",
+      describePaths: ["restore-root/table"],
+      countQueries: [{ label: "rows", query: "SELECT COUNT(*) FROM `restore-root/table`;" }]
+    }, {
+      config: ConfigSchema.parse({})
+    }) as { executed: boolean; plannedCommands: string[] };
+
+    expect(result.executed).toBe(false);
+    expect(result.plannedCommands).toHaveLength(3);
+    expect(result.plannedCommands[0]).toContain("tools restore -p restore-root");
+    expect(result.plannedCommands[1]).toContain("scheme describe /local/example/restore-root/table");
+    expect(result.plannedCommands[2]).toContain("sql -s 'SELECT COUNT(*) FROM `restore-root/table`;'");
   });
 
   it("exposes a root-only bootstrap tool", async () => {

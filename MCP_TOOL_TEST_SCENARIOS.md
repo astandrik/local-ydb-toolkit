@@ -37,6 +37,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_remove_dynamic_nodes`
 - `local_ydb_restart_stack`
 - `local_ydb_upgrade_version`
+- `local_ydb_list_dumps`
 - `local_ydb_dump_tenant`
 - `local_ydb_restore_tenant`
 - `local_ydb_prepare_auth_config`
@@ -442,14 +443,25 @@ Calls:
 
 ```json
 { "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_list_dumps", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "dumpName": "pre-auth-mcp-20260425" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_graphshard_check", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
+Path-level example:
+
+```json
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "dumpName": "one-table-smoke", "path": "dir/table" } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "dumpName": "one-table-smoke", "path": ".", "describePaths": ["dir/table"], "countQueries": [{ "label": "dir/table rows", "query": "SELECT COUNT(*) FROM `dir/table`;" }] } }
+```
+
+For dump, `path` is the source object or directory for `ydb tools dump -p`. For restore, `path` is the destination directory for `ydb tools restore -p`; restoring a single table dump back under the tenant root normally uses `path: "."`.
+
 Expected:
 
 - dump helper container runs with `--entrypoint /bin/bash`
+- list-dumps reports dump directories that contain a `tenant` folder
 - restore helper container runs with `--entrypoint /bin/bash`
 - restored tenant returns `.metadata  .sys`
 - GraphShard exists after restore
@@ -827,7 +839,7 @@ Avoid:
 - Full teardown:
   `local_ydb_destroy_stack`
 - Backup and restore:
-  `local_ydb_dump_tenant`, `local_ydb_restore_tenant`
+  `local_ydb_list_dumps`, `local_ydb_dump_tenant`, `local_ydb_restore_tenant`
 - Auth rollout:
   `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_permissions`, `local_ydb_auth_check`
 - Read-only diagnostics:

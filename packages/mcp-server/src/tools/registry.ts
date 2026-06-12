@@ -17,6 +17,7 @@ import {
   graphshardCheck,
   healthcheck,
   inspectScheme,
+  listDumps,
   inventory,
   listVersions,
   managePermissions,
@@ -78,6 +79,7 @@ import {
   generateSchemaSchema,
   healthcheckSchema,
   listVersionsSchema,
+  listDumpsSchema,
   logsSchema,
   mutatingSchema,
   permissionsSchema,
@@ -500,9 +502,18 @@ export const toolDefinitions = [
   }),
   defineTool({
     group: "backup restore",
+    name: "local_ydb_list_dumps",
+    description:
+      "Read-only list of available tenant dumps under profile.dumpHostPath. Use before restore to choose a dumpName; it only reports top-level dump directories that contain the existing tenant dump folder.",
+    inputSchema: listDumpsSchema(),
+    annotations: readOnlyAnnotations(),
+    handler: withContext(ProfileArgs, (context) => listDumps(context)),
+  }),
+  defineTool({
+    group: "backup restore",
     name: "local_ydb_dump_tenant",
     description:
-      "Dump the configured tenant using a local-ydb helper container on the static container network. It creates profile.dumpHostPath/dumpName, excludes .sys objects, writes the tenant dump under dumpName/tenant, and without confirm=true returns the mkdir/helper-container plan only.",
+      "Dump the configured tenant or a tenant-relative path using a local-ydb helper container on the static container network. It creates profile.dumpHostPath/dumpName, excludes .sys objects, writes the dump under dumpName/tenant, and without confirm=true returns the mkdir/helper-container plan only.",
     inputSchema: dumpSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(DumpArgs, (context, parsed) =>
@@ -513,7 +524,7 @@ export const toolDefinitions = [
     group: "backup restore",
     name: "local_ydb_restore_tenant",
     description:
-      "Restore the configured tenant from a dump under profile.dumpHostPath. Use after bootstrap or rebuild when the target tenant is ready; without confirm=true this returns the restore plan and does not write data.",
+      "Restore the configured tenant or destination path from a dump under profile.dumpHostPath, with optional post-restore scheme describe and bounded count-query verification. Use after bootstrap or rebuild when the target tenant is ready; without confirm=true this returns the restore plan and does not write data.",
     inputSchema: restoreSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: withContext(RestoreArgs, (context, parsed) =>

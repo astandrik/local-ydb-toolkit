@@ -865,6 +865,22 @@ export function dumpSchema(): Tool["inputSchema"] {
         type: "string",
         description: "Optional dump directory name under profile.dumpHostPath.",
       },
+      path: {
+        type: "string",
+        description:
+          "Relative YDB object or directory path to dump inside the configured tenant. Defaults to . for tenant-wide dump semantics.",
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
+export function listDumpsSchema(): Tool["inputSchema"] {
+  return {
+    type: "object",
+    properties: {
+      profile: profileProperty(),
+      configPath: configPathProperty(),
     },
     additionalProperties: false,
   };
@@ -904,6 +920,39 @@ export function restoreSchema(): Tool["inputSchema"] {
       dumpName: {
         type: "string",
         description: "Dump directory name under profile.dumpHostPath.",
+      },
+      path: {
+        type: "string",
+        description:
+          "Destination directory path for YDB tools restore -p, relative to the configured tenant. Defaults to . for tenant root.",
+      },
+      describePaths: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Optional tenant-relative paths to verify with scheme describe after the restore command.",
+      },
+      countQueries: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["query"],
+          properties: {
+            label: {
+              type: "string",
+              description: "Optional label used in verification output for this count query.",
+            },
+            query: {
+              type: "string",
+              maxLength: 4096,
+              description:
+                "Bounded SELECT COUNT(...) query to run after restore. Must be a single statement.",
+            },
+          },
+          additionalProperties: false,
+        },
+        description:
+          "Optional bounded SELECT COUNT(...) queries to verify restored data after the restore command.",
       },
     },
     additionalProperties: false,
