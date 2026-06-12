@@ -36,6 +36,7 @@ The live MCP integration workflow also builds the server, starts YDB through `as
 - `server.json` - Official MCP Registry metadata for `io.github.astandrik/local-ydb-mcp`.
 - `MCP_TOOL_TEST_SCENARIOS.md` - Manual MCP tool scenarios.
 - `vitest.config.ts` - Vitest configuration and workspace alias for `@local-ydb-toolkit/core`.
+- `../local-ydb-toolkit-ui` - Sibling checkout for the public website when present; keep website-facing product metadata in sync when this repo changes public discovery or install surfaces.
 
 ## Code Style
 - Use strict TypeScript with ES modules and `NodeNext`; relative TypeScript imports include the emitted `.js` suffix.
@@ -60,6 +61,9 @@ export interface OperationPlan {
 - When changing prompts, update `packages/mcp-server/src/prompts.ts`, prompt tests or docs-consistency tests, and README prompt descriptions together.
 - When changing response formatting, verify JSON and TOON behavior and keep lossy or non-round-trippable TOON output falling back to pretty JSON.
 - Keep `server.json`, `packages/mcp-server/package.json` `version`/`mcpName`, release-please metadata, and package README aligned during release metadata changes.
+- When changing public positioning, badges, directory/trust listings, install commands, npm or GitHub Action names, registry metadata, README discovery links, or agent-facing docs, check whether the website repo in `../local-ydb-toolkit-ui` needs the same update. Typical website sync points are `src/lib/product-data.ts`, `src/lib/agent-markdown.ts`, `src/lib/mcp-server.ts`, the homepage UI, and related tests.
+- For website sync work, run the website repo's own checks before handoff: `npm test`, `npm run lint`, `npx tsc --noEmit --incremental false`, and `npm run build`. Deploy the website only when the user asks for deployment or the current task explicitly includes it.
+- In completion reports for public-facing changes, state whether the website was updated, checked as not applicable, or left as a follow-up.
 
 ## Boundaries
 - Always do: Keep public examples generic, run focused tests plus typecheck for TypeScript changes, preserve plan-only behavior for mutating tools, and sync tests/docs with public MCP behavior changes.
