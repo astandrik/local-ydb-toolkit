@@ -1,5 +1,6 @@
 # local-ydb-toolkit
 
+[![Website](https://img.shields.io/badge/Website-local--ydb--toolkit-0f766e)](https://local-ydb-toolkit.ydb-qdrant.tech/)
 [![Listed on Awesome MCP Servers](https://img.shields.io/badge/Awesome%20MCP%20Servers-listed-blue?logo=github)](https://github.com/punkpeye/awesome-mcp-servers#databases)
 [![Listed on Awesome Skills](https://img.shields.io/badge/Awesome%20Skills-listed-111827)](https://www.awesomeskills.dev/en/skill/astandrik-local-ydb-toolkit)
 [![Official MCP Registry](https://img.shields.io/badge/Official%20MCP%20Registry-active-16a34a)](https://registry.modelcontextprotocol.io/?q=io.github.astandrik%2Flocal-ydb-mcp)
@@ -17,6 +18,8 @@
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-setup--local--ydb-blue?logo=github)](https://github.com/marketplace/actions/setup-local-ydb)
 
 Toolkit for operating `local-ydb` deployments across Codex, MCP clients, and GitHub Actions CI.
+
+Website: [local-ydb-toolkit.ydb-qdrant.tech](https://local-ydb-toolkit.ydb-qdrant.tech/).
 
 It includes:
 

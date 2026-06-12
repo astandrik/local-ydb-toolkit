@@ -2,6 +2,8 @@
 
 Unofficial stdio MCP server for operating Docker-based `local-ydb` deployments.
 
+Website: [local-ydb-toolkit.ydb-qdrant.tech](https://local-ydb-toolkit.ydb-qdrant.tech/).
+
 ## Relationship to `ydb/ydb-mcp`
 
 This package is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` for general YDB database-level tools such as ad hoc SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.

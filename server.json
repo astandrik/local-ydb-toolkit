@@ -4,7 +4,7 @@
   "title": "Local YDB MCP",
   "description": "Operate local-ydb deployments through local or SSH-backed MCP tools.",
   "version": "0.13.1",
-  "websiteUrl": "https://github.com/astandrik/local-ydb-toolkit#readme",
+  "websiteUrl": "https://local-ydb-toolkit.ydb-qdrant.tech/",
   "repository": {
     "url": "https://github.com/astandrik/local-ydb-toolkit",
     "source": "github",
