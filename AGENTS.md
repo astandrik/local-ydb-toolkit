@@ -56,6 +56,20 @@ export interface OperationPlan {
 }
 ```
 
+## Upstream YDB Source Lookup
+- When behavior depends on YDB server, CLI, Docker image, CMS tenants, GraphShard, storage/BSC, auth, viewer JSON, healthcheck, dump/restore, or YQL DDL semantics, verify against upstream [`ydb-platform/ydb`](https://github.com/ydb-platform/ydb) instead of relying on memory.
+- Prefer `gh api search/code` and `gh api repos/ydb-platform/ydb/contents/...` for source reads. Use stable search terms such as command names, proto fields, endpoint paths, env vars, error strings, or feature flags. Pin a commit SHA in docs when behavior is version-specific.
+- Useful upstream entry points:
+  - `.github/docker/Dockerfile`, `.github/docker/files/initialize_local_ydb`, `.github/docker/files/health_check`, and `ydb/public/tools/local_ydb/` for `ghcr.io/ydb-platform/local-ydb` image behavior.
+  - `ydb/apps/ydb/` and `ydb/public/lib/ydb_cli/` for `/ydb` CLI commands; dump/restore lives under `ydb/public/lib/ydb_cli/dump/`, scheme and permissions under `ydb/public/lib/ydb_cli/commands/ydb_service_scheme.cpp`, monitoring healthcheck under `ydb/public/lib/ydb_cli/commands/ydb_service_monitoring.cpp`.
+  - `ydb/apps/ydbd/` and `ydb/core/driver_lib/cli_utils/` for `/ydbd` admin commands; database tenant commands are in `cli_cmds_tenant.cpp`, blobstorage config commands in `cli_cmds_bs.cpp`.
+  - `ydb/public/api/protos/ydb_cms.proto`, `ydb/public/api/grpc/ydb_cms_v1.proto`, and `ydb/core/cms/console/` for CMS database create/status/remove behavior.
+  - `ydb/core/graph/`, `ydb/core/viewer/viewer_capabilities.h`, and SchemeShard tenant code under `ydb/core/tx/schemeshard/` for GraphShard behavior and capability reporting.
+  - `ydb/core/protos/blobstorage_config.proto` and `ydb/core/mind/bscontroller/` for `ReadStoragePool`, `DefineStoragePool`, `QueryBaseConfig`, PDisk, and group-placement behavior.
+  - `ydb/core/viewer/` for `/viewer/json/*` endpoints such as `nodelist`, `whoami`, `capabilities`, and healthcheck routing.
+  - `ydb/core/protos/auth.proto`, `ydb/core/protos/config.proto`, and `ydb/docs/en/core/reference/configuration/security_config.md` for auth token fields and `security_config` behavior.
+  - `ydb/public/api/protos/ydb_scheme.proto`, `ydb/public/api/protos/ydb_table.proto`, `ydb/docs/en/core/yql/reference/syntax/`, and `yql/essentials/parser/` for schema, table, and YQL DDL semantics.
+
 ## MCP and Documentation Consistency
 - When changing a public tool, update the core operation surface, MCP args/input schema/registry wiring, tests, README operation docs, and `MCP_TOOL_TEST_SCENARIOS.md` together.
 - When changing prompts, update `packages/mcp-server/src/prompts.ts`, prompt tests or docs-consistency tests, and README prompt descriptions together.

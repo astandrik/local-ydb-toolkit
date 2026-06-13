@@ -15,6 +15,7 @@ import type {
 const SYSTEM_PATH_EXCLUDE_PATTERN = "(^|/)\\.sys(/|$)";
 const DEFAULT_YDB_DUMP_PATH = ".";
 const MAX_COUNT_QUERY_BYTES = 4096;
+const COUNT_QUERY_PATTERN = /^select\s+count\s*\(\s*(?:\*|1)\s*\)(?:\s+(?:as\s+)?[A-Za-z_][A-Za-z0-9_]*)?\s+from\s+`([^`\r\n]+)`\s*$/i;
 
 export async function createTenant(ctx: ToolkitContext, options: MutatingOptions = {}) {
   return runMutating(ctx, {
@@ -130,9 +131,21 @@ function defaultDumpName(ctx: ToolkitContext): string {
 function parseDumpNames(stdout: string): string[] {
   return stdout
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
+    .map(normalizeListedDumpName)
+    .filter((name): name is string => name !== undefined)
     .filter((name, index, names) => names.indexOf(name) === index);
+}
+
+function normalizeListedDumpName(value: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const dumpName = normalizeDumpName(value);
+    return dumpName === value ? dumpName : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeDumpName(value: string): string {
@@ -211,11 +224,27 @@ function normalizeCountQuery(value: string): string {
     throw new Error(`countQueries[].query must be non-empty and at most ${MAX_COUNT_QUERY_BYTES} bytes`);
   }
   const withoutTrailingSemicolon = query.endsWith(";") ? query.slice(0, -1) : query;
-  if (withoutTrailingSemicolon.includes(";") || /\bunion\b/i.test(withoutTrailingSemicolon)) {
+  if (
+    withoutTrailingSemicolon.includes(";") ||
+    /\b(?:union|intersect|except)\b/i.test(stripQuotedSqlText(withoutTrailingSemicolon))
+  ) {
     throw new Error("countQueries[].query must contain a single SELECT COUNT statement");
   }
-  if (!/^select\s+count\s*\([^)]{1,256}\)(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*|\s+[A-Za-z_][A-Za-z0-9_]*)?\s+from\b/i.test(withoutTrailingSemicolon)) {
-    throw new Error("countQueries[].query must start with SELECT COUNT(...) and include FROM");
+  const match = COUNT_QUERY_PATTERN.exec(withoutTrailingSemicolon);
+  if (!match) {
+    throw new Error("countQueries[].query must use SELECT COUNT(*) or COUNT(1) FROM `relative/path`");
+  }
+  const fromPath = match[1] ?? "";
+  const normalizedPath = normalizeYdbRelativePath(fromPath, "countQueries[].query FROM path");
+  if (normalizedPath === "." || normalizedPath !== fromPath) {
+    throw new Error("countQueries[].query FROM path must be a relative YDB object path");
   }
   return query;
+}
+
+function stripQuotedSqlText(query: string): string {
+  return query
+    .replace(/`(?:``|[^`])*`/g, " ")
+    .replace(/'(?:''|[^'])*'/g, " ")
+    .replace(/"(?:\\"|[^"])*"/g, " ");
 }

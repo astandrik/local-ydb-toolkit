@@ -945,13 +945,13 @@ export function restoreSchema(): Tool["inputSchema"] {
             query: {
               type: "string",
               description:
-                "Bounded SELECT COUNT(...) query to run after restore. Must be a single statement and at most 4096 UTF-8 bytes.",
+                "Bounded whole-table count query to run after restore, for example SELECT COUNT(*) FROM `tenant-relative/path`;. Must be a single statement using COUNT(*) or COUNT(1) and at most 4096 UTF-8 bytes.",
             },
           },
           additionalProperties: false,
         },
         description:
-          "Optional bounded SELECT COUNT(...) queries to verify restored data after the restore command.",
+          "Optional bounded whole-table SELECT COUNT(*) or COUNT(1) queries to verify restored data after the restore command.",
       },
     },
     additionalProperties: false,

@@ -313,6 +313,7 @@ async function verifyBackupRestore(client, profile) {
   let failure;
   let cleanupFailure;
   try {
+    await cleanupBackupRestoreObjects(sourcePath, restorePath, tableName);
     await runYdbCli(["scheme", "mkdir", `${tenantPath}/${sourcePath}`], "create backup source directory");
     await runYdbCli([
       "sql",
@@ -411,6 +412,11 @@ async function verifyBackupRestore(client, profile) {
     } catch (error) {
       cleanupFailure = error;
     }
+    try {
+      await cleanupBackupRestoreObjects(sourcePath, restorePath, tableName);
+    } catch (error) {
+      cleanupFailure ??= error;
+    }
   }
 
   if (failure) {
@@ -421,6 +427,23 @@ async function verifyBackupRestore(client, profile) {
   }
   if (cleanupFailure) {
     throw cleanupFailure;
+  }
+}
+
+async function cleanupBackupRestoreObjects(sourcePath, restorePath, tableName) {
+  for (const tablePath of [`${sourcePath}/${tableName}`, `${restorePath}/${tableName}`]) {
+    await runYdbCliAllowFailure([
+      "sql",
+      "-s",
+      `DROP TABLE \`${tablePath}\`;`,
+    ], `cleanup backup table ${tablePath}`);
+  }
+  for (const directoryPath of [restorePath, sourcePath]) {
+    await runYdbCliAllowFailure([
+      "scheme",
+      "rmdir",
+      `${tenantPath}/${directoryPath}`,
+    ], `cleanup backup directory ${directoryPath}`);
   }
 }
 
@@ -529,6 +552,23 @@ async function runYdbCli(args, description) {
       stderr: result.stderr,
     }, null, 2));
     assert(result.exitCode === 0, result.stderr || `${description} failed`);
+    return result;
+  } finally {
+    console.log("::endgroup::");
+  }
+}
+
+async function runYdbCliAllowFailure(args, description) {
+  console.log(`::group::ydb/${description}`);
+  try {
+    const result = await runCommand("docker", ydbCliDockerArgs(args), {
+      input: rootPasswordFile ? await readFile(rootPasswordFile) : undefined,
+    });
+    console.log(JSON.stringify({
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }, null, 2));
     return result;
   } finally {
     console.log("::endgroup::");

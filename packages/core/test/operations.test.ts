@@ -709,7 +709,7 @@ describe("mutating operations", () => {
       return {
         command,
         exitCode: 0,
-        stdout: "mcp-smoke\npre-auth\n",
+        stdout: "mcp smoke\nmcp-smoke\n../escape\n.\n..\nbad\\name\nbad\u0007name\n name \npre-auth\n",
         stderr: "",
         ok: true,
         timedOut: false
@@ -722,6 +722,11 @@ describe("mutating operations", () => {
     expect(response.ok).toBe(true);
     expect(response.dumpHostPath).toBe("/tmp/local-ydb-dump");
     expect(response.dumps).toEqual([
+      {
+        name: "mcp smoke",
+        hostPath: "/tmp/local-ydb-dump/mcp smoke",
+        tenantDumpPath: "/tmp/local-ydb-dump/mcp smoke/tenant"
+      },
       {
         name: "mcp-smoke",
         hostPath: "/tmp/local-ydb-dump/mcp-smoke",
@@ -824,10 +829,43 @@ describe("mutating operations", () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
 
-    await expect(restoreTenant(ctx, {
+    for (const setOperation of ["UNION ALL", "INTERSECT", "EXCEPT"]) {
+      await expect(restoreTenant(ctx, {
+        dumpName: "mcp-smoke",
+        countQueries: [{ query: `SELECT COUNT(*) FROM \`table\` ${setOperation} SELECT COUNT(*) FROM \`other_table\`;` }]
+      })).rejects.toThrow("countQueries[].query must contain a single SELECT COUNT statement");
+    }
+  });
+
+  it("rejects count query subqueries and unsupported count expressions", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    for (const query of [
+      "SELECT COUNT(*) FROM (SELECT id FROM `admin_table`) AS t;",
+      "SELECT COUNT(NULLIF(id, 0)) FROM `table`;",
+      "SELECT COUNT(*) FROM `../table`;"
+    ]) {
+      await expect(restoreTenant(ctx, {
+        dumpName: "mcp-smoke",
+        countQueries: [{ query }]
+      })).rejects.toThrow(/countQueries\[\]\.query/);
+    }
+  });
+
+  it("allows count query set-operation words inside quoted identifiers", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const response = await restoreTenant(ctx, {
       dumpName: "mcp-smoke",
-      countQueries: [{ query: "SELECT COUNT(*) FROM `table` UNION ALL SELECT COUNT(*) FROM `other_table`;" }]
-    })).rejects.toThrow("countQueries[].query must contain a single SELECT COUNT statement");
+      countQueries: [{ query: "SELECT COUNT(*) FROM `except`;" }]
+    });
+
+    expect(response.executed).toBe(false);
+    expect(response.verificationHooks).toEqual([
+      { type: "countQuery", label: "count query 1", query: "SELECT COUNT(*) FROM `except`;" }
+    ]);
   });
 
   it("waits for tenant readiness instead of trusting create exit code", async () => {

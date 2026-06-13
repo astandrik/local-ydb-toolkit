@@ -609,6 +609,14 @@ describe("mcp tools", () => {
     })).rejects.toThrow("query must be at most 4096 bytes");
   });
 
+  it("rejects empty restore dump names at the MCP argument layer", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "",
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("String must contain at least 1 character");
+  });
+
   it("exposes a root-only bootstrap tool", async () => {
     const result = await callLocalYdbToolForTest("local_ydb_bootstrap_root_database", {}, {
       config: ConfigSchema.parse({})
