@@ -1,0 +1,249 @@
+[
+  {
+    "id": "explicit-database-diagnosis",
+    "name": "Explicit local-ydb database diagnosis",
+    "prompt": "Use $local-ydb. A tenant looks unhealthy and I need a safe first-pass diagnosis. Plan the MCP tool sequence only; do not execute anything.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_healthcheck"
+      ],
+      "requiredTerms": [
+        "read-only",
+        "selfCheckResult"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "root-bootstrap-default",
+    "name": "Root database bootstrap for generic local database",
+    "prompt": "I just need to create a generic local YDB database at /local for development. Which MCP workflow should I use? Plan only.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_check_prerequisites",
+        "local_ydb_bootstrap_root_database"
+      ],
+      "requiredTerms": [
+        "root",
+        "plan"
+      ],
+      "forbiddenTools": [
+        "local_ydb_bootstrap"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "cms-tenant-graphshard-bootstrap",
+    "name": "CMS tenant and GraphShard bootstrap",
+    "prompt": "I need /local/analytics with a CMS-created tenant, GraphShard support, and a dynamic tenant node. Plan the safe MCP sequence.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_check_prerequisites",
+        "local_ydb_bootstrap",
+        "local_ydb_tenant_check",
+        "local_ydb_graphshard_check"
+      ],
+      "requiredTerms": [
+        "CMS",
+        "GraphShard",
+        "dynamic"
+      ],
+      "forbiddenTerms": [
+        "local_ydb_bootstrap_root_database",
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "schema-generate-apply",
+    "name": "Schema generate validate apply flow",
+    "prompt": "Plan a safe flow to create a row table with a secondary index in local-ydb using the MCP schema tools.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_generate_schema",
+        "local_ydb_apply_schema"
+      ],
+      "requiredTerms": [
+        "validate",
+        "plan"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "version-upgrade-backup-first",
+    "name": "Version upgrade requires backup first",
+    "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to a newer exact tag while preserving tenant data. Plan only.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_list_versions",
+        "local_ydb_pull_image",
+        "local_ydb_dump_tenant",
+        "local_ydb_upgrade_version"
+      ],
+      "requiredTerms": [
+        "exact tag",
+        "dump",
+        "restore"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "storage-reduction-rebuild",
+    "name": "Storage reduction by dump rebuild restore",
+    "prompt": "The tenant storage pool was over-allocated and we need to reduce groups safely. Give the MCP sequence and safety checks, plan only.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_storage_placement",
+        "local_ydb_dump_tenant",
+        "local_ydb_reduce_storage_groups",
+        "local_ydb_restore_tenant"
+      ],
+      "requiredTerms": [
+        "rebuild",
+        "verify",
+        "BSC"
+      ],
+      "forbiddenTerms": [
+        "DecommitGroups",
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "path-level-dump-restore",
+    "name": "Path-level dump list restore with hooks",
+    "prompt": "I have one directory smoke_src and want to dump it, discover the dump, and restore it into smoke_dst with describe and COUNT verification hooks. Plan the MCP sequence only.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_dump_tenant",
+        "local_ydb_list_dumps",
+        "local_ydb_restore_tenant"
+      ],
+      "requiredTerms": [
+        "path",
+        "destination",
+        "describePaths",
+        "countQueries"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "auth-hardening-backup-first",
+    "name": "Auth hardening backup and verification",
+    "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. What should the agent plan before applying it?",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_dump_tenant",
+        "local_ydb_prepare_auth_config",
+        "local_ydb_apply_auth_hardening",
+        "local_ydb_auth_check"
+      ],
+      "requiredTerms": [
+        "backup",
+        "anonymous",
+        "authenticated"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "cleanup-storage-plan-only",
+    "name": "Cleanup storage remains destructive and plan-first",
+    "prompt": "There are old local-ydb dump directories and volumes after a migration. Plan how to inspect and clean them safely using MCP tools.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_storage_leftovers",
+        "local_ydb_cleanup_storage"
+      ],
+      "requiredTerms": [
+        "plan",
+        "destructive",
+        "verify"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "upstream-ydb-source-lookup",
+    "name": "Upstream source lookup for YDB semantics",
+    "prompt": "The YDB CLI dump/restore path semantics are unclear. What should the agent inspect before changing toolkit behavior?",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [],
+      "requiredTerms": [
+        "ydb-platform/ydb",
+        "gh api",
+        "tools dump",
+        "tools restore"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "negative-unrelated-python-test",
+    "name": "Negative control unrelated Python unit test",
+    "prompt": "A Python function reverses strings incorrectly. Explain how to write a small unit test for it. Do not discuss databases.",
+    "expected": {
+      "shouldUseLocalYdbSkill": false,
+      "requiredOrderedTools": [],
+      "requiredTerms": [
+        "unit test"
+      ],
+      "forbiddenTerms": [
+        "local_ydb_",
+        "local-ydb",
+        "YDB"
+      ]
+    }
+  }
+]
