@@ -640,6 +640,24 @@ describe("mcp tools", () => {
     })).rejects.toThrow("String must contain at least 1 character");
   });
 
+  it("rejects blank restore paths at the MCP argument layer", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      path: "   "
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("String must contain at least 1 character");
+  });
+
+  it("rejects blank restore describe paths at the MCP argument layer", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      describePaths: ["   "]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("String must contain at least 1 character");
+  });
+
   it("rejects blank restore count query labels at the MCP argument layer", async () => {
     await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
       dumpName: "path-smoke",

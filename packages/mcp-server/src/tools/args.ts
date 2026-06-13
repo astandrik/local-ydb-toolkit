@@ -548,8 +548,8 @@ const RestoreCountQueryArgs = z.object({
 
 export const RestoreArgs = MutatingArgs.extend({
   dumpName: z.string().trim().min(1),
-  path: z.string().optional(),
-  describePaths: z.array(z.string().min(1)).optional(),
+  path: z.string().trim().min(1).optional(),
+  describePaths: z.array(z.string().trim().min(1)).optional(),
   countQueries: z.array(RestoreCountQueryArgs).optional(),
 });
 
