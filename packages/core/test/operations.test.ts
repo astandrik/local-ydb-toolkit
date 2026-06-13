@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,6 +16,7 @@ import {
   destroyStack,
   dumpTenant,
   healthcheck,
+  listDumps,
   nodesCheck,
   prepareAuthConfig,
   pullImage,
@@ -24,6 +25,7 @@ import {
   reduceStorageGroups,
   removeDynamicNodes,
   restartStack,
+  restoreTenant,
   ShellCommandExecutor,
   shellQuote,
   startDynamicNode,
@@ -686,6 +688,218 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[1]).toContain("tools dump -p . --exclude");
     expect(response.plannedCommands[1]).toContain("'(^|/)\\.sys(/|$)'");
     expect(response.plannedCommands[1]).toContain("-o /dump/mcp-smoke/tenant");
+  });
+
+  it("quotes dump rollback and verification paths", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await dumpTenant(ctx, { dumpName: "mcp smoke" });
+
+    expect(response.executed).toBe(false);
+    expect(response.plannedCommands[0]).toContain("/tmp/local-ydb-dump/mcp smoke");
+    expect(response.rollback).toEqual(["rm -rf '/tmp/local-ydb-dump/mcp smoke'"]);
+    expect(response.verification).toEqual(["test -d '/tmp/local-ydb-dump/mcp smoke/tenant'"]);
+  });
+
+  it("lists named dumps that contain a tenant dump directory", async () => {
+    const executor = new RecordingExecutor();
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 0,
+        stdout: "mcp smoke\nmcp-smoke\n../escape\n.\n..\nbad\\name\nbad\u0007name\n name \npre-auth\n",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const response = await listDumps(ctx);
+
+    expect(response.ok).toBe(true);
+    expect(response.dumpHostPath).toBe("/tmp/local-ydb-dump");
+    expect(response.dumps).toEqual([
+      {
+        name: "mcp smoke",
+        hostPath: "/tmp/local-ydb-dump/mcp smoke",
+        tenantDumpPath: "/tmp/local-ydb-dump/mcp smoke/tenant"
+      },
+      {
+        name: "mcp-smoke",
+        hostPath: "/tmp/local-ydb-dump/mcp-smoke",
+        tenantDumpPath: "/tmp/local-ydb-dump/mcp-smoke/tenant"
+      },
+      {
+        name: "pre-auth",
+        hostPath: "/tmp/local-ydb-dump/pre-auth",
+        tenantDumpPath: "/tmp/local-ydb-dump/pre-auth/tenant"
+      }
+    ]);
+    expect(response.command).toContain("for dir in /tmp/local-ydb-dump/*");
+    expect(response.command).toContain("find \"$dir/tenant\" -name incomplete -print -quit");
+  });
+
+  it("filters dumps with incomplete restore markers", async () => {
+    const dumpHostPath = mkdtempSync(join(tmpdir(), "local-ydb-dumps-"));
+    try {
+      mkdirSync(join(dumpHostPath, "complete", "tenant"), { recursive: true });
+      mkdirSync(join(dumpHostPath, "root-incomplete", "tenant"), { recursive: true });
+      writeFileSync(join(dumpHostPath, "root-incomplete", "tenant", "incomplete"), "", "utf8");
+      mkdirSync(join(dumpHostPath, "nested-incomplete", "tenant", "dir"), { recursive: true });
+      writeFileSync(join(dumpHostPath, "nested-incomplete", "tenant", "dir", "incomplete"), "", "utf8");
+      mkdirSync(join(dumpHostPath, "no-tenant"), { recursive: true });
+      const ctx = createContext(undefined, new ShellCommandExecutor(), ConfigSchema.parse({
+        profiles: {
+          default: {
+            dumpHostPath
+          }
+        }
+      }));
+
+      const response = await listDumps(ctx);
+
+      expect(response.ok).toBe(true);
+      expect(response.stdout).toBe("complete\n");
+      expect(response.dumps).toEqual([
+        {
+          name: "complete",
+          hostPath: `${dumpHostPath}/complete`,
+          tenantDumpPath: `${dumpHostPath}/complete/tenant`
+        }
+      ]);
+    } finally {
+      rmSync(dumpHostPath, { recursive: true, force: true });
+    }
+  });
+
+  it("builds path-level dump commands with validated relative YDB paths", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await dumpTenant(ctx, { dumpName: "path-smoke", path: "dir/table" });
+
+    expect(response.executed).toBe(false);
+    expect(response).toMatchObject({
+      dumpName: "path-smoke",
+      path: "dir/table",
+      sourcePath: "/local/example/dir/table",
+      dumpPath: "/tmp/local-ydb-dump/path-smoke"
+    });
+    expect(response.summary).toContain("Dump /local/example/dir/table");
+    expect(response.plannedCommands[1]).toContain("tools dump -p dir/table --exclude");
+    expect(response.plannedCommands[1]).toContain("-o /dump/path-smoke/tenant");
+  });
+
+  it("rejects unsafe dump names and YDB relative paths", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    await expect(dumpTenant(ctx, { dumpName: "../escape" })).rejects.toThrow("dumpName must be a single directory name");
+    await expect(dumpTenant(ctx, { path: "/local/example/table" })).rejects.toThrow("path must be . or a relative YDB path");
+    await expect(restoreTenant(ctx, { dumpName: "mcp-smoke", path: "dir//table" })).rejects.toThrow("path must be . or a relative YDB path");
+  });
+
+  it("keeps restore plan-only while appending optional verification hooks", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await restoreTenant(ctx, {
+      dumpName: "mcp-smoke",
+      path: "restore-root",
+      describePaths: ["restore-root/table"],
+      countQueries: [
+        {
+          label: "table rows",
+          query: "SELECT COUNT(*) AS rows FROM `restore-root/table`;"
+        }
+      ]
+    });
+
+    expect(response.executed).toBe(false);
+    expect(response.risk).toBe("high");
+    expect(response).toMatchObject({
+      dumpName: "mcp-smoke",
+      path: "restore-root",
+      targetPath: "/local/example/restore-root",
+      verificationHooks: [
+        {
+          type: "schemeDescribe",
+          path: "restore-root/table",
+          resolvedPath: "/local/example/restore-root/table"
+        },
+        {
+          type: "countQuery",
+          label: "table rows",
+          query: "SELECT COUNT(*) AS rows FROM `restore-root/table`;"
+        }
+      ]
+    });
+    expect(response.summary).toContain("Restore /local/example/restore-root");
+    expect(response.plannedCommands).toHaveLength(3);
+    expect(response.plannedCommands[0]).toContain("tools restore -p restore-root -i /dump/mcp-smoke/tenant");
+    expect(response.plannedCommands[1]).toContain("scheme describe /local/example/restore-root/table");
+    expect(response.plannedCommands[2]).toContain("sql -s 'SELECT COUNT(*) AS rows FROM `restore-root/table`;'");
+  });
+
+  it("executes restore verification hooks after the restore command", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await restoreTenant(ctx, {
+      confirm: true,
+      dumpName: "mcp-smoke",
+      describePaths: ["table"],
+      countQueries: [{ query: "SELECT COUNT(*) FROM `table`;" }]
+    });
+
+    expect(response.executed).toBe(true);
+    expect(executor.commands).toHaveLength(3);
+    expect(executor.commands[0]).toContain("tools restore -p . -i /dump/mcp-smoke/tenant");
+    expect(executor.commands[1]).toContain("scheme describe /local/example/table");
+    expect(executor.commands[2]).toContain("sql -s 'SELECT COUNT(*) FROM `table`;'");
+  });
+
+  it("rejects count query set operations", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    for (const setOperation of ["UNION ALL", "INTERSECT", "EXCEPT"]) {
+      await expect(restoreTenant(ctx, {
+        dumpName: "mcp-smoke",
+        countQueries: [{ query: `SELECT COUNT(*) FROM \`table\` ${setOperation} SELECT COUNT(*) FROM \`other_table\`;` }]
+      })).rejects.toThrow("countQueries[].query must contain a single SELECT COUNT statement");
+    }
+  });
+
+  it("rejects count query subqueries and unsupported count expressions", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    for (const query of [
+      "SELECT COUNT(*) FROM (SELECT id FROM `admin_table`) AS t;",
+      "SELECT COUNT(NULLIF(id, 0)) FROM `table`;",
+      "SELECT COUNT(*) FROM `../table`;"
+    ]) {
+      await expect(restoreTenant(ctx, {
+        dumpName: "mcp-smoke",
+        countQueries: [{ query }]
+      })).rejects.toThrow(/countQueries\[\]\.query/);
+    }
+  });
+
+  it("allows count query guard tokens inside quoted identifiers", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const response = await restoreTenant(ctx, {
+      dumpName: "mcp-smoke",
+      countQueries: [{ query: "SELECT COUNT(*) FROM `except;table`;" }]
+    });
+
+    expect(response.executed).toBe(false);
+    expect(response.verificationHooks).toEqual([
+      { type: "countQuery", label: "count query 1", query: "SELECT COUNT(*) FROM `except;table`;" }
+    ]);
   });
 
   it("waits for tenant readiness instead of trusting create exit code", async () => {

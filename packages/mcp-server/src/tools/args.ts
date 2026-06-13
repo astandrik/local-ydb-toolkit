@@ -534,11 +534,23 @@ export const DestroyStackArgs = MutatingArgs.extend({
 });
 
 export const DumpArgs = MutatingArgs.extend({
-  dumpName: z.string().optional(),
+  dumpName: z.string().trim().min(1).optional(),
+  path: z.string().trim().min(1).optional(),
 });
 
+const RestoreCountQueryArgs = z.object({
+  label: z.string().trim().min(1).optional(),
+  query: z.string().trim().min(1).refine(
+    (query) => Buffer.byteLength(query, "utf8") <= 4096,
+    { message: "query must be at most 4096 bytes" },
+  ),
+}).strict();
+
 export const RestoreArgs = MutatingArgs.extend({
-  dumpName: z.string(),
+  dumpName: z.string().trim().min(1),
+  path: z.string().trim().min(1).optional(),
+  describePaths: z.array(z.string().trim().min(1)).optional(),
+  countQueries: z.array(RestoreCountQueryArgs).optional(),
 });
 
 export const AuthHardeningArgs = MutatingArgs.extend({

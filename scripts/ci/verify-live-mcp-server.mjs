@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -16,8 +17,14 @@ const rootUser = process.env.LOCAL_YDB_USER || "root";
 
 const tempDir = await mkdtemp(join(tmpdir(), "local-ydb-mcp-integration-"));
 const configPath = join(tempDir, "local-ydb.config.json");
+const dumpHostPath = join(tempDir, "dumps");
 const mcpServerPath = resolve("packages/mcp-server/dist/index.js");
 const stderrChunks = [];
+const staticContainer = `${containerPrefix}-static`;
+const dynamicContainer = `${containerPrefix}-dynamic`;
+const staticGrpcPort = endpointPort(staticEndpoint, "LOCAL_YDB_STATIC_ENDPOINT");
+const dynamicGrpcPort = endpointPort(dynamicEndpoint, "LOCAL_YDB_ENDPOINT");
+const monitoringPort = endpointPort(monitoringUrl, "LOCAL_YDB_MONITORING_URL");
 
 const config = {
   defaultProfile: profileName,
@@ -25,16 +32,17 @@ const config = {
     [profileName]: {
       mode: "local",
       image,
-      staticContainer: `${containerPrefix}-static`,
-      dynamicContainer: `${containerPrefix}-dynamic`,
+      staticContainer,
+      dynamicContainer,
       tenantPath,
       volume: `${containerPrefix}-data`,
       network: `${containerPrefix}-net`,
       monitoringBaseUrl: monitoringUrl,
+      dumpHostPath,
       ports: {
-        staticGrpc: endpointPort(staticEndpoint, "LOCAL_YDB_STATIC_ENDPOINT"),
-        dynamicGrpc: endpointPort(dynamicEndpoint, "LOCAL_YDB_ENDPOINT"),
-        monitoring: endpointPort(monitoringUrl, "LOCAL_YDB_MONITORING_URL"),
+        staticGrpc: staticGrpcPort,
+        dynamicGrpc: dynamicGrpcPort,
+        monitoring: monitoringPort,
       },
       ...(rootPasswordFile ? { rootUser, rootPasswordFile } : {}),
     },
@@ -107,17 +115,40 @@ async function verifyToolRegistry(client) {
       "local_ydb_container_logs",
       "local_ydb_permissions",
       "local_ydb_add_dynamic_nodes",
+      "local_ydb_list_dumps",
+      "local_ydb_dump_tenant",
+      "local_ydb_restore_tenant",
+      "local_ydb_cleanup_storage",
     ];
 
     for (const name of expectedTools) {
       assert(tools.has(name), `Missing MCP tool ${name}.`);
     }
 
-    const expectedReadOnlyTools = expectedTools.filter(
-      (toolName) => !["local_ydb_apply_schema", "local_ydb_permissions", "local_ydb_add_dynamic_nodes"].includes(toolName),
-    );
-    for (const name of expectedReadOnlyTools) {
-      assert(tools.get(name)?.annotations?.readOnlyHint === true, `${name} should be advertised as read-only.`);
+    const expectedMutatingTools = new Set([
+      "local_ydb_apply_schema",
+      "local_ydb_permissions",
+      "local_ydb_add_dynamic_nodes",
+      "local_ydb_dump_tenant",
+      "local_ydb_restore_tenant",
+      "local_ydb_cleanup_storage",
+    ]);
+    const expectedDestructiveTools = new Set([
+      "local_ydb_apply_schema",
+      "local_ydb_permissions",
+      "local_ydb_restore_tenant",
+      "local_ydb_cleanup_storage",
+    ]);
+    for (const name of expectedTools) {
+      const annotations = tools.get(name)?.annotations ?? {};
+      assert(
+        annotations.readOnlyHint === !expectedMutatingTools.has(name),
+        `${name} read-only annotation did not match expected live-test classification.`,
+      );
+      assert(
+        annotations.destructiveHint === expectedDestructiveTools.has(name),
+        `${name} destructive annotation did not match expected live-test classification.`,
+      );
     }
 
     console.log(JSON.stringify({ toolCount: result.tools.length, checked: expectedTools }, null, 2));
@@ -214,6 +245,7 @@ async function verifyLiveTools(client) {
   });
   assert(staticLogs.ok === true, staticLogs.stderr || "static container logs failed");
 
+  await verifyBackupRestore(client, profile);
   await verifyConfirmedDynamicNodeMutation(client, profile);
 }
 
@@ -260,6 +292,181 @@ async function verifySchemaApply(client, profile) {
   });
   assert(drop.executed === true, drop.execution?.issues || "schema cleanup drop failed");
   assert(drop.execution?.ok === true, drop.execution?.issues || "schema cleanup drop execution failed");
+}
+
+async function verifyBackupRestore(client, profile) {
+  const dumpName = "ci-backup-restore-smoke";
+  const sourcePath = "ci_backup_src";
+  const restorePath = "ci_backup_dst";
+  const tableName = "items";
+  const sourceTable = `${sourcePath}/${tableName}`;
+  const restoreTable = `${restorePath}/${tableName}`;
+  const dumpPath = `${dumpHostPath}/${dumpName}`;
+  const restoreArgs = {
+    profile,
+    dumpName,
+    path: restorePath,
+    describePaths: [restoreTable],
+    countQueries: [{ label: "restored items", query: `SELECT COUNT(*) FROM \`${restoreTable}\`;` }],
+  };
+
+  let failure;
+  let cleanupFailure;
+  try {
+    await cleanupBackupRestoreObjects(sourcePath, restorePath, tableName);
+    await runYdbCli(["scheme", "mkdir", `${tenantPath}/${sourcePath}`], "create backup source directory");
+    await runYdbCli([
+      "sql",
+      "-s",
+      `
+        CREATE TABLE \`${sourceTable}\` (
+          id Uint64 NOT NULL,
+          value Utf8,
+          PRIMARY KEY (id)
+        );
+      `,
+    ], "create backup source table");
+    await runYdbCli([
+      "sql",
+      "-s",
+      `UPSERT INTO \`${sourceTable}\` (id, value) VALUES (1, "one"), (2, "two");`,
+    ], "insert backup source rows");
+    const sourceCount = await runYdbCli([
+      "sql",
+      "-s",
+      `SELECT COUNT(*) FROM \`${sourceTable}\`;`,
+    ], "count backup source rows");
+    assertOutputContainsNumber(sourceCount.stdout, 2, "source row count did not return 2");
+
+    const dumpPlan = await callTool(client, "local_ydb_dump_tenant", {
+      profile,
+      dumpName,
+      path: sourcePath,
+    });
+    assert(dumpPlan.executed === false, "plan-only dump should not execute without confirm=true.");
+    assert(
+      plannedCommandsText(dumpPlan).includes(`tools dump -p ${sourcePath}`),
+      "path-level dump plan did not target the source path.",
+    );
+    assert(
+      plannedCommandsText(dumpPlan).includes(`/dump/${dumpName}/tenant`),
+      "path-level dump plan did not use the expected tenant dump output path.",
+    );
+
+    const dumpResult = await callTool(client, "local_ydb_dump_tenant", {
+      profile,
+      dumpName,
+      path: sourcePath,
+      confirm: true,
+    });
+    assert(dumpResult.executed === true, "confirmed dump did not execute.");
+    assert(
+      dumpResult.results?.every((result) => result.ok === true) === true,
+      "confirmed dump had failed command results.",
+    );
+
+    const dumps = await callTool(client, "local_ydb_list_dumps", { profile });
+    const listedDump = Array.isArray(dumps.dumps)
+      ? dumps.dumps.find((dump) => dump.name === dumpName)
+      : undefined;
+    assert(listedDump, "list dumps did not include the CI backup/restore dump.");
+    assert(
+      listedDump.tenantDumpPath === `${dumpPath}/tenant`,
+      "list dumps returned an unexpected tenant dump path.",
+    );
+
+    const restorePlan = await callTool(client, "local_ydb_restore_tenant", restoreArgs);
+    assert(restorePlan.executed === false, "plan-only restore should not execute without confirm=true.");
+    assert(
+      plannedCommandsText(restorePlan).includes(`tools restore -p ${restorePath} -i /dump/${dumpName}/tenant`),
+      "path-level restore plan did not target the destination path and dump input.",
+    );
+
+    const restoreResult = await callTool(client, "local_ydb_restore_tenant", {
+      ...restoreArgs,
+      confirm: true,
+    });
+    assert(restoreResult.executed === true, "confirmed restore did not execute.");
+    assert(
+      restoreResult.results?.length === 3,
+      "confirmed restore did not run restore plus two verification hooks.",
+    );
+    assert(
+      restoreResult.results.every((result) => result.ok === true),
+      "confirmed restore or verification hook had failed command results.",
+    );
+    assert(
+      restoreResult.results[0]?.command?.includes("--entrypoint /bin/bash") === true,
+      "confirmed restore helper did not override the local-ydb image entrypoint.",
+    );
+    assertOutputContainsNumber(
+      restoreResult.results[2]?.stdout ?? "",
+      2,
+      "restore verification count query did not return 2",
+    );
+  } catch (error) {
+    failure = error;
+  } finally {
+    try {
+      await cleanupBackupRestoreDump(client, profile, dumpName, dumpPath);
+    } catch (error) {
+      cleanupFailure = error;
+    }
+    try {
+      await cleanupBackupRestoreObjects(sourcePath, restorePath, tableName);
+    } catch (error) {
+      cleanupFailure ??= error;
+    }
+  }
+
+  if (failure) {
+    if (cleanupFailure) {
+      console.log(`Backup/restore dump cleanup also failed: ${errorMessage(cleanupFailure)}`);
+    }
+    throw failure;
+  }
+  if (cleanupFailure) {
+    throw cleanupFailure;
+  }
+}
+
+async function cleanupBackupRestoreObjects(sourcePath, restorePath, tableName) {
+  for (const tablePath of [`${sourcePath}/${tableName}`, `${restorePath}/${tableName}`]) {
+    await runYdbCliAllowFailure([
+      "sql",
+      "-s",
+      `DROP TABLE \`${tablePath}\`;`,
+    ], `cleanup backup table ${tablePath}`);
+  }
+  for (const directoryPath of [restorePath, sourcePath]) {
+    await runYdbCliAllowFailure([
+      "scheme",
+      "rmdir",
+      `${tenantPath}/${directoryPath}`,
+    ], `cleanup backup directory ${directoryPath}`);
+  }
+}
+
+async function cleanupBackupRestoreDump(client, profile, dumpName, dumpPath) {
+  const args = { profile, paths: [dumpPath] };
+  const cleanupPlan = await callTool(client, "local_ydb_cleanup_storage", args);
+  assert(cleanupPlan.executed === false, "plan-only dump cleanup should not execute without confirm=true.");
+
+  const cleanupResult = await callTool(client, "local_ydb_cleanup_storage", {
+    ...args,
+    confirm: true,
+  });
+  assert(cleanupResult.executed === true, "confirmed dump cleanup did not execute.");
+  assert(
+    cleanupResult.results?.every((result) => result.ok === true) === true,
+    "confirmed dump cleanup had failed command results.",
+  );
+
+  const afterCleanup = await callTool(client, "local_ydb_list_dumps", { profile });
+  assert(
+    !Array.isArray(afterCleanup.dumps) || !afterCleanup.dumps.some((dump) => dump.name === dumpName),
+    "list dumps still included the CI backup/restore dump after cleanup.",
+  );
 }
 
 async function verifyConfirmedDynamicNodeMutation(client, profile) {
@@ -333,6 +540,93 @@ async function verifyConfirmedDynamicNodeMutation(client, profile) {
   }
 }
 
+async function runYdbCli(args, description) {
+  console.log(`::group::ydb/${description}`);
+  try {
+    const result = await runCommand("docker", ydbCliDockerArgs(args), {
+      input: rootPasswordFile ? await readFile(rootPasswordFile) : undefined,
+    });
+    console.log(JSON.stringify({
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }, null, 2));
+    assert(result.exitCode === 0, result.stderr || `${description} failed`);
+    return result;
+  } finally {
+    console.log("::endgroup::");
+  }
+}
+
+async function runYdbCliAllowFailure(args, description) {
+  console.log(`::group::ydb/${description}`);
+  try {
+    const result = await runCommand("docker", ydbCliDockerArgs(args), {
+      input: rootPasswordFile ? await readFile(rootPasswordFile) : undefined,
+    });
+    console.log(JSON.stringify({
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }, null, 2));
+    return result;
+  } finally {
+    console.log("::endgroup::");
+  }
+}
+
+function ydbCliDockerArgs(args) {
+  const endpoint = `grpc://localhost:${dynamicGrpcPort}`;
+  if (!rootPasswordFile) {
+    return ["exec", staticContainer, "/ydb", "-e", endpoint, "-d", tenantPath, ...args];
+  }
+  const script = [
+    "set -euo pipefail",
+    "password_file=$(mktemp /tmp/local-ydb-ci-password-XXXXXX)",
+    "trap 'rm -f \"$password_file\"' EXIT",
+    "cat >\"$password_file\"",
+    "/ydb -e \"$1\" -d \"$2\" --user \"$3\" --password-file \"$password_file\" \"${@:4}\"",
+  ].join("; ");
+  return [
+    "exec",
+    "-i",
+    staticContainer,
+    "bash",
+    "-lc",
+    script,
+    "_",
+    endpoint,
+    tenantPath,
+    rootUser,
+    ...args,
+  ];
+}
+
+async function runCommand(command, args, options = {}) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+
+    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.on("error", rejectPromise);
+    child.on("close", (exitCode) => {
+      resolvePromise({
+        exitCode,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      });
+    });
+
+    if (options.input) {
+      child.stdin.end(options.input);
+    } else {
+      child.stdin.end();
+    }
+  });
+}
+
 async function callTool(client, name, args) {
   console.log(`::group::tools/call ${name}`);
   try {
@@ -374,6 +668,21 @@ function summarize(value) {
     risk: value.risk,
     command: value.command,
   };
+}
+
+function plannedCommandsText(value) {
+  return Array.isArray(value.plannedCommands) ? value.plannedCommands.join("\n") : "";
+}
+
+function assertOutputContainsNumber(stdout, expected, message) {
+  assert(
+    new RegExp(`(^|[^0-9])${expected}([^0-9]|$)`).test(stdout),
+    `${message}: ${stdout}`,
+  );
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function toolText(result) {

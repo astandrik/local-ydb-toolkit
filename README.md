@@ -70,7 +70,7 @@ Use [`astandrik/setup-local-ydb`](https://github.com/astandrik/setup-local-ydb) 
 
 The action starts `ghcr.io/ydb-platform/local-ydb`, creates the tenant database, waits for readiness, optionally enables native YDB auth, and exports `LOCAL_YDB_ENDPOINT`, `LOCAL_YDB_DATABASE`, and `LOCAL_YDB_MONITORING_URL` for later workflow steps. Add `auth: true` when tests need authenticated YDB behavior; in that mode it also exports `LOCAL_YDB_USER` and `LOCAL_YDB_PASSWORD_FILE` without exposing the raw password value.
 
-This repository dogfoods the Marketplace action in CI. `.github/workflows/setup-local-ydb-smoke.yml` keeps a short action-level smoke test, while `.github/workflows/local-ydb-mcp-integration.yml` starts the real stdio MCP server and verifies prompts, read-only tools, schema DDL apply, plan-only behavior, and a confirmed dynamic-node add/remove against a live YDB tenant. The concise GitHub Developer Program artifact is in `docs/github-developer-program.md`.
+This repository dogfoods the Marketplace action in CI. `.github/workflows/setup-local-ydb-smoke.yml` keeps a short action-level smoke test, while `.github/workflows/local-ydb-mcp-integration.yml` starts the real stdio MCP server and verifies prompts, read-only tools, schema DDL apply, plan-only behavior, path-level dump/list/restore with restore hooks, and a confirmed dynamic-node add/remove against a live YDB tenant. The concise GitHub Developer Program artifact is in `docs/github-developer-program.md`.
 
 ## Skill Contents
 
@@ -223,6 +223,10 @@ Mutating tools include image pulls, root-database bootstrap, tenant topology boo
 Without `confirm: true`, mutating tools return planned commands, risk, rollback notes, and verification steps.
 
 `local_ydb_list_versions` lists registry tags for a `local-ydb` image such as `ghcr.io/ydb-platform/local-ydb`. It follows OCI/Docker Registry V2 pagination and bearer-token challenges, then returns numeric version tags newest first so the MCP client can discover concrete tags before changing a profile version.
+
+`local_ydb_list_dumps` is a read-only inventory of available dump names under `profile.dumpHostPath`. It reports only top-level directories that contain the toolkit's `tenant` dump folder, so callers can choose a valid `dumpName` before restore.
+
+`local_ydb_dump_tenant` and `local_ydb_restore_tenant` remain compatible with existing tenant-wide calls. Both now accept `path` for path-level operations. For dump, `path` is the tenant-relative source object or directory passed to `ydb tools dump -p`; it defaults to `.`. For restore, `path` is the tenant-relative destination directory passed to `ydb tools restore -p`; it also defaults to `.`. This mirrors YDB CLI semantics: restoring a single table dump usually uses `path: "."` to recreate that table under the tenant root. Restore can also append verification hooks with `describePaths` and bounded whole-table `countQueries` such as `SELECT COUNT(*) FROM \`dir/table\`;`; they run after the restore command when `confirm: true` is supplied.
 
 `local_ydb_scheme` lists or describes schema objects with the YDB CLI. It defaults to `scheme ls` at the configured tenant root, supports `recursive`, `long`, and `onePerLine` list options, and supports `stats` for `scheme describe`. Large stdout/stderr streams are capped per stream and returned with original uncapped byte counts and truncation flags so MCP responses stay usable.
 

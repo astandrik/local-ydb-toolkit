@@ -73,6 +73,57 @@ export interface UpgradeVersionOptions extends MutatingOptions {
   dumpName?: string;
 }
 
+export interface DumpTenantOptions extends MutatingOptions {
+  dumpName?: string;
+  path?: string;
+}
+
+export interface RestoreVerificationCountQuery {
+  label?: string;
+  query: string;
+}
+
+export interface RestoreTenantOptions extends MutatingOptions {
+  dumpName?: string;
+  path?: string;
+  describePaths?: string[];
+  countQueries?: RestoreVerificationCountQuery[];
+}
+
+export interface DumpEntry {
+  name: string;
+  hostPath: string;
+  tenantDumpPath: string;
+}
+
+export interface ListDumpsResponse {
+  summary: string;
+  ok: boolean;
+  command: string;
+  dumpHostPath: string;
+  dumps: DumpEntry[];
+  stdout: string;
+  stderr: string;
+}
+
+export type RestoreVerificationHook =
+  | { type: "schemeDescribe"; path: string; resolvedPath: string }
+  | { type: "countQuery"; label?: string; query: string };
+
+export interface DumpTenantResponse extends OperationResponse {
+  dumpName: string;
+  path: string;
+  sourcePath: string;
+  dumpPath: string;
+}
+
+export interface RestoreTenantResponse extends OperationResponse {
+  dumpName?: string;
+  path?: string;
+  targetPath?: string;
+  verificationHooks: RestoreVerificationHook[];
+}
+
 export type SchemeAction = "list" | "describe";
 
 export interface SchemeOptions {

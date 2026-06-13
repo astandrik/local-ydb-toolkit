@@ -127,6 +127,7 @@ describe("mcp tools", () => {
       "local_ydb_graphshard_check",
       "local_ydb_healthcheck",
       "local_ydb_inventory",
+      "local_ydb_list_dumps",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
       "local_ydb_permissions",
@@ -264,6 +265,7 @@ describe("mcp tools", () => {
       "local_ydb_graphshard_check",
       "local_ydb_healthcheck",
       "local_ydb_inventory",
+      "local_ydb_list_dumps",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
       "local_ydb_pull_status",
@@ -310,6 +312,7 @@ describe("mcp tools", () => {
       "local_ydb_graphshard_check",
       "local_ydb_healthcheck",
       "local_ydb_inventory",
+      "local_ydb_list_dumps",
       "local_ydb_list_versions",
       "local_ydb_nodes_check",
       "local_ydb_permissions",
@@ -541,6 +544,127 @@ describe("mcp tools", () => {
     }) as { executed: boolean; plannedCommands: string[] };
     expect(result.executed).toBe(false);
     expect(result.plannedCommands.length).toBeGreaterThan(0);
+  });
+
+  it("lists dumps through the public MCP handler", async () => {
+    const executor = new RecordingExecutor();
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return { command, exitCode: 0, stdout: "mcp-smoke\n", stderr: "", ok: true, timedOut: false };
+    };
+
+    const result = await callLocalYdbToolForTest("local_ydb_list_dumps", {}, {
+      config: ConfigSchema.parse({}),
+      executor
+    }) as { ok: boolean; dumps: Array<{ name: string; hostPath: string; tenantDumpPath: string }> };
+
+    expect(result.ok).toBe(true);
+    expect(result.dumps).toEqual([
+      {
+        name: "mcp-smoke",
+        hostPath: "/tmp/local-ydb-dump/mcp-smoke",
+        tenantDumpPath: "/tmp/local-ydb-dump/mcp-smoke/tenant"
+      }
+    ]);
+  });
+
+  it("passes path-level dump args through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_dump_tenant", {
+      dumpName: "path-smoke",
+      path: "dir/table"
+    }, {
+      config: ConfigSchema.parse({})
+    }) as { executed: boolean; plannedCommands: string[] };
+
+    expect(result.executed).toBe(false);
+    expect(result.plannedCommands.join("\n")).toContain("tools dump -p dir/table");
+  });
+
+  it("rejects blank dump args at the MCP argument layer", async () => {
+    for (const field of ["dumpName", "path"]) {
+      for (const value of ["", "   "]) {
+        await expect(callLocalYdbToolForTest("local_ydb_dump_tenant", {
+          [field]: value,
+        }, {
+          config: ConfigSchema.parse({})
+        })).rejects.toThrow("String must contain at least 1 character");
+      }
+    }
+  });
+
+  it("passes restore verification hooks through the MCP handler", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      path: "restore-root",
+      describePaths: ["restore-root/table"],
+      countQueries: [{ label: "rows", query: "SELECT COUNT(*) FROM `restore-root/table`;" }]
+    }, {
+      config: ConfigSchema.parse({})
+    }) as { executed: boolean; plannedCommands: string[] };
+
+    expect(result.executed).toBe(false);
+    expect(result.plannedCommands).toHaveLength(3);
+    expect(result.plannedCommands[0]).toContain("tools restore -p restore-root");
+    expect(result.plannedCommands[1]).toContain("scheme describe /local/example/restore-root/table");
+    expect(result.plannedCommands[2]).toContain("sql -s 'SELECT COUNT(*) FROM `restore-root/table`;'");
+  });
+
+  it("rejects count queries that exceed the byte limit before core execution", async () => {
+    const multibyteTable = "界".repeat(1400);
+
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      countQueries: [{ query: `SELECT COUNT(*) FROM \`${multibyteTable}\`;` }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("query must be at most 4096 bytes");
+  });
+
+  it("rejects blank restore dump names at the MCP argument layer", async () => {
+    for (const dumpName of ["", "   "]) {
+      await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+        dumpName,
+      }, {
+        config: ConfigSchema.parse({})
+      })).rejects.toThrow("String must contain at least 1 character");
+    }
+  });
+
+  it("rejects blank restore count queries at the MCP argument layer", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      countQueries: [{ query: "   " }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("String must contain at least 1 character");
+  });
+
+  it("rejects blank restore paths at the MCP argument layer", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      path: "   "
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("String must contain at least 1 character");
+  });
+
+  it("rejects blank restore describe paths at the MCP argument layer", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      describePaths: ["   "]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("String must contain at least 1 character");
+  });
+
+  it("rejects blank restore count query labels at the MCP argument layer", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      countQueries: [{ label: "   ", query: "SELECT COUNT(*) FROM `restore-root/table`;" }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("String must contain at least 1 character");
   });
 
   it("exposes a root-only bootstrap tool", async () => {
