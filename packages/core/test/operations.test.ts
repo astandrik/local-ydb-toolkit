@@ -887,18 +887,18 @@ describe("mutating operations", () => {
     }
   });
 
-  it("allows count query set-operation words inside quoted identifiers", async () => {
+  it("allows count query guard tokens inside quoted identifiers", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
 
     const response = await restoreTenant(ctx, {
       dumpName: "mcp-smoke",
-      countQueries: [{ query: "SELECT COUNT(*) FROM `except`;" }]
+      countQueries: [{ query: "SELECT COUNT(*) FROM `except;table`;" }]
     });
 
     expect(response.executed).toBe(false);
     expect(response.verificationHooks).toEqual([
-      { type: "countQuery", label: "count query 1", query: "SELECT COUNT(*) FROM `except`;" }
+      { type: "countQuery", label: "count query 1", query: "SELECT COUNT(*) FROM `except;table`;" }
     ]);
   });
 

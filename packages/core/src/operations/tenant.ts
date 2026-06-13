@@ -226,9 +226,10 @@ function normalizeCountQuery(value: string): string {
     throw new Error(`countQueries[].query must be non-empty and at most ${MAX_COUNT_QUERY_BYTES} bytes`);
   }
   const withoutTrailingSemicolon = query.endsWith(";") ? query.slice(0, -1) : query;
+  const sanitizedQuery = stripQuotedSqlText(withoutTrailingSemicolon);
   if (
-    withoutTrailingSemicolon.includes(";") ||
-    /\b(?:union|intersect|except)\b/i.test(stripQuotedSqlText(withoutTrailingSemicolon))
+    sanitizedQuery.includes(";") ||
+    /\b(?:union|intersect|except)\b/i.test(sanitizedQuery)
   ) {
     throw new Error("countQueries[].query must contain a single SELECT COUNT statement");
   }
