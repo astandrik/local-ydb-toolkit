@@ -557,7 +557,7 @@ describe("mcp tools", () => {
     const result = await callLocalYdbToolForTest("local_ydb_list_dumps", {}, {
       config: ConfigSchema.parse({}),
       executor
-    }) as { ok: boolean; dumps: Array<{ name: string; tenantDumpPath: string }> };
+    }) as { ok: boolean; dumps: Array<{ name: string; hostPath: string; tenantDumpPath: string }> };
 
     expect(result.ok).toBe(true);
     expect(result.dumps).toEqual([
@@ -596,6 +596,17 @@ describe("mcp tools", () => {
     expect(result.plannedCommands[0]).toContain("tools restore -p restore-root");
     expect(result.plannedCommands[1]).toContain("scheme describe /local/example/restore-root/table");
     expect(result.plannedCommands[2]).toContain("sql -s 'SELECT COUNT(*) FROM `restore-root/table`;'");
+  });
+
+  it("rejects count queries that exceed the byte limit before core execution", async () => {
+    const multibyteTable = "界".repeat(1400);
+
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      countQueries: [{ query: `SELECT COUNT(*) FROM \`${multibyteTable}\`;` }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("query must be at most 4096 bytes");
   });
 
   it("exposes a root-only bootstrap tool", async () => {

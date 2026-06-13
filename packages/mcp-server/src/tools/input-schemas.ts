@@ -944,9 +944,8 @@ export function restoreSchema(): Tool["inputSchema"] {
             },
             query: {
               type: "string",
-              maxLength: 4096,
               description:
-                "Bounded SELECT COUNT(...) query to run after restore. Must be a single statement.",
+                "Bounded SELECT COUNT(...) query to run after restore. Must be a single statement and at most 4096 UTF-8 bytes.",
             },
           },
           additionalProperties: false,

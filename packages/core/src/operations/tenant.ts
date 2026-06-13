@@ -72,8 +72,8 @@ export async function dumpTenant(ctx: ToolkitContext, options: DumpTenantOptions
     summary: `Dump ${sourcePath} to ${dumpPath}.`,
     risk: "medium",
     specs,
-    rollback: [`rm -rf ${dumpPath}`],
-    verification: [`test -d ${dumpPath}/tenant`]
+    rollback: [`rm -rf ${shellQuote(dumpPath)}`],
+    verification: [`test -d ${shellQuote(`${dumpPath}/tenant`)}`]
   }, options);
   return {
     ...response,
@@ -211,7 +211,7 @@ function normalizeCountQuery(value: string): string {
     throw new Error(`countQueries[].query must be non-empty and at most ${MAX_COUNT_QUERY_BYTES} bytes`);
   }
   const withoutTrailingSemicolon = query.endsWith(";") ? query.slice(0, -1) : query;
-  if (withoutTrailingSemicolon.includes(";")) {
+  if (withoutTrailingSemicolon.includes(";") || /\bunion\b/i.test(withoutTrailingSemicolon)) {
     throw new Error("countQueries[].query must contain a single SELECT COUNT statement");
   }
   if (!/^select\s+count\s*\([^)]{1,256}\)(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*|\s+[A-Za-z_][A-Za-z0-9_]*)?\s+from\b/i.test(withoutTrailingSemicolon)) {

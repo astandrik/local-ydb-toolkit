@@ -690,6 +690,17 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[1]).toContain("-o /dump/mcp-smoke/tenant");
   });
 
+  it("quotes dump rollback and verification paths", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const response = await dumpTenant(ctx, { dumpName: "mcp smoke" });
+
+    expect(response.executed).toBe(false);
+    expect(response.plannedCommands[0]).toContain("/tmp/local-ydb-dump/mcp smoke");
+    expect(response.rollback).toEqual(["rm -rf '/tmp/local-ydb-dump/mcp smoke'"]);
+    expect(response.verification).toEqual(["test -d '/tmp/local-ydb-dump/mcp smoke/tenant'"]);
+  });
+
   it("lists named dumps that contain a tenant dump directory", async () => {
     const executor = new RecordingExecutor();
     executor.run = async (_profile, spec) => {
@@ -807,6 +818,16 @@ describe("mutating operations", () => {
     expect(executor.commands[0]).toContain("tools restore -p . -i /dump/mcp-smoke/tenant");
     expect(executor.commands[1]).toContain("scheme describe /local/example/table");
     expect(executor.commands[2]).toContain("sql -s 'SELECT COUNT(*) FROM `table`;'");
+  });
+
+  it("rejects count query set operations", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    await expect(restoreTenant(ctx, {
+      dumpName: "mcp-smoke",
+      countQueries: [{ query: "SELECT COUNT(*) FROM `table` UNION ALL SELECT COUNT(*) FROM `other_table`;" }]
+    })).rejects.toThrow("countQueries[].query must contain a single SELECT COUNT statement");
   });
 
   it("waits for tenant readiness instead of trusting create exit code", async () => {
