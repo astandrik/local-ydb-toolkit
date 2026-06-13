@@ -72,6 +72,8 @@ The action starts `ghcr.io/ydb-platform/local-ydb`, creates the tenant database,
 
 This repository dogfoods the Marketplace action in CI. `.github/workflows/setup-local-ydb-smoke.yml` keeps a short action-level smoke test, while `.github/workflows/local-ydb-mcp-integration.yml` starts the real stdio MCP server and verifies prompts, read-only tools, schema DDL apply, plan-only behavior, path-level dump/list/restore with restore hooks, and a confirmed dynamic-node add/remove against a live YDB tenant. The concise GitHub Developer Program artifact is in `docs/github-developer-program.md`.
 
+The reusable agent guidance is also covered by a plan-only Codex eval suite. It requires the `codex` CLI and `CODEX_API_KEY` for actual runs. Run `npm run eval:agent -- --list` to inspect scenarios, `CODEX_API_KEY=... npm run eval:agent -- --case explicit-database-diagnosis` for a smoke case, or `CODEX_API_KEY=... npm run eval:agent` for the full suite. Results are written to ignored `eval-results/local-ydb-agent/<timestamp>/`; `.github/workflows/local-ydb-agent-evals.yml` installs Codex CLI and runs the same suite manually through `workflow_dispatch` when the repository has a `CODEX_API_KEY` secret.
+
 ## Skill Contents
 
 ```text
@@ -80,6 +82,7 @@ skills/local-ydb/
   agents/openai.yaml
   references/
     auth-hardening.md
+    evals.md
     history-and-non-goals.md
     storage-migration.md
     topology.md

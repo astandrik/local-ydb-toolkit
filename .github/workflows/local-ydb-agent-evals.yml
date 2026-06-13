@@ -1,0 +1,48 @@
+name: local-ydb agent evals
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Codex CLI
+        run: |
+          npm install -g @openai/codex
+          codex --version
+
+      - name: Check Codex API key
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: |
+          if [ -z "$CODEX_API_KEY" ]; then
+            echo "CODEX_API_KEY repository secret is required for manual agent evals." >&2
+            exit 1
+          fi
+
+      - name: Run local-ydb agent evals
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: npm run eval:agent
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ydb-agent-eval-results
+          path: eval-results/local-ydb-agent/
+          if-no-files-found: ignore

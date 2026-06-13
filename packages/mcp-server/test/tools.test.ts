@@ -395,6 +395,7 @@ describe("mcp tools", () => {
     expect(text).toContain("pass image set to the exact target image");
     expect(text).toContain("repeat the same local_ydb_pull_image call with confirm=true");
     expect(text).toContain("returned jobId");
+    expect(text).toContain("Treat the tenant dump in this workflow as mandatory");
     expect(text).toContain("local_ydb_upgrade_version");
     expect(text).toContain("Call mutating tools without confirm first");
     expect(text).toContain("confirm=true only after the user explicitly approves");
@@ -429,6 +430,7 @@ describe("mcp tools", () => {
 
     expect(text).toContain("local_ydb_prepare_auth_config with confirm=true");
     expect(text).toContain("local_ydb_write_dynamic_auth_config with confirm=true");
+    expect(text).toContain("take a reviewed tenant dump before applying auth/config hardening");
     expect(text).toContain("Then call local_ydb_apply_auth_hardening without confirm");
     expect(text).toContain("\"sid\": \"root@builtin\"");
     expect(text).toContain("\"tokenHostPath\": \"/tmp/dynamic-auth.txt\"");
@@ -444,6 +446,7 @@ describe("mcp tools", () => {
 
     expect(text).toContain("Plan removal of 2 storage group(s).");
     expect(text).toContain("count as the number of groups to remove");
+    expect(text).toContain("Treat the tenant dump as mandatory before storage reduction");
     expect(text).toContain("poolName");
     expect(text).toContain("dynamic_storage_pool:1");
     expect(text).toContain("Storage pool not found");
@@ -1750,6 +1753,16 @@ describe("mcp tools", () => {
     });
     expect(localYdbInstructions).toContain("local_ydb_generate_schema");
     expect(localYdbInstructions).toContain("generate_schema");
+  });
+
+  it("advertises when tenant dumps are required", () => {
+    expect(localYdbInstructions).toContain("Use tenant dumps before destructive or hard-to-rollback live changes");
+    expect(localYdbInstructions).toContain("version upgrade");
+    expect(localYdbInstructions).toContain("storage-pool reduction");
+    expect(localYdbInstructions).toContain("production-like auth/config hardening");
+    expect(localYdbInstructions).toContain("Use tenant-wide dumps for full rebuilds");
+    expect(localYdbInstructions).toContain("path-level dumps for one table or directory probes");
+    expect(localYdbInstructions).toContain("Restore only after the target tenant is bootstrapped and reachable");
   });
 
   it("can list permissions through the MCP handler without confirm", async () => {
