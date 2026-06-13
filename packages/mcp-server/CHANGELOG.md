@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.13.1...mcp-server-v0.14.0) (2026-06-13)
+
+
+### Features
+
+* Expand backup restore MCP tools ([#96](https://github.com/astandrik/local-ydb-toolkit/issues/96)) ([d88ea42](https://github.com/astandrik/local-ydb-toolkit/commit/d88ea42775359ff01dff3d37c8ebcefc8a8666e5))
+
 ## [0.13.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.13.0...mcp-server-v0.13.1) (2026-06-10)
 
 
