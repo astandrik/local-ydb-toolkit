@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -739,6 +739,40 @@ describe("mutating operations", () => {
       }
     ]);
     expect(response.command).toContain("for dir in /tmp/local-ydb-dump/*");
+    expect(response.command).toContain("find \"$dir/tenant\" -name incomplete -print -quit");
+  });
+
+  it("filters dumps with incomplete restore markers", async () => {
+    const dumpHostPath = mkdtempSync(join(tmpdir(), "local-ydb-dumps-"));
+    try {
+      mkdirSync(join(dumpHostPath, "complete", "tenant"), { recursive: true });
+      mkdirSync(join(dumpHostPath, "root-incomplete", "tenant"), { recursive: true });
+      writeFileSync(join(dumpHostPath, "root-incomplete", "tenant", "incomplete"), "", "utf8");
+      mkdirSync(join(dumpHostPath, "nested-incomplete", "tenant", "dir"), { recursive: true });
+      writeFileSync(join(dumpHostPath, "nested-incomplete", "tenant", "dir", "incomplete"), "", "utf8");
+      mkdirSync(join(dumpHostPath, "no-tenant"), { recursive: true });
+      const ctx = createContext(undefined, new ShellCommandExecutor(), ConfigSchema.parse({
+        profiles: {
+          default: {
+            dumpHostPath
+          }
+        }
+      }));
+
+      const response = await listDumps(ctx);
+
+      expect(response.ok).toBe(true);
+      expect(response.stdout).toBe("complete\n");
+      expect(response.dumps).toEqual([
+        {
+          name: "complete",
+          hostPath: `${dumpHostPath}/complete`,
+          tenantDumpPath: `${dumpHostPath}/complete/tenant`
+        }
+      ]);
+    } finally {
+      rmSync(dumpHostPath, { recursive: true, force: true });
+    }
   });
 
   it("builds path-level dump commands with validated relative YDB paths", async () => {

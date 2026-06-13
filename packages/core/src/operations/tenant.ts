@@ -32,7 +32,9 @@ export async function listDumps(ctx: ToolkitContext): Promise<ListDumpsResponse>
   const spec = bash([
     `if [ -d ${shellQuote(dumpHostPath)} ]; then`,
     `  for dir in ${shellQuote(dumpHostPath)}/*; do`,
-    "    [ -d \"$dir/tenant\" ] && basename \"$dir\"",
+    "    [ -d \"$dir/tenant\" ] || continue",
+    "    find \"$dir/tenant\" -name incomplete -print -quit | grep -q . && continue",
+    "    basename \"$dir\"",
     "  done | sort",
     "fi"
   ].join("\n"), {
