@@ -609,9 +609,20 @@ describe("mcp tools", () => {
     })).rejects.toThrow("query must be at most 4096 bytes");
   });
 
-  it("rejects empty restore dump names at the MCP argument layer", async () => {
+  it("rejects blank restore dump names at the MCP argument layer", async () => {
+    for (const dumpName of ["", "   "]) {
+      await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+        dumpName,
+      }, {
+        config: ConfigSchema.parse({})
+      })).rejects.toThrow("String must contain at least 1 character");
+    }
+  });
+
+  it("rejects blank restore count queries at the MCP argument layer", async () => {
     await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
-      dumpName: "",
+      dumpName: "path-smoke",
+      countQueries: [{ query: "   " }]
     }, {
       config: ConfigSchema.parse({})
     })).rejects.toThrow("String must contain at least 1 character");

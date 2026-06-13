@@ -540,14 +540,14 @@ export const DumpArgs = MutatingArgs.extend({
 
 const RestoreCountQueryArgs = z.object({
   label: z.string().min(1).optional(),
-  query: z.string().min(1).refine(
+  query: z.string().trim().min(1).refine(
     (query) => Buffer.byteLength(query, "utf8") <= 4096,
     { message: "query must be at most 4096 bytes" },
   ),
 }).strict();
 
 export const RestoreArgs = MutatingArgs.extend({
-  dumpName: z.string().min(1),
+  dumpName: z.string().trim().min(1),
   path: z.string().optional(),
   describePaths: z.array(z.string().min(1)).optional(),
   countQueries: z.array(RestoreCountQueryArgs).optional(),
