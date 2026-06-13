@@ -581,6 +581,18 @@ describe("mcp tools", () => {
     expect(result.plannedCommands.join("\n")).toContain("tools dump -p dir/table");
   });
 
+  it("rejects blank dump args at the MCP argument layer", async () => {
+    for (const field of ["dumpName", "path"]) {
+      for (const value of ["", "   "]) {
+        await expect(callLocalYdbToolForTest("local_ydb_dump_tenant", {
+          [field]: value,
+        }, {
+          config: ConfigSchema.parse({})
+        })).rejects.toThrow("String must contain at least 1 character");
+      }
+    }
+  });
+
   it("passes restore verification hooks through the MCP handler", async () => {
     const result = await callLocalYdbToolForTest("local_ydb_restore_tenant", {
       dumpName: "path-smoke",
@@ -623,6 +635,15 @@ describe("mcp tools", () => {
     await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
       dumpName: "path-smoke",
       countQueries: [{ query: "   " }]
+    }, {
+      config: ConfigSchema.parse({})
+    })).rejects.toThrow("String must contain at least 1 character");
+  });
+
+  it("rejects blank restore count query labels at the MCP argument layer", async () => {
+    await expect(callLocalYdbToolForTest("local_ydb_restore_tenant", {
+      dumpName: "path-smoke",
+      countQueries: [{ label: "   ", query: "SELECT COUNT(*) FROM `restore-root/table`;" }]
     }, {
       config: ConfigSchema.parse({})
     })).rejects.toThrow("String must contain at least 1 character");

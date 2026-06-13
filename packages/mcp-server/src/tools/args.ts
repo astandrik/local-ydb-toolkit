@@ -534,12 +534,12 @@ export const DestroyStackArgs = MutatingArgs.extend({
 });
 
 export const DumpArgs = MutatingArgs.extend({
-  dumpName: z.string().optional(),
-  path: z.string().optional(),
+  dumpName: z.string().trim().min(1).optional(),
+  path: z.string().trim().min(1).optional(),
 });
 
 const RestoreCountQueryArgs = z.object({
-  label: z.string().min(1).optional(),
+  label: z.string().trim().min(1).optional(),
   query: z.string().trim().min(1).refine(
     (query) => Buffer.byteLength(query, "utf8") <= 4096,
     { message: "query must be at most 4096 bytes" },
