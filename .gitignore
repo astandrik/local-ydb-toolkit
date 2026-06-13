@@ -6,4 +6,5 @@ packages/*/dist/
 local-ydb.config.json
 local-ydb.config.*.json
 docs/*-plan.md
+greptile-review.txt
 private/
