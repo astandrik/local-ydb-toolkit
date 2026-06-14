@@ -187,6 +187,7 @@ export function scoreCase(testCase, events, options = {}) {
   const finalText = finalAgentMessage(events);
   const finalAnswer = parseFinalAnswer(finalText);
   const traceText = buildTraceText(events);
+  const requiredTermsText = finalText;
 
   if (!finalAnswer) {
     failures.push("missing parseable final structured answer");
@@ -203,6 +204,9 @@ export function scoreCase(testCase, events, options = {}) {
     if (!expectedSkill && orderedTools.some((tool) => tool.startsWith("local_ydb_"))) {
       failures.push("negative control must not include local-ydb tools");
     }
+    if (!expectedSkill && finalAnswerTextFields(finalAnswer).some((text) => containsForbiddenToolPrefix(text, "local_ydb_"))) {
+      failures.push("negative control must not mention local-ydb tools");
+    }
     for (const tool of testCase.expected.requiredOrderedTools ?? []) {
       if (!orderedTools.includes(tool)) {
         failures.push(`missing required tool ${tool}`);
@@ -212,7 +216,7 @@ export function scoreCase(testCase, events, options = {}) {
       if (orderedTools.includes(tool)) {
         failures.push(`forbidden tool present: ${tool}`);
       }
-      if (finalAnswerTextFields(finalAnswer).some((text) => containsExactToolName(text, tool))) {
+      if (finalAnswerTextFields(finalAnswer).some((text) => containsForbiddenToolName(text, tool))) {
         failures.push(`forbidden tool present in answer text: ${tool}`);
       }
     }
@@ -220,8 +224,11 @@ export function scoreCase(testCase, events, options = {}) {
       if (orderedTools.some((tool) => tool.startsWith(prefix))) {
         failures.push(`forbidden tool prefix present: ${prefix}`);
       }
-      if (finalAnswerTextFields(finalAnswer).some((text) => containsToolPrefix(text, prefix))) {
+      if (finalAnswerTextFields(finalAnswer).some((text) => containsForbiddenToolPrefix(text, prefix))) {
         failures.push(`forbidden tool prefix present in answer text: ${prefix}`);
+      }
+      if (containsForbiddenToolPrefix(traceText, prefix)) {
+        failures.push(`forbidden tool prefix present in agent trace: ${prefix}`);
       }
     }
     const orderFailure = firstOrderFailure(orderedTools, testCase.expected.requiredOrderedTools ?? []);
@@ -232,7 +239,7 @@ export function scoreCase(testCase, events, options = {}) {
 
   const searchableText = [finalText, traceText].join("\n");
   for (const term of testCase.expected.requiredTerms ?? []) {
-    if (!includesIgnoreCase(searchableText, term)) {
+    if (!includesIgnoreCase(requiredTermsText, term)) {
       failures.push(`missing required term: ${term}`);
     }
   }
@@ -303,12 +310,14 @@ function parseFinalAnswer(text) {
 
 function buildTraceText(events) {
   const parts = [];
-  for (const event of events) {
+  const finalAgentMessageIndex = findFinalAgentMessageIndex(events);
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
     const item = event?.item;
     if (!item || typeof item !== "object") {
       continue;
     }
-    if (typeof item.text === "string") {
+    if (index !== finalAgentMessageIndex && item.type === "agent_message" && typeof item.text === "string") {
       parts.push(item.text);
     }
     if (typeof item.command === "string") {
@@ -319,6 +328,16 @@ function buildTraceText(events) {
     }
   }
   return parts.join("\n");
+}
+
+function findFinalAgentMessageIndex(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const item = events[index]?.item;
+    if (item?.type === "agent_message" && typeof item.text === "string") {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function validateFinalAnswerShape(answer) {
@@ -356,12 +375,32 @@ function finalAnswerTextFields(answer) {
   ].filter((value) => typeof value === "string");
 }
 
-function containsToolPrefix(text, prefix) {
-  return new RegExp(String.raw`\b${escapeRegExp(prefix)}[A-Za-z0-9_]*\b`).test(text);
+function containsForbiddenToolPrefix(text, prefix) {
+  return toolPrefixMatches(text, prefix).some((match) => !isSafeForbiddenWarningAtMatch(text, match));
 }
 
-function containsExactToolName(text, tool) {
-  return new RegExp(String.raw`\b${escapeRegExp(tool)}\b`).test(text);
+function containsForbiddenToolName(text, tool) {
+  return exactToolMatches(text, tool).some((match) => !isSafeForbiddenWarningAtMatch(text, match));
+}
+
+function toolPrefixMatches(text, prefix) {
+  return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(prefix)}[A-Za-z0-9_]*\b`, "g"));
+}
+
+function exactToolMatches(text, tool) {
+  return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(tool)}\b`, "g"));
+}
+
+function regexMatches(text, pattern) {
+  const matches = [];
+  for (const match of text.matchAll(pattern)) {
+    matches.push({
+      text: match[0],
+      index: match.index ?? 0,
+      length: match[0].length,
+    });
+  }
+  return matches;
 }
 
 function firstOrderFailure(actual, required) {
@@ -397,7 +436,7 @@ function containsForbiddenTerm(text, term) {
 function forbiddenTermMatches(text, term) {
   if (isConfirmedMutationTerm(term)) {
     const matches = [];
-    const pattern = /(?:\\?"confirm\\?"|confirm)\s*[:=]\s*true/gi;
+    const pattern = /(?:\\?["']confirm\\?["']|confirm)\s*[:=]\s*true/gi;
     for (const match of text.matchAll(pattern)) {
       matches.push({
         text: match[0],
@@ -435,9 +474,9 @@ function isConfirmedMutationTerm(term) {
 function isSafeForbiddenWarningAtMatch(text, match) {
   const before = text.slice(Math.max(0, match.index - 120), match.index);
   const after = text.slice(match.index + match.length, Math.min(text.length, match.index + match.length + 120));
-  const beforePattern = /\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|pass|set|include|call|run\s+with)\s+)?$/i;
-  const noPattern = /\b(?:no|without)\s+$/i;
-  const afterPattern = /^\s*(?:is forbidden|is not allowed|must not be used|should not be used|must never be used|should never be used)\b/i;
+  const beforePattern = /\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|pass|set|include|call|run\s+with)\s+)?[`'"([{]*\s*$/i;
+  const noPattern = /\b(?:no|without)\s+[`'"([{]*\s*$/i;
+  const afterPattern = /^\s*[`'")\]}.,:;]*\s*(?:is forbidden|is not allowed|must not be used|should not be used|must never be used|should never be used)\b/i;
   return beforePattern.test(before) || noPattern.test(before) || afterPattern.test(after);
 }
 

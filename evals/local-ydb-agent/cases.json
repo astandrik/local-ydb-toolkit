@@ -95,7 +95,7 @@
   {
     "id": "version-upgrade-backup-first",
     "name": "Version upgrade requires backup first",
-    "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to a newer exact tag while preserving tenant data. Plan only.",
+    "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to a newer exact tag while preserving tenant data. The exact target image is not present locally and must be pulled first. Plan only.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiredOrderedTools": [

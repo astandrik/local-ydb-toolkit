@@ -105,6 +105,14 @@ describe("local-ydb agent eval runner", () => {
     ]);
   });
 
+  it("keeps the upgrade pull expectation tied to a missing-image premise", () => {
+    const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
+    const versionUpgrade = cases.find((testCase) => testCase.id === "version-upgrade-backup-first");
+
+    expect(versionUpgrade?.prompt).toMatch(/target image is not present/i);
+    expect(versionUpgrade?.prompt).toMatch(/must be pulled/i);
+  });
+
   it("scores ordered tool guidance and safety gates from final structured output", () => {
     const result = scoreCase({
       id: "restore-path-level",
@@ -311,6 +319,34 @@ describe("local-ydb agent eval runner", () => {
     expect(result.failures).toContain("forbidden tool present in answer text: local_ydb_bootstrap");
   });
 
+  it("allows negated exact forbidden tool guidance in answer text", () => {
+    const result = scoreCase({
+      id: "root-bootstrap",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_bootstrap_root_database"],
+        forbiddenTools: ["local_ydb_bootstrap"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "root bootstrap",
+            tool_sequence: ["local_ydb_bootstrap_root_database"],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Use local_ydb_bootstrap_root_database; do not use local_ydb_bootstrap.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(true);
+  });
+
   it("passes a negative-control answer that correctly avoids local-ydb use", () => {
     const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
     const negativeCase = cases.find((testCase) => testCase.id === "negative-unrelated-python-test");
@@ -388,6 +424,35 @@ describe("local-ydb agent eval runner", () => {
     expect(unsafe.ok).toBe(false);
     expect(unsafe.failures).toContain("forbidden term present: \"confirm\": true");
     expect(safe.ok).toBe(true);
+  });
+
+  it("detects single-quoted confirmed-use options", () => {
+    const result = scoreCase({
+      id: "unsafe-single-quoted-confirm",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: ["confirm=true"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "unsafe restore",
+            tool_sequence: [],
+            safety_gates: ["manual approval"],
+            would_execute_confirmed_mutation: false,
+            answer: "Run local_ydb_restore_tenant with {'confirm': true}.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("forbidden term present: confirm=true");
   });
 
   it("does not let unrelated negation hide forbidden confirmed use", () => {
@@ -534,6 +599,58 @@ describe("local-ydb agent eval runner", () => {
     ]);
 
     expect(result.ok).toBe(true);
+  });
+
+  it("allows negated forbidden operation guidance with inline code", () => {
+    const confirmWarning = scoreCase({
+      id: "inline-confirm-warning",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: ["confirm=true"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "restore planning",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Do not pass `confirm=true` in plan-only guidance.",
+          }),
+        },
+      },
+    ]);
+    const operationWarning = scoreCase({
+      id: "inline-operation-warning",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: ["DecommitGroups"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "storage reduction",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Do not use `DecommitGroups`; use dump, rebuild, restore verification.",
+          }),
+        },
+      },
+    ]);
+
+    expect(confirmWarning.ok).toBe(true);
+    expect(operationWarning.ok).toBe(true);
   });
 
   it("fails traces that execute live Docker or YDB commands", () => {
@@ -690,6 +807,102 @@ describe("local-ydb agent eval runner", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures).toContain("forbidden tool prefix present in answer text: local_ydb_");
+  });
+
+  it("fails forbidden tool prefixes in intermediate agent messages", () => {
+    const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
+    const sourceLookup = cases.find((testCase) => testCase.id === "upstream-ydb-source-lookup");
+    const result = scoreCase(sourceLookup, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: "First call local_ydb_status_report, then inspect upstream source.",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "upstream lookup",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Use gh api against ydb-platform/ydb and inspect tools dump and tools restore docs.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("forbidden tool prefix present in agent trace: local_ydb_");
+  });
+
+  it("does not satisfy required terms from echoed user prompts", () => {
+    const result = scoreCase({
+      id: "prompt-echo",
+      expected: {
+        shouldUseLocalYdbSkill: false,
+        requiredOrderedTools: [],
+        requiredTerms: ["unit test"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "user_message",
+          text: "Write a unit test for a string helper.",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: false,
+            task_type: "unrelated",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "No local-ydb workflow is needed.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("missing required term: unit test");
+  });
+
+  it("fails negative-control prose that recommends local-ydb tools", () => {
+    const result = scoreCase({
+      id: "negative",
+      expected: {
+        shouldUseLocalYdbSkill: false,
+        requiredOrderedTools: [],
+        requiredTerms: ["unit test"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: false,
+            task_type: "unrelated unit test",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Use local_ydb_status_report, then write a unit test.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("negative control must not mention local-ydb tools");
   });
 
   it("rejects final answers that do not satisfy the output schema shape", () => {
