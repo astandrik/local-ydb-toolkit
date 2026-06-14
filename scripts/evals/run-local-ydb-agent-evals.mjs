@@ -263,6 +263,9 @@ export function scoreCase(testCase, events, options = {}) {
     if (!expectedSkill && recommendsLocalYdbSkill(finalText)) {
       failures.push("negative control must not recommend the local-ydb skill in final message");
     }
+    if (!expectedSkill && recommendsLocalYdbSkill(traceText)) {
+      failures.push("negative control must not recommend the local-ydb skill in agent trace");
+    }
     if (expectedSkill) {
       const allowedTools = new Set([
         ...(testCase.expected.requiredOrderedTools ?? []),
@@ -282,6 +285,9 @@ export function scoreCase(testCase, events, options = {}) {
         }
         if (!orderedTools.includes(tool) && containsForbiddenToolName(finalText, tool)) {
           failures.push(`unexpected mutating tool present in final message: ${tool}`);
+        }
+        if (containsForbiddenToolName(traceText, tool)) {
+          failures.push(`unexpected mutating tool present in agent trace: ${tool}`);
         }
       }
     }
@@ -320,9 +326,9 @@ export function scoreCase(testCase, events, options = {}) {
       failures.push(orderFailure);
     }
     for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
-      const toolIndex = orderedTools.indexOf(tool);
       const beforeIndex = orderedTools.indexOf(beforeTool);
-      if (toolIndex !== -1 && beforeIndex !== -1 && toolIndex > beforeIndex) {
+      const lateToolIndex = orderedTools.findIndex((candidate, index) => candidate === tool && index > beforeIndex);
+      if (beforeIndex !== -1 && lateToolIndex !== -1) {
         failures.push(`allowed extra tool ${tool} must appear before ${beforeTool}`);
       }
     }
@@ -639,7 +645,7 @@ function escapeRegExp(value) {
 
 function invokesLiveDockerOrYdb(command) {
   return commandSegments(command).some((segment) =>
-    /(^|[;&|(\n"']\s*)(?:sudo\s+)?(?:(?:timeout\s+(?:-[^\s]+\s+)*\d+(?:\.\d+)?[a-zA-Z]?\s+)|(?:\/usr\/bin\/env\s+(?:-[^\s]+\s+)*)|(?:env\s+(?:-[^\s]+\s+)*)|(?:command\s+))*(?:[^\s;&|()"'`]*\/)?(?:docker|ydbd?)\b/.test(segment));
+    /(^|[;&|(\n"']\s*)(?:sudo(?:\s+-[^\s]+)*\s+)?(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|()"'`]+)\s+)|(?:timeout\s+(?:-[^\s]+\s+)*\d+(?:\.\d+)?[a-zA-Z]?\s+)|(?:\/usr\/bin\/env\s+(?:-[^\s]+\s+)*)|(?:env\s+(?:-[^\s]+\s+)*)|(?:command\s+))*(?:[^\s;&|()"'`]*\/)?(?:docker|ydbd?)\b/.test(segment));
 }
 
 function commandSegments(command) {
