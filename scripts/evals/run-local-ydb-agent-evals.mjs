@@ -332,6 +332,40 @@ export function scoreCase(testCase, events, options = {}) {
     if (earlyRequiredMutatingFailure) {
       failures.push(earlyRequiredMutatingFailure);
     }
+    for (const text of answerTextFields) {
+      const requiredTextOrderFailure = firstRequiredToolTextOrderFailure(
+        text,
+        testCase.expected.requiredOrderedTools ?? [],
+        "answer text",
+      );
+      if (requiredTextOrderFailure) {
+        failures.push(requiredTextOrderFailure);
+      }
+      const allowedExtraTextOrderFailure = firstAllowedExtraTextOrderFailure(
+        text,
+        testCase.expected.allowedExtraToolsBefore ?? {},
+        "answer text",
+      );
+      if (allowedExtraTextOrderFailure) {
+        failures.push(allowedExtraTextOrderFailure);
+      }
+    }
+    const requiredTraceOrderFailure = firstRequiredToolTextOrderFailure(
+      traceText,
+      testCase.expected.requiredOrderedTools ?? [],
+      "agent trace",
+    );
+    if (requiredTraceOrderFailure) {
+      failures.push(requiredTraceOrderFailure);
+    }
+    const allowedExtraTraceOrderFailure = firstAllowedExtraTextOrderFailure(
+      traceText,
+      testCase.expected.allowedExtraToolsBefore ?? {},
+      "agent trace",
+    );
+    if (allowedExtraTraceOrderFailure) {
+      failures.push(allowedExtraTraceOrderFailure);
+    }
     for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
       const beforeIndex = orderedTools.indexOf(beforeTool);
       const lateToolIndex = orderedTools.findIndex((candidate, index) => candidate === tool && index > beforeIndex);
@@ -605,6 +639,41 @@ function firstEarlyRequiredMutatingToolFailure(actual, required) {
   return undefined;
 }
 
+function firstRequiredToolTextOrderFailure(text, required, location) {
+  for (let requiredIndex = 1; requiredIndex < required.length; requiredIndex += 1) {
+    const tool = required[requiredIndex];
+    if (!mutatingLocalYdbTools.has(tool)) {
+      continue;
+    }
+    for (const predecessor of required.slice(0, requiredIndex)) {
+      if (hasToolMentionBefore(text, tool, predecessor)) {
+        return `required tool ${tool} appears before ${predecessor} in ${location}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+function firstAllowedExtraTextOrderFailure(text, allowedExtraToolsBefore, location) {
+  for (const [tool, beforeTool] of Object.entries(allowedExtraToolsBefore)) {
+    if (hasToolMentionBefore(text, beforeTool, tool)) {
+      return `allowed extra tool ${tool} appears after ${beforeTool} in ${location}`;
+    }
+  }
+  return undefined;
+}
+
+function hasToolMentionBefore(text, firstTool, secondTool) {
+  const firstMatches = nonSafeToolMatches(text, firstTool);
+  const secondMatches = nonSafeToolMatches(text, secondTool);
+  return firstMatches.some((firstMatch) =>
+    secondMatches.some((secondMatch) => firstMatch.index < secondMatch.index));
+}
+
+function nonSafeToolMatches(text, tool) {
+  return exactToolMatches(text, tool).filter((match) => !isSafeForbiddenWarningAtMatch(text, match));
+}
+
 function includesIgnoreCase(text, needle) {
   return text.toLowerCase().includes(String(needle).toLowerCase());
 }
@@ -623,7 +692,8 @@ function containsForbiddenTerm(text, term) {
 function forbiddenTermMatches(text, term) {
   if (isConfirmedMutationTerm(term)) {
     const matches = [];
-    const pattern = /(?:(?:\\?["']confirm\\?["']|confirm)\s*[:=]\s*true|(?:set|pass|use|include|call|run\s+with)\s+confirm\s+(?:to|as)\s+true)/gi;
+    const confirmName = String.raw`[` + "`" + String.raw`"']*confirm[` + "`" + String.raw`"']*`;
+    const pattern = new RegExp(String.raw`(?:(?:\\?["']confirm\\?["']|confirm)\s*[:=]\s*true|(?:set|pass|use|include|call|run\s+with)\s+${confirmName}\s+(?:to|as)\s+true)`, "gi");
     for (const match of text.matchAll(pattern)) {
       matches.push({
         text: match[0],
@@ -678,10 +748,23 @@ function invokesLiveDockerOrYdb(command) {
 
 function commandSegments(command) {
   const segments = splitCommandSegments(command);
-  for (const segment of [...segments]) {
+  const seen = new Set(segments);
+  const addSegments = (candidates) => {
+    for (const candidate of candidates) {
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        segments.push(candidate);
+      }
+    }
+  };
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
     const shellCommand = shellWrappedCommand(shellTokens(segment));
     if (shellCommand) {
-      segments.push(shellCommand);
+      addSegments(splitCommandSegments(shellCommand));
+    }
+    for (const substitution of commandSubstitutionSegments(segment)) {
+      addSegments(splitCommandSegments(substitution));
     }
   }
   return segments;
@@ -713,12 +796,12 @@ function executableIndex(tokens, start = 0) {
     } else if (name === "sudo") {
       index += 1;
       while (tokens[index]?.startsWith("-")) {
-        index += 1;
+        index += sudoOptionConsumesArgument(tokens[index]) ? 2 : 1;
       }
     } else if (name === "timeout") {
       index += 1;
       while (tokens[index]?.startsWith("-")) {
-        index += 1;
+        index += timeoutOptionConsumesArgument(tokens[index]) ? 2 : 1;
       }
       if (index < tokens.length) {
         index += 1;
@@ -735,6 +818,14 @@ function executableIndex(tokens, start = 0) {
     }
   }
   return -1;
+}
+
+function sudoOptionConsumesArgument(token) {
+  return !token.includes("=") && new Set(["-C", "-D", "-g", "-h", "-p", "-R", "-T", "-t", "-u"]).has(token);
+}
+
+function timeoutOptionConsumesArgument(token) {
+  return !token.includes("=") && new Set(["-k", "--kill-after", "-s", "--signal"]).has(token);
 }
 
 function sshRemoteCommandTokens(tokens, sshIndex) {
@@ -799,6 +890,84 @@ function splitCommandSegments(command) {
     segments.push(current.trim());
   }
   return segments;
+}
+
+function commandSubstitutionSegments(segment) {
+  const segments = [];
+  let quote;
+  let escaped = false;
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (char === "$" && segment[index + 1] === "(") {
+      const substitution = readParenthesizedSubstitution(segment, index + 2);
+      if (substitution) {
+        segments.push(substitution.text);
+        index = substitution.endIndex;
+      }
+    } else if (char === "`") {
+      const endIndex = segment.indexOf("`", index + 1);
+      if (endIndex !== -1) {
+        segments.push(segment.slice(index + 1, endIndex));
+        index = endIndex;
+      }
+    }
+  }
+  return segments;
+}
+
+function readParenthesizedSubstitution(text, startIndex) {
+  let depth = 1;
+  let quote;
+  let escaped = false;
+  for (let index = startIndex; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+    } else if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          text: text.slice(startIndex, index),
+          endIndex: index,
+        };
+      }
+    }
+  }
+  return undefined;
 }
 
 function shellTokens(segment) {
