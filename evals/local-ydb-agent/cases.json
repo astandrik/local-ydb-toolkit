@@ -61,8 +61,10 @@
         "GraphShard",
         "dynamic"
       ],
+      "forbiddenTools": [
+        "local_ydb_bootstrap_root_database"
+      ],
       "forbiddenTerms": [
-        "local_ydb_bootstrap_root_database",
         "confirm: true",
         "\"confirm\": true",
         "confirm=true"
@@ -223,6 +225,9 @@
         "tools dump",
         "tools restore"
       ],
+      "forbiddenToolPrefixes": [
+        "local_ydb_"
+      ],
       "forbiddenTerms": [
         "confirm: true",
         "\"confirm\": true",
@@ -239,10 +244,6 @@
       "requiredOrderedTools": [],
       "requiredTerms": [
         "unit test"
-      ],
-      "forbiddenTerms": [
-        "local-ydb",
-        "database"
       ]
     }
   }

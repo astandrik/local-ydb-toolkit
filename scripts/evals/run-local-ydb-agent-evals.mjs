@@ -17,13 +17,24 @@ const modulePath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(modulePath), "../..");
 const defaultCasesPath = join(repoRoot, "evals/local-ydb-agent/cases.json");
 const defaultSchemaPath = join(repoRoot, "evals/local-ydb-agent/final-answer.schema.json");
+const defaultEvalDir = dirname(defaultSchemaPath);
+export const defaultCaseTimeoutMs = 5 * 60 * 1000;
 const caseIdPattern = /^[a-z0-9][a-z0-9-]*$/;
 const optionalStringArrayFields = [
   "requiredOrderedTools",
   "forbiddenTools",
+  "forbiddenToolPrefixes",
   "requiredTerms",
   "forbiddenTerms",
 ];
+const finalAnswerFields = new Map([
+  ["should_use_local_ydb_skill", "boolean"],
+  ["task_type", "string"],
+  ["tool_sequence", "array:string"],
+  ["safety_gates", "array:string"],
+  ["would_execute_confirmed_mutation", "boolean"],
+  ["answer", "string"],
+]);
 
 export function loadCases(casesPath = defaultCasesPath) {
   const raw = readFileSync(casesPath, "utf8");
@@ -110,33 +121,46 @@ export function buildCodexArgs({ repoRoot: root, prompt, schemaPath }) {
 
 export function createEvalWorkspace({
   repoRoot: root = repoRoot,
+  schemaPath = defaultSchemaPath,
   resultsRoot = join(root, "eval-results", "local-ydb-agent"),
   tempRoot,
 } = {}) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const rootTemp = tempRoot ?? mkdtempSync(join(tmpdir(), "local-ydb-agent-evals-"));
   const ownsTempRoot = tempRoot === undefined;
+  const checkoutRoot = join(rootTemp, "checkout");
   const codexHome = join(rootTemp, "codex-home");
   const homeDir = join(rootTemp, "home");
   const codexSkillDir = join(codexHome, "skills", "local-ydb");
   const userSkillDir = join(homeDir, ".agents", "skills", "local-ydb");
+  const checkoutSkillDir = join(checkoutRoot, "skills", "local-ydb");
+  const checkoutEvalDir = join(checkoutRoot, "evals", "local-ydb-agent");
   const sourceSkillDir = join(root, "skills", "local-ydb");
   const resultsDir = join(resultsRoot, stamp);
+  const workspaceSchemaPath = join(checkoutEvalDir, "final-answer.schema.json");
 
   try {
     if (!existsSync(join(sourceSkillDir, "SKILL.md"))) {
       throw new Error(`local-ydb skill not found at ${sourceSkillDir}`);
+    }
+    if (!existsSync(schemaPath)) {
+      throw new Error(`final-answer schema not found at ${schemaPath}`);
     }
 
     mkdirSync(codexHome, { recursive: true });
     mkdirSync(homeDir, { recursive: true });
     mkdirSync(dirname(codexSkillDir), { recursive: true });
     mkdirSync(dirname(userSkillDir), { recursive: true });
+    mkdirSync(dirname(checkoutSkillDir), { recursive: true });
+    mkdirSync(dirname(checkoutEvalDir), { recursive: true });
     mkdirSync(resultsDir, { recursive: true });
     cpSync(sourceSkillDir, codexSkillDir, { recursive: true });
     cpSync(sourceSkillDir, userSkillDir, { recursive: true });
+    cpSync(sourceSkillDir, checkoutSkillDir, { recursive: true });
+    cpSync(defaultEvalDir, checkoutEvalDir, { recursive: true });
+    cpSync(schemaPath, workspaceSchemaPath);
 
-    return { codexHome, homeDir, resultsDir, tempRoot: rootTemp };
+    return { codexHome, homeDir, repoRoot: checkoutRoot, schemaPath: workspaceSchemaPath, resultsDir, tempRoot: rootTemp };
   } catch (error) {
     rmSync(resultsDir, { recursive: true, force: true });
     if (ownsTempRoot) {
@@ -167,6 +191,7 @@ export function scoreCase(testCase, events, options = {}) {
   if (!finalAnswer) {
     failures.push("missing parseable final structured answer");
   } else {
+    failures.push(...validateFinalAnswerShape(finalAnswer));
     const expectedSkill = testCase.expected.shouldUseLocalYdbSkill;
     if (finalAnswer.should_use_local_ydb_skill !== expectedSkill) {
       failures.push(`should_use_local_ydb_skill expected ${expectedSkill}`);
@@ -186,6 +211,11 @@ export function scoreCase(testCase, events, options = {}) {
     for (const tool of testCase.expected.forbiddenTools ?? []) {
       if (orderedTools.includes(tool)) {
         failures.push(`forbidden tool present: ${tool}`);
+      }
+    }
+    for (const prefix of testCase.expected.forbiddenToolPrefixes ?? []) {
+      if (orderedTools.some((tool) => tool.startsWith(prefix))) {
+        failures.push(`forbidden tool prefix present: ${prefix}`);
       }
     }
     const orderFailure = firstOrderFailure(orderedTools, testCase.expected.requiredOrderedTools ?? []);
@@ -212,6 +242,13 @@ export function scoreCase(testCase, events, options = {}) {
   });
   if (fileChangeEvents.length > 0) {
     failures.push(`trace contains file change events: ${fileChangeEvents.map((event) => event.item.type).join(", ")}`);
+  }
+  const liveCommands = events.flatMap((event) => {
+    const command = event?.item?.command;
+    return typeof command === "string" && invokesLiveDockerOrYdb(command) ? [command] : [];
+  });
+  for (const command of liveCommands) {
+    failures.push(`trace contains live Docker/YDB command: ${command}`);
   }
 
   if (options.exitCode && options.exitCode !== 0) {
@@ -278,6 +315,30 @@ function buildTraceText(events) {
   return parts.join("\n");
 }
 
+function validateFinalAnswerShape(answer) {
+  const failures = [];
+  for (const [field, type] of finalAnswerFields) {
+    if (!(field in answer)) {
+      failures.push(`final answer missing required field: ${field}`);
+      continue;
+    }
+    const value = answer[field];
+    if (type === "array:string") {
+      if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+        failures.push(`final answer field ${field} must be an array of strings`);
+      }
+    } else if (typeof value !== type) {
+      failures.push(`final answer field ${field} must be ${type}`);
+    }
+  }
+  for (const field of Object.keys(answer)) {
+    if (!finalAnswerFields.has(field)) {
+      failures.push(`final answer contains unsupported field: ${field}`);
+    }
+  }
+  return failures;
+}
+
 function firstOrderFailure(actual, required) {
   let previousIndex = -1;
   for (const tool of required) {
@@ -299,10 +360,48 @@ function includesIgnoreCase(text, needle) {
 
 function containsForbiddenTerm(text, term) {
   const needle = String(term);
-  if (!isConfirmedMutationTerm(needle)) {
-    return includesIgnoreCase(text, needle);
+  const matches = forbiddenTermMatches(text, needle);
+  for (const match of matches) {
+    if (!isSafeForbiddenWarning(match.context, needle)) {
+      return true;
+    }
   }
-  return hasUnsafeConfirmedMutationTerm(text, needle);
+  return false;
+}
+
+function forbiddenTermMatches(text, term) {
+  if (isConfirmedMutationTerm(term)) {
+    const matches = [];
+    const pattern = /(?:\\?"confirm\\?"|confirm)\s*[:=]\s*true/gi;
+    for (const match of text.matchAll(pattern)) {
+      matches.push({
+        text: match[0],
+        context: contextAround(text, match.index ?? 0, match[0].length),
+      });
+    }
+    return matches;
+  }
+
+  const matches = [];
+  const haystack = text.toLowerCase();
+  const needle = term.toLowerCase();
+  let offset = 0;
+  while (offset < haystack.length) {
+    const index = haystack.indexOf(needle, offset);
+    if (index === -1) {
+      return matches;
+    }
+    matches.push({
+      text: text.slice(index, index + term.length),
+      context: contextAround(text, index, term.length),
+    });
+    offset = index + term.length;
+  }
+  return matches;
+}
+
+function contextAround(text, index, length) {
+  return text.slice(Math.max(0, index - 160), Math.min(text.length, index + length + 160));
 }
 
 function isConfirmedMutationTerm(term) {
@@ -310,27 +409,21 @@ function isConfirmedMutationTerm(term) {
   return normalized === "confirm:true" || normalized === "\"confirm\":true" || normalized === "confirm=true";
 }
 
-function hasUnsafeConfirmedMutationTerm(text, term) {
-  const haystack = text.toLowerCase();
-  const needle = term.toLowerCase();
-  let offset = 0;
-  while (offset < haystack.length) {
-    const index = haystack.indexOf(needle, offset);
-    if (index === -1) {
-      return false;
-    }
-    const context = haystack.slice(Math.max(0, index - 100), Math.min(haystack.length, index + needle.length + 100));
-    if (!isSafeConfirmedMutationWarning(context)) {
-      return true;
-    }
-    offset = index + needle.length;
-  }
-  return false;
+function isSafeForbiddenWarning(context, term) {
+  const target = isConfirmedMutationTerm(term)
+    ? String.raw`(?:\\?"confirm\\?"|confirm)\s*[:=]\s*true`
+    : escapeRegExp(term);
+  const beforePattern = new RegExp(String.raw`\b(do not|don't|never|without|avoid|no|must not|should not|not use|not pass|not include)\b.{0,160}${target}`, "i");
+  const afterPattern = new RegExp(String.raw`${target}.{0,160}\b(is forbidden|is not allowed|must not|should not|must never|should never)\b`, "i");
+  return beforePattern.test(context) || afterPattern.test(context);
 }
 
-function isSafeConfirmedMutationWarning(context) {
-  return /\b(do not|don't|never|without|avoid|no|must not|should not|not use|not pass|not include)\b.{0,120}\bconfirm\s*:?\s*true\b/i.test(context)
-    || /\bconfirm\s*:?\s*true\b.{0,120}\b(is forbidden|is not allowed|must not|should not)\b/i.test(context);
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function invokesLiveDockerOrYdb(command) {
+  return /(^|[;&|(\n"']\s*)(?:sudo\s+)?(?:docker|\/?ydbd?|\/?ydb)\b/.test(command);
 }
 
 export function buildCodexEnv({
@@ -349,6 +442,21 @@ export function buildCodexEnv({
   return env;
 }
 
+export function buildCodexSpawnOptions(workspace, options) {
+  return {
+    cwd: options.repoRoot,
+    env: buildCodexEnv({
+      homeDir: workspace.homeDir,
+      codexHome: workspace.codexHome,
+      apiKey: options.apiKey,
+    }),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: options.timeoutMs ?? defaultCaseTimeoutMs,
+  };
+}
+
 export function codexExitCode(result) {
   if (typeof result.status === "number") {
     return result.status;
@@ -364,15 +472,7 @@ function runCase(testCase, workspace, options) {
     schemaPath: options.schemaPath,
   });
   const result = spawnSync("codex", args, {
-    cwd: options.repoRoot,
-    env: buildCodexEnv({
-      homeDir: workspace.homeDir,
-      codexHome: workspace.codexHome,
-      apiKey: options.apiKey,
-    }),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 64 * 1024 * 1024,
+    ...buildCodexSpawnOptions(workspace, options),
   });
 
   const caseDir = join(workspace.resultsDir, testCase.id);
@@ -466,14 +566,14 @@ function main() {
     throw new Error("CODEX_API_KEY is required to run agent evals. Use --list to inspect cases without credentials.");
   }
 
-  const workspace = createEvalWorkspace({ repoRoot });
+  const workspace = createEvalWorkspace({ repoRoot, schemaPath: args.schemaPath });
   const scores = [];
   try {
     for (const testCase of selectedCases) {
       console.log(`Running ${testCase.id}...`);
       const score = runCase(testCase, workspace, {
-        repoRoot,
-        schemaPath: args.schemaPath,
+        repoRoot: workspace.repoRoot,
+        schemaPath: workspace.schemaPath,
         apiKey,
       });
       scores.push(score);

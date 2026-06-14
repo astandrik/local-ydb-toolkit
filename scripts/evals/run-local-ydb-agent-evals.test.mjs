@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildCodexArgs,
   buildCodexEnv,
+  buildCodexSpawnOptions,
   codexExitCode,
   createEvalWorkspace,
+  defaultCaseTimeoutMs,
   loadCases,
   parseArgs,
   parseJsonlEvents,
@@ -22,7 +24,7 @@ describe("local-ydb agent eval runner", () => {
     expect(cases.length).toBeGreaterThanOrEqual(10);
     expect(cases.some((testCase) => testCase.id === "negative-unrelated-python-test")).toBe(true);
     expect(cases.some((testCase) => testCase.expected.shouldUseLocalYdbSkill === false)).toBe(true);
-    expect(cases.some((testCase) => testCase.expected.requiredOrderedTools.includes("local_ydb_restore_tenant"))).toBe(true);
+    expect(cases.some((testCase) => (testCase.expected.requiredOrderedTools ?? []).includes("local_ydb_restore_tenant"))).toBe(true);
   });
 
   it("rejects unsafe case ids before using them as output paths", () => {
@@ -268,13 +270,208 @@ describe("local-ydb agent eval runner", () => {
             tool_sequence: [],
             safety_gates: ["plan-only"],
             would_execute_confirmed_mutation: false,
-            answer: "Write a small unit test that asserts reversing a sample string returns the expected value.",
+            answer: "No local-ydb or database workflow is needed. Write a small unit test that asserts reversing a sample string returns the expected value.",
           }),
         },
       },
     ]);
 
     expect(result.ok).toBe(true);
+  });
+
+  it("fails unsafe compact confirmed-use JSON while allowing negated guidance", () => {
+    const unsafe = scoreCase({
+      id: "unsafe-confirm",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: ["\"confirm\": true", "confirm=true"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "unsafe restore",
+            tool_sequence: [],
+            safety_gates: ["manual approval"],
+            would_execute_confirmed_mutation: false,
+            answer: "Run local_ydb_restore_tenant with {\"confirm\":true}.",
+          }),
+        },
+      },
+    ]);
+
+    const safe = scoreCase({
+      id: "safe-confirm-equals",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        requiredTerms: ["plan-only"],
+        forbiddenTerms: ["confirm=true"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "safe restore",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Do not pass confirm=true during the eval.",
+          }),
+        },
+      },
+    ]);
+
+    expect(unsafe.ok).toBe(false);
+    expect(unsafe.failures).toContain("forbidden term present: \"confirm\": true");
+    expect(safe.ok).toBe(true);
+  });
+
+  it("allows negated forbidden operation guidance but rejects affirmative use", () => {
+    const safe = scoreCase({
+      id: "storage-reduction",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: ["DecommitGroups"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "storage reduction",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Do not use DecommitGroups; use dump, rebuild, restore verification.",
+          }),
+        },
+      },
+    ]);
+    const unsafe = scoreCase({
+      id: "storage-reduction",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: ["DecommitGroups"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "storage reduction",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Use DecommitGroups to reduce storage groups.",
+          }),
+        },
+      },
+    ]);
+
+    expect(safe.ok).toBe(true);
+    expect(unsafe.ok).toBe(false);
+    expect(unsafe.failures).toContain("forbidden term present: DecommitGroups");
+  });
+
+  it("fails traces that execute live Docker or YDB commands", () => {
+    const result = scoreCase({
+      id: "live-command",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: [],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: "docker ps",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "diagnosis",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Plan only.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("trace contains live Docker/YDB command: docker ps");
+  });
+
+  it("fails source-lookup answers that choose local-ydb MCP tools", () => {
+    const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
+    const sourceLookup = cases.find((testCase) => testCase.id === "upstream-ydb-source-lookup");
+    const result = scoreCase(sourceLookup, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "upstream lookup",
+            tool_sequence: ["local_ydb_status_report"],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Use gh api against ydb-platform/ydb and inspect tools dump and tools restore docs.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("forbidden tool prefix present: local_ydb_");
+  });
+
+  it("rejects final answers that do not satisfy the output schema shape", () => {
+    const result = scoreCase({
+      id: "schema-shape",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "diagnosis",
+            tool_sequence: [],
+            would_execute_confirmed_mutation: false,
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("final answer missing required field: safety_gates");
+    expect(result.failures).toContain("final answer missing required field: answer");
   });
 
   it("fails negative controls that still propose local-ydb tools", () => {
@@ -360,6 +557,10 @@ describe("local-ydb agent eval runner", () => {
 
       expect(skill).toContain("name: local-ydb");
       expect(workspace.resultsDir.startsWith(resultsRoot)).toBe(true);
+      expect(workspace.repoRoot).toBe(join(tempRoot, "checkout"));
+      expect(existsSync(join(workspace.repoRoot, "skills", "local-ydb", "SKILL.md"))).toBe(true);
+      expect(existsSync(join(workspace.repoRoot, "evals", "local-ydb-agent", "final-answer.schema.json"))).toBe(true);
+      expect(existsSync(join(workspace.repoRoot, "private"))).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
       if (workspace && !workspace.resultsDir.startsWith(tempRoot)) {
@@ -394,6 +595,25 @@ describe("local-ydb agent eval runner", () => {
 
     expect(env).toEqual({
       PATH: "/usr/bin",
+      HOME: "/tmp/home",
+      CODEX_HOME: "/tmp/codex-home",
+      CODEX_API_KEY: "test-key",
+    });
+  });
+
+  it("builds Codex spawn options with a per-case timeout", () => {
+    const options = buildCodexSpawnOptions({
+      codexHome: "/tmp/codex-home",
+      homeDir: "/tmp/home",
+    }, {
+      repoRoot: "/tmp/checkout",
+      apiKey: "test-key",
+    });
+
+    expect(options.cwd).toBe("/tmp/checkout");
+    expect(options.timeout).toBe(defaultCaseTimeoutMs);
+    expect(options.env).toEqual({
+      PATH: process.env.PATH,
       HOME: "/tmp/home",
       CODEX_HOME: "/tmp/codex-home",
       CODEX_API_KEY: "test-key",
