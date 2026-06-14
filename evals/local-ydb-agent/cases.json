@@ -105,7 +105,8 @@
         "local_ydb_upgrade_version"
       ],
       "requiredTerms": [
-        "exact tag",
+        "exact",
+        "tag",
         "dump",
         "restore"
       ],

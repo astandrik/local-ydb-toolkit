@@ -34,6 +34,16 @@ const finalAnswerFields = new Map([
   ["would_execute_confirmed_mutation", "boolean"],
   ["answer", "string"],
 ]);
+const destructiveLocalYdbTools = new Set([
+  "local_ydb_apply_schema",
+  "local_ydb_cleanup_storage",
+  "local_ydb_destroy_stack",
+  "local_ydb_permissions",
+  "local_ydb_reduce_storage_groups",
+  "local_ydb_remove_dynamic_nodes",
+  "local_ydb_restore_tenant",
+  "local_ydb_upgrade_version",
+]);
 
 export function loadCases(casesPath = defaultCasesPath) {
   const raw = readFileSync(casesPath, "utf8");
@@ -207,6 +217,14 @@ export function scoreCase(testCase, events, options = {}) {
     if (!expectedSkill && finalAnswerTextFields(finalAnswer).some((text) => containsForbiddenToolPrefix(text, "local_ydb_"))) {
       failures.push("negative control must not mention local-ydb tools");
     }
+    if (expectedSkill) {
+      const requiredTools = new Set(testCase.expected.requiredOrderedTools ?? []);
+      for (const tool of orderedTools) {
+        if (destructiveLocalYdbTools.has(tool) && !requiredTools.has(tool)) {
+          failures.push(`unexpected destructive tool present: ${tool}`);
+        }
+      }
+    }
     for (const tool of testCase.expected.requiredOrderedTools ?? []) {
       if (!orderedTools.includes(tool)) {
         failures.push(`missing required tool ${tool}`);
@@ -262,6 +280,17 @@ export function scoreCase(testCase, events, options = {}) {
   });
   for (const command of liveCommands) {
     failures.push(`trace contains live Docker/YDB command: ${command}`);
+  }
+  const liveMcpTools = events.flatMap((event) => {
+    const item = event?.item;
+    const itemType = item?.type;
+    const name = item?.name;
+    const eventType = event?.type;
+    const isToolEvent = [itemType, eventType].some((value) => typeof value === "string" && value.includes("tool"));
+    return isToolEvent && typeof name === "string" && name.startsWith("local_ydb_") ? [name] : [];
+  });
+  for (const name of liveMcpTools) {
+    failures.push(`trace contains live MCP tool call: ${name}`);
   }
 
   if (options.exitCode && options.exitCode !== 0) {
@@ -474,7 +503,7 @@ function isConfirmedMutationTerm(term) {
 function isSafeForbiddenWarningAtMatch(text, match) {
   const before = text.slice(Math.max(0, match.index - 120), match.index);
   const after = text.slice(match.index + match.length, Math.min(text.length, match.index + match.length + 120));
-  const beforePattern = /\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|pass|set|include|call|run\s+with)\s+)?[`'"([{]*\s*$/i;
+  const beforePattern = /\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|pass|set|include|call|run\s+with)\s+)?(?:(?:any|all|the|a|an)\s+)?[`'"([{]*\s*$/i;
   const noPattern = /\b(?:no|without)\s+[`'"([{]*\s*$/i;
   const afterPattern = /^\s*[`'")\]}.,:;]*\s*(?:is forbidden|is not allowed|must not be used|should not be used|must never be used|should never be used)\b/i;
   return beforePattern.test(before) || noPattern.test(before) || afterPattern.test(after);
@@ -601,15 +630,16 @@ function requiredOptionValue(argv, index, flag, placeholder) {
 }
 
 function printHelp() {
-  console.log(`Usage: npm run eval:agent -- [--list] [--case <id>]
+  console.log(`Usage: npm run eval:agent -- [--list] [--case <id>] [--cases <path>] [--schema <path>] [--help]
 
 Runs plan-only Codex agent evals for the local-ydb skill.
 
 Options:
-  --list        Print available cases and exit.
-  --case <id>  Run a single case.
-  --cases <p>  Use a custom cases JSON file.
-  --schema <p> Use a custom final-answer JSON schema.
+  --list          Print available cases and exit.
+  --case <id>    Run a single case.
+  --cases <path> Use a custom cases JSON file.
+  --schema <path> Use a custom final-answer JSON schema.
+  --help          Print this help.
 `);
 }
 
