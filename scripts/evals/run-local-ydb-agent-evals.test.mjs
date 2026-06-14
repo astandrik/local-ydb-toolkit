@@ -8,6 +8,7 @@ import {
   buildCodexArgs,
   buildCodexEnv,
   buildCodexSpawnOptions,
+  codexStderrLog,
   codexExitCode,
   createEvalWorkspace,
   defaultCaseTimeoutMs,
@@ -70,10 +71,25 @@ describe("local-ydb agent eval runner", () => {
 
   it("keeps high-level tool expectations for upgrade and storage rebuild cases", () => {
     const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
+    const cmsTenantBootstrap = cases.find((testCase) => testCase.id === "cms-tenant-graphshard-bootstrap");
+    const schemaFlow = cases.find((testCase) => testCase.id === "schema-generate-apply");
     const versionUpgrade = cases.find((testCase) => testCase.id === "version-upgrade-backup-first");
     const storageReduction = cases.find((testCase) => testCase.id === "storage-reduction-rebuild");
     const pathRestore = cases.find((testCase) => testCase.id === "path-level-dump-restore");
 
+    expect(cmsTenantBootstrap?.expected.requiredOrderedTools).toEqual([
+      "local_ydb_check_prerequisites",
+      "local_ydb_bootstrap",
+      "local_ydb_tenant_check",
+      "local_ydb_nodes_check",
+      "local_ydb_graphshard_check",
+    ]);
+    expect(schemaFlow?.expected.requiredOrderedTools).toEqual([
+      "local_ydb_status_report",
+      "local_ydb_scheme",
+      "local_ydb_generate_schema",
+      "local_ydb_apply_schema",
+    ]);
     expect(versionUpgrade?.expected.requiredOrderedTools).toEqual([
       "local_ydb_status_report",
       "local_ydb_list_versions",
@@ -82,12 +98,18 @@ describe("local-ydb agent eval runner", () => {
       "local_ydb_upgrade_version",
     ]);
     expect(versionUpgrade?.expected.allowedExtraTools).toEqual(["local_ydb_dump_tenant"]);
+    expect(versionUpgrade?.expected.allowedExtraToolsBefore).toEqual({
+      local_ydb_dump_tenant: "local_ydb_upgrade_version",
+    });
     expect(storageReduction?.expected.requiredOrderedTools).toEqual([
       "local_ydb_status_report",
       "local_ydb_storage_placement",
       "local_ydb_reduce_storage_groups",
     ]);
     expect(storageReduction?.expected.allowedExtraTools).toEqual(["local_ydb_dump_tenant"]);
+    expect(storageReduction?.expected.allowedExtraToolsBefore).toEqual({
+      local_ydb_dump_tenant: "local_ydb_reduce_storage_groups",
+    });
     expect(pathRestore?.expected.requiredOrderedTools).toEqual([
       "local_ydb_dump_tenant",
       "local_ydb_list_dumps",
@@ -211,6 +233,7 @@ describe("local-ydb agent eval runner", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures).toContain("unexpected mutating tool present: local_ydb_bootstrap");
+    expect(result.failures).not.toContain("unexpected mutating tool present in final message: local_ydb_bootstrap");
   });
 
   it("fails positive cases that recommend unexpected mutating tools in answer text", () => {
@@ -281,6 +304,52 @@ describe("local-ydb agent eval runner", () => {
     ]);
 
     expect(result.ok).toBe(true);
+  });
+
+  it("fails allowed extra tools that appear after the guarded mutating tool", () => {
+    const result = scoreCase({
+      id: "upgrade-with-late-extra-dump",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [
+          "local_ydb_status_report",
+          "local_ydb_list_versions",
+          "local_ydb_pull_image",
+          "local_ydb_pull_status",
+          "local_ydb_upgrade_version",
+        ],
+        allowedExtraTools: ["local_ydb_dump_tenant"],
+        allowedExtraToolsBefore: {
+          local_ydb_dump_tenant: "local_ydb_upgrade_version",
+        },
+        requiredTerms: ["dump", "restore"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "upgrade",
+            tool_sequence: [
+              "local_ydb_status_report",
+              "local_ydb_list_versions",
+              "local_ydb_pull_image",
+              "local_ydb_pull_status",
+              "local_ydb_upgrade_version",
+              "local_ydb_dump_tenant",
+            ],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Plan the upgrade, then mention dump and restore.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("allowed extra tool local_ydb_dump_tenant must appear before local_ydb_upgrade_version");
   });
 
   it("fails when a case confirms mutation or skips required order", () => {
@@ -400,6 +469,7 @@ describe("local-ydb agent eval runner", () => {
     expect(rootOnly.ok).toBe(true);
     expect(tenantBootstrap.ok).toBe(false);
     expect(tenantBootstrap.failures).toContain("forbidden tool present: local_ydb_bootstrap");
+    expect(tenantBootstrap.failures).not.toContain("forbidden tool present in final message: local_ydb_bootstrap");
   });
 
   it("fails exact forbidden tools mentioned in answer text", () => {
@@ -1178,6 +1248,7 @@ describe("local-ydb agent eval runner", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures).toContain("forbidden tool prefix present: local_ydb_");
+    expect(result.failures).not.toContain("forbidden tool prefix present in final message: local_ydb_");
   });
 
   it("fails source-lookup answers that recommend forbidden local-ydb tools in answer text", () => {
@@ -1317,6 +1388,77 @@ describe("local-ydb agent eval runner", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures).toContain("negative control must not mention local-ydb tools in agent trace");
+  });
+
+  it("fails negative-control todo traces that recommend local-ydb tools", () => {
+    const result = scoreCase({
+      id: "negative",
+      expected: {
+        shouldUseLocalYdbSkill: false,
+        requiredOrderedTools: [],
+        requiredTerms: ["unit test"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "todo_list",
+          items: [
+            {
+              content: "Use local_ydb_status_report before writing the unit test.",
+            },
+          ],
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: false,
+            task_type: "unrelated unit test",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Write a unit test.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("negative control must not mention local-ydb tools in agent trace");
+  });
+
+  it("fails forbidden tool prefixes from trace item tool fields", () => {
+    const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
+    const sourceLookup = cases.find((testCase) => testCase.id === "upstream-ydb-source-lookup");
+    const result = scoreCase(sourceLookup, [
+      {
+        type: "item.completed",
+        item: {
+          type: "plan_update",
+          tool: "local_ydb_status_report",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "upstream lookup",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Use gh api against ydb-platform/ydb and inspect tools dump and tools restore docs.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("forbidden tool prefix present in agent trace: local_ydb_");
   });
 
   it("fails negative-control final prose outside fenced JSON that recommends local-ydb tools", () => {
@@ -1625,6 +1767,12 @@ describe("local-ydb agent eval runner", () => {
 
   it("treats signal-terminated Codex processes as failed", () => {
     expect(codexExitCode({ status: null, signal: "SIGTERM", error: undefined })).toBe(1);
+  });
+
+  it("includes spawn errors in Codex stderr logs", () => {
+    const error = new Error("spawn codex ENOENT");
+
+    expect(codexStderrLog({ stderr: "", error })).toContain("spawn codex ENOENT");
   });
 
   it("creates an isolated CODEX_HOME with the repository skill installed", () => {

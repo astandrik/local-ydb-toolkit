@@ -90,6 +90,7 @@ export function loadCases(casesPath = defaultCasesPath) {
     for (const field of optionalStringArrayFields) {
       assertOptionalStringArray(testCase, field);
     }
+    assertOptionalStringMap(testCase, "allowedExtraToolsBefore");
   }
   return parsed;
 }
@@ -101,6 +102,21 @@ function assertOptionalStringArray(testCase, field) {
   }
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an array of strings.`);
+  }
+}
+
+function assertOptionalStringMap(testCase, field) {
+  const value = testCase.expected[field];
+  if (value === undefined) {
+    return;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an object of string values.`);
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (key.length === 0 || typeof item !== "string" || item.length === 0) {
+      throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an object of string values.`);
+    }
   }
 }
 
@@ -264,7 +280,7 @@ export function scoreCase(testCase, events, options = {}) {
         if (answerTextFields.some((text) => containsForbiddenToolName(text, tool))) {
           failures.push(`unexpected mutating tool present in answer text: ${tool}`);
         }
-        if (containsForbiddenToolName(finalText, tool)) {
+        if (!orderedTools.includes(tool) && containsForbiddenToolName(finalText, tool)) {
           failures.push(`unexpected mutating tool present in final message: ${tool}`);
         }
       }
@@ -281,7 +297,7 @@ export function scoreCase(testCase, events, options = {}) {
       if (answerTextFields.some((text) => containsForbiddenToolName(text, tool))) {
         failures.push(`forbidden tool present in answer text: ${tool}`);
       }
-      if (containsForbiddenToolName(finalText, tool)) {
+      if (!orderedTools.includes(tool) && containsForbiddenToolName(finalText, tool)) {
         failures.push(`forbidden tool present in final message: ${tool}`);
       }
     }
@@ -292,7 +308,7 @@ export function scoreCase(testCase, events, options = {}) {
       if (answerTextFields.some((text) => containsForbiddenToolPrefix(text, prefix))) {
         failures.push(`forbidden tool prefix present in answer text: ${prefix}`);
       }
-      if (containsForbiddenToolPrefix(finalText, prefix)) {
+      if (!orderedTools.some((tool) => tool.startsWith(prefix)) && containsForbiddenToolPrefix(finalText, prefix)) {
         failures.push(`forbidden tool prefix present in final message: ${prefix}`);
       }
       if (containsForbiddenToolPrefix(traceText, prefix)) {
@@ -302,6 +318,13 @@ export function scoreCase(testCase, events, options = {}) {
     const orderFailure = firstOrderFailure(orderedTools, testCase.expected.requiredOrderedTools ?? []);
     if (orderFailure) {
       failures.push(orderFailure);
+    }
+    for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
+      const toolIndex = orderedTools.indexOf(tool);
+      const beforeIndex = orderedTools.indexOf(beforeTool);
+      if (toolIndex !== -1 && beforeIndex !== -1 && toolIndex > beforeIndex) {
+        failures.push(`allowed extra tool ${tool} must appear before ${beforeTool}`);
+      }
     }
   }
 
@@ -405,8 +428,40 @@ function buildTraceText(events) {
     if (typeof item.name === "string") {
       parts.push(item.name);
     }
+    if (typeof item.tool === "string") {
+      parts.push(item.tool);
+    }
+    if (item.type !== "agent_message") {
+      parts.push(...traceItemTextParts(item));
+    }
   }
   return parts.join("\n");
+}
+
+const traceTextFieldNames = new Set(["text", "content", "title", "summary", "description"]);
+
+function traceItemTextParts(value) {
+  const parts = [];
+  const visit = (candidate) => {
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        visit(item);
+      }
+      return;
+    }
+    if (!candidate || typeof candidate !== "object") {
+      return;
+    }
+    for (const [key, item] of Object.entries(candidate)) {
+      if (typeof item === "string" && traceTextFieldNames.has(key)) {
+        parts.push(item);
+      } else if (item && typeof item === "object") {
+        visit(item);
+      }
+    }
+  };
+  visit(value);
+  return parts;
 }
 
 function findFinalAgentMessageIndex(events) {
@@ -634,6 +689,17 @@ export function codexExitCode(result) {
   return 1;
 }
 
+export function codexStderrLog(result) {
+  const parts = [];
+  if (typeof result.stderr === "string" && result.stderr.length > 0) {
+    parts.push(result.stderr.trimEnd());
+  }
+  if (result.error) {
+    parts.push(result.error.stack || result.error.message || String(result.error));
+  }
+  return parts.length > 0 ? `${parts.join("\n")}\n` : "";
+}
+
 function runCase(testCase, workspace, options) {
   const prompt = buildPrompt(testCase);
   const args = buildCodexArgs({
@@ -648,7 +714,7 @@ function runCase(testCase, workspace, options) {
   const caseDir = join(workspace.resultsDir, testCase.id);
   mkdirSync(caseDir, { recursive: true });
   writeFileSync(join(caseDir, "stdout.jsonl"), result.stdout ?? "", "utf8");
-  writeFileSync(join(caseDir, "stderr.log"), result.stderr ?? "", "utf8");
+  writeFileSync(join(caseDir, "stderr.log"), codexStderrLog(result), "utf8");
   writeFileSync(join(caseDir, "prompt.txt"), prompt, "utf8");
 
   const parsed = parseJsonlEvents(result.stdout ?? "");

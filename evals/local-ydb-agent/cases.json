@@ -54,6 +54,7 @@
         "local_ydb_check_prerequisites",
         "local_ydb_bootstrap",
         "local_ydb_tenant_check",
+        "local_ydb_nodes_check",
         "local_ydb_graphshard_check"
       ],
       "requiredTerms": [
@@ -78,6 +79,8 @@
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_scheme",
         "local_ydb_generate_schema",
         "local_ydb_apply_schema"
       ],
@@ -108,6 +111,9 @@
       "allowedExtraTools": [
         "local_ydb_dump_tenant"
       ],
+      "allowedExtraToolsBefore": {
+        "local_ydb_dump_tenant": "local_ydb_upgrade_version"
+      },
       "requiredTerms": [
         "exact",
         "tag",
@@ -135,6 +141,9 @@
       "allowedExtraTools": [
         "local_ydb_dump_tenant"
       ],
+      "allowedExtraToolsBefore": {
+        "local_ydb_dump_tenant": "local_ydb_reduce_storage_groups"
+      },
       "requiredTerms": [
         "dump",
         "rebuild",
