@@ -1,10 +1,13 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   buildCodexArgs,
   buildCodexEnv,
+  codexExitCode,
   createEvalWorkspace,
   loadCases,
   parseArgs,
@@ -71,11 +74,32 @@ describe("local-ydb agent eval runner", () => {
     expect(versionUpgrade?.expected.requiredOrderedTools).toEqual([
       "local_ydb_list_versions",
       "local_ydb_pull_image",
+      "local_ydb_pull_status",
       "local_ydb_upgrade_version",
     ]);
     expect(storageReduction?.expected.requiredOrderedTools).toEqual([
       "local_ydb_storage_placement",
       "local_ydb_reduce_storage_groups",
+    ]);
+  });
+
+  it("keeps pull polling and dynamic auth token planning in relevant eval cases", () => {
+    const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
+    const versionUpgrade = cases.find((testCase) => testCase.id === "version-upgrade-backup-first");
+    const authHardening = cases.find((testCase) => testCase.id === "auth-hardening-backup-first");
+
+    expect(versionUpgrade?.expected.requiredOrderedTools).toEqual([
+      "local_ydb_list_versions",
+      "local_ydb_pull_image",
+      "local_ydb_pull_status",
+      "local_ydb_upgrade_version",
+    ]);
+    expect(authHardening?.expected.requiredOrderedTools).toEqual([
+      "local_ydb_dump_tenant",
+      "local_ydb_prepare_auth_config",
+      "local_ydb_write_dynamic_auth_config",
+      "local_ydb_apply_auth_hardening",
+      "local_ydb_auth_check",
     ]);
   });
 
@@ -140,6 +164,35 @@ describe("local-ydb agent eval runner", () => {
     expect(result.failures).toContain("would_execute_confirmed_mutation must be false");
     expect(result.failures).toContain("missing required tool local_ydb_list_dumps");
     expect(result.failures).toContain("forbidden term present: confirm: true");
+  });
+
+  it("does not treat safe confirmed-mutation warnings as forbidden confirmed use", () => {
+    const result = scoreCase({
+      id: "safe-warning",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        requiredTerms: ["plan-only"],
+        forbiddenTerms: ["confirm: true"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "restore planning",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Do not use confirm: true during this plan-only eval.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(true);
   });
 
   it("checks forbidden tools exactly instead of by substring", () => {
@@ -224,6 +277,36 @@ describe("local-ydb agent eval runner", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("fails negative controls that still propose local-ydb tools", () => {
+    const result = scoreCase({
+      id: "negative",
+      expected: {
+        shouldUseLocalYdbSkill: false,
+        requiredOrderedTools: [],
+        requiredTerms: ["unit test"],
+        forbiddenTerms: [],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: false,
+            task_type: "unit test",
+            tool_sequence: ["local_ydb_status_report"],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Write a unit test.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("negative control must not include local-ydb tools");
+  });
+
   it("parses JSONL traces while preserving malformed lines as parse errors", () => {
     const parsed = parseJsonlEvents("{\"type\":\"turn.started\"}\nnot-json\n\n{\"type\":\"turn.completed\"}\n");
 
@@ -245,6 +328,22 @@ describe("local-ydb agent eval runner", () => {
     expect(parseArgs(["--case", "explicit-database-diagnosis"]).caseId).toBe("explicit-database-diagnosis");
     expect(parseArgs(["--cases", "custom-cases.json"]).casesPath).toContain("custom-cases.json");
     expect(parseArgs(["--schema", "custom-schema.json"]).schemaPath).toContain("custom-schema.json");
+  });
+
+  it("lists cases without validating a requested case id or requiring credentials", () => {
+    const scriptPath = fileURLToPath(new URL("./run-local-ydb-agent-evals.mjs", import.meta.url));
+    const result = spawnSync(process.execPath, [scriptPath, "--list", "--case", "does-not-exist"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("explicit-database-diagnosis");
+    expect(result.stderr).toBe("");
+  });
+
+  it("treats signal-terminated Codex processes as failed", () => {
+    expect(codexExitCode({ status: null, signal: "SIGTERM", error: undefined })).toBe(1);
   });
 
   it("creates an isolated CODEX_HOME with the repository skill installed", () => {
@@ -315,6 +414,7 @@ describe("local-ydb agent eval runner", () => {
       "--sandbox",
       "read-only",
       "--ignore-user-config",
+      "--ignore-rules",
       "-c",
       "shell_environment_policy.inherit=\"none\"",
       "-c",

@@ -95,6 +95,7 @@ export function buildCodexArgs({ repoRoot: root, prompt, schemaPath }) {
     "--sandbox",
     "read-only",
     "--ignore-user-config",
+    "--ignore-rules",
     "-c",
     "shell_environment_policy.inherit=\"none\"",
     "-c",
@@ -174,6 +175,9 @@ export function scoreCase(testCase, events, options = {}) {
       failures.push("would_execute_confirmed_mutation must be false");
     }
     const orderedTools = Array.isArray(finalAnswer.tool_sequence) ? finalAnswer.tool_sequence : [];
+    if (!expectedSkill && orderedTools.some((tool) => tool.startsWith("local_ydb_"))) {
+      failures.push("negative control must not include local-ydb tools");
+    }
     for (const tool of testCase.expected.requiredOrderedTools ?? []) {
       if (!orderedTools.includes(tool)) {
         failures.push(`missing required tool ${tool}`);
@@ -197,7 +201,7 @@ export function scoreCase(testCase, events, options = {}) {
     }
   }
   for (const term of testCase.expected.forbiddenTerms ?? []) {
-    if (includesIgnoreCase(searchableText, term)) {
+    if (containsForbiddenTerm(searchableText, term)) {
       failures.push(`forbidden term present: ${term}`);
     }
   }
@@ -293,6 +297,42 @@ function includesIgnoreCase(text, needle) {
   return text.toLowerCase().includes(String(needle).toLowerCase());
 }
 
+function containsForbiddenTerm(text, term) {
+  const needle = String(term);
+  if (!isConfirmedMutationTerm(needle)) {
+    return includesIgnoreCase(text, needle);
+  }
+  return hasUnsafeConfirmedMutationTerm(text, needle);
+}
+
+function isConfirmedMutationTerm(term) {
+  const normalized = term.toLowerCase().replace(/\s+/g, "");
+  return normalized === "confirm:true" || normalized === "\"confirm\":true" || normalized === "confirm=true";
+}
+
+function hasUnsafeConfirmedMutationTerm(text, term) {
+  const haystack = text.toLowerCase();
+  const needle = term.toLowerCase();
+  let offset = 0;
+  while (offset < haystack.length) {
+    const index = haystack.indexOf(needle, offset);
+    if (index === -1) {
+      return false;
+    }
+    const context = haystack.slice(Math.max(0, index - 100), Math.min(haystack.length, index + needle.length + 100));
+    if (!isSafeConfirmedMutationWarning(context)) {
+      return true;
+    }
+    offset = index + needle.length;
+  }
+  return false;
+}
+
+function isSafeConfirmedMutationWarning(context) {
+  return /\b(do not|don't|never|without|avoid|no|must not|should not|not use|not pass|not include)\b.{0,120}\bconfirm\s*:?\s*true\b/i.test(context)
+    || /\bconfirm\s*:?\s*true\b.{0,120}\b(is forbidden|is not allowed|must not|should not)\b/i.test(context);
+}
+
 export function buildCodexEnv({
   path = process.env.PATH,
   homeDir,
@@ -307,6 +347,13 @@ export function buildCodexEnv({
   env.CODEX_HOME = codexHome;
   env.CODEX_API_KEY = apiKey;
   return env;
+}
+
+export function codexExitCode(result) {
+  if (typeof result.status === "number") {
+    return result.status;
+  }
+  return 1;
 }
 
 function runCase(testCase, workspace, options) {
@@ -337,7 +384,7 @@ function runCase(testCase, workspace, options) {
   const parsed = parseJsonlEvents(result.stdout ?? "");
   writeFileSync(join(caseDir, "events.filtered.json"), `${JSON.stringify(parsed.events, null, 2)}\n`, "utf8");
   const score = scoreCase(testCase, parsed.events, {
-    exitCode: result.status ?? (result.error ? 1 : 0),
+    exitCode: codexExitCode(result),
     parseErrors: parsed.errors,
   });
   writeFileSync(join(caseDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`, "utf8");
@@ -402,15 +449,16 @@ function main() {
   }
 
   const cases = loadCases(args.casesPath);
-  const selectedCases = args.caseId ? cases.filter((testCase) => testCase.id === args.caseId) : cases;
-  if (args.caseId && selectedCases.length === 0) {
-    throw new Error(`Unknown eval case: ${args.caseId}`);
-  }
   if (args.list) {
     for (const testCase of cases) {
       console.log(`${testCase.id}\t${testCase.name ?? ""}`);
     }
     return;
+  }
+
+  const selectedCases = args.caseId ? cases.filter((testCase) => testCase.id === args.caseId) : cases;
+  if (args.caseId && selectedCases.length === 0) {
+    throw new Error(`Unknown eval case: ${args.caseId}`);
   }
 
   const apiKey = process.env.CODEX_API_KEY;
