@@ -21,6 +21,7 @@ export const defaultCaseTimeoutMs = 5 * 60 * 1000;
 const caseIdPattern = /^[a-z0-9][a-z0-9-]*$/;
 const optionalStringArrayFields = [
   "requiredOrderedTools",
+  "allowedExtraTools",
   "forbiddenTools",
   "forbiddenToolPrefixes",
   "requiredTerms",
@@ -211,7 +212,7 @@ export function scoreCase(testCase, events, options = {}) {
   const finalText = finalAgentMessage(events);
   const finalAnswer = parseFinalAnswer(finalText);
   const traceText = buildTraceText(events);
-  const requiredTermsText = finalText;
+  const requiredTermsText = finalAnswer ? finalAnswerGuidanceText(finalAnswer) : finalText;
 
   if (!finalAnswer) {
     failures.push("missing parseable final structured answer");
@@ -234,17 +235,37 @@ export function scoreCase(testCase, events, options = {}) {
     if (!expectedSkill && answerTextFields.some((text) => containsForbiddenToolPrefix(text, "local_ydb_"))) {
       failures.push("negative control must not mention local-ydb tools");
     }
+    if (!expectedSkill && containsForbiddenToolPrefix(finalText, "local_ydb_")) {
+      failures.push("negative control must not mention local-ydb tools in final message");
+    }
     if (!expectedSkill && containsForbiddenToolPrefix(traceText, "local_ydb_")) {
       failures.push("negative control must not mention local-ydb tools in agent trace");
     }
     if (!expectedSkill && answerTextFields.some((text) => recommendsLocalYdbSkill(text))) {
       failures.push("negative control must not recommend the local-ydb skill");
     }
+    if (!expectedSkill && recommendsLocalYdbSkill(finalText)) {
+      failures.push("negative control must not recommend the local-ydb skill in final message");
+    }
     if (expectedSkill) {
-      const requiredTools = new Set(testCase.expected.requiredOrderedTools ?? []);
+      const allowedTools = new Set([
+        ...(testCase.expected.requiredOrderedTools ?? []),
+        ...(testCase.expected.allowedExtraTools ?? []),
+      ]);
       for (const tool of orderedTools) {
-        if (mutatingLocalYdbTools.has(tool) && !requiredTools.has(tool)) {
+        if (mutatingLocalYdbTools.has(tool) && !allowedTools.has(tool)) {
           failures.push(`unexpected mutating tool present: ${tool}`);
+        }
+      }
+      for (const tool of mutatingLocalYdbTools) {
+        if (allowedTools.has(tool)) {
+          continue;
+        }
+        if (answerTextFields.some((text) => containsForbiddenToolName(text, tool))) {
+          failures.push(`unexpected mutating tool present in answer text: ${tool}`);
+        }
+        if (containsForbiddenToolName(finalText, tool)) {
+          failures.push(`unexpected mutating tool present in final message: ${tool}`);
         }
       }
     }
@@ -433,6 +454,13 @@ function finalAnswerTextFields(answer) {
   ].filter((value) => typeof value === "string");
 }
 
+function finalAnswerGuidanceText(answer) {
+  return [
+    answer.answer,
+    ...(Array.isArray(answer.safety_gates) ? answer.safety_gates : []),
+  ].filter((value) => typeof value === "string").join("\n");
+}
+
 function containsForbiddenToolPrefix(text, prefix) {
   return toolPrefixMatches(text, prefix).some((match) => !isSafeForbiddenWarningAtMatch(text, match));
 }
@@ -457,6 +485,7 @@ function localYdbSkillMatches(text) {
   return [
     ...regexMatches(text, /\$local-ydb\b/gi),
     ...regexMatches(text, /\blocal-ydb\s+(?:codex\s+)?skill\b/gi),
+    ...regexMatches(text, /\blocal\s+ydb\s+(?:codex\s+)?skill\b/gi),
   ];
 }
 
@@ -505,7 +534,7 @@ function containsForbiddenTerm(text, term) {
 function forbiddenTermMatches(text, term) {
   if (isConfirmedMutationTerm(term)) {
     const matches = [];
-    const pattern = /(?:\\?["']confirm\\?["']|confirm)\s*[:=]\s*true/gi;
+    const pattern = /(?:(?:\\?["']confirm\\?["']|confirm)\s*[:=]\s*true|(?:set|pass|use|include|call|run\s+with)\s+confirm\s+(?:to|as)\s+true)/gi;
     for (const match of text.matchAll(pattern)) {
       matches.push({
         text: match[0],
@@ -543,9 +572,9 @@ function isConfirmedMutationTerm(term) {
 function isSafeForbiddenWarningAtMatch(text, match) {
   const before = text.slice(Math.max(0, match.index - 120), match.index);
   const after = text.slice(match.index + match.length, Math.min(text.length, match.index + match.length + 120));
-  const beforePattern = /\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|pass|set|include|call|run\s+with)\s+)?(?:(?:any|all|the|a|an)\s+)?[`'"([{]*\s*$/i;
+  const beforePattern = /\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|using|pass|passing|set|setting|include|including|call|calling|run\s+with|running\s+with)\s+)?(?:(?:any|all|the|a|an)\s+)?[`'"([{]*\s*$/i;
   const noPattern = /\b(?:no|without)\s+[`'"([{]*\s*$/i;
-  const afterPattern = /^\s*[`'")\]}.,:;]*\s*(?:is forbidden|is not allowed|must not be used|should not be used|must never be used|should never be used)\b/i;
+  const afterPattern = /^\s*[`'")\]}.,:;]*\s*(?:is forbidden|is not allowed|must not be used|should not be used|must never be used|should never be used|must not be passed|should not be passed|must never be passed|should never be passed)\b/i;
   return beforePattern.test(before) || noPattern.test(before) || afterPattern.test(after);
 }
 
@@ -555,7 +584,7 @@ function escapeRegExp(value) {
 
 function invokesLiveDockerOrYdb(command) {
   return commandSegments(command).some((segment) =>
-    /(^|[;&|(\n"']\s*)(?:sudo\s+)?(?:[^\s;&|()"'`]*\/)?(?:docker|ydbd?)\b/.test(segment));
+    /(^|[;&|(\n"']\s*)(?:sudo\s+)?(?:(?:timeout\s+(?:-[^\s]+\s+)*\d+(?:\.\d+)?[a-zA-Z]?\s+)|(?:\/usr\/bin\/env\s+(?:-[^\s]+\s+)*)|(?:env\s+(?:-[^\s]+\s+)*)|(?:command\s+))*(?:[^\s;&|()"'`]*\/)?(?:docker|ydbd?)\b/.test(segment));
 }
 
 function commandSegments(command) {

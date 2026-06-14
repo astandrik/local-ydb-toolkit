@@ -99,10 +99,14 @@
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiredOrderedTools": [
+        "local_ydb_status_report",
         "local_ydb_list_versions",
         "local_ydb_pull_image",
         "local_ydb_pull_status",
         "local_ydb_upgrade_version"
+      ],
+      "allowedExtraTools": [
+        "local_ydb_dump_tenant"
       ],
       "requiredTerms": [
         "exact",
@@ -124,8 +128,12 @@
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiredOrderedTools": [
+        "local_ydb_status_report",
         "local_ydb_storage_placement",
         "local_ydb_reduce_storage_groups"
+      ],
+      "allowedExtraTools": [
+        "local_ydb_dump_tenant"
       ],
       "requiredTerms": [
         "dump",
@@ -151,6 +159,7 @@
       "requiredOrderedTools": [
         "local_ydb_dump_tenant",
         "local_ydb_list_dumps",
+        "local_ydb_tenant_check",
         "local_ydb_restore_tenant"
       ],
       "requiredTerms": [
