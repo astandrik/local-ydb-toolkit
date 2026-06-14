@@ -17,7 +17,6 @@ const modulePath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(modulePath), "../..");
 const defaultCasesPath = join(repoRoot, "evals/local-ydb-agent/cases.json");
 const defaultSchemaPath = join(repoRoot, "evals/local-ydb-agent/final-answer.schema.json");
-const defaultEvalDir = dirname(defaultSchemaPath);
 export const defaultCaseTimeoutMs = 5 * 60 * 1000;
 const caseIdPattern = /^[a-z0-9][a-z0-9-]*$/;
 const optionalStringArrayFields = [
@@ -122,10 +121,11 @@ export function buildCodexArgs({ repoRoot: root, prompt, schemaPath }) {
 
 export function createEvalWorkspace({
   repoRoot: root = repoRoot,
-  schemaPath = defaultSchemaPath,
+  schemaPath,
   resultsRoot = join(root, "eval-results", "local-ydb-agent"),
   tempRoot,
 } = {}) {
+  const resolvedSchemaPath = schemaPath ?? join(root, "evals/local-ydb-agent/final-answer.schema.json");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const rootTemp = tempRoot ?? mkdtempSync(join(tmpdir(), "local-ydb-agent-evals-"));
   const ownsTempRoot = tempRoot === undefined;
@@ -144,8 +144,8 @@ export function createEvalWorkspace({
     if (!existsSync(join(sourceSkillDir, "SKILL.md"))) {
       throw new Error(`local-ydb skill not found at ${sourceSkillDir}`);
     }
-    if (!existsSync(schemaPath)) {
-      throw new Error(`final-answer schema not found at ${schemaPath}`);
+    if (!existsSync(resolvedSchemaPath)) {
+      throw new Error(`final-answer schema not found at ${resolvedSchemaPath}`);
     }
 
     mkdirSync(codexHome, { recursive: true });
@@ -153,13 +153,12 @@ export function createEvalWorkspace({
     mkdirSync(dirname(codexSkillDir), { recursive: true });
     mkdirSync(dirname(userSkillDir), { recursive: true });
     mkdirSync(dirname(checkoutSkillDir), { recursive: true });
-    mkdirSync(dirname(checkoutEvalDir), { recursive: true });
+    mkdirSync(checkoutEvalDir, { recursive: true });
     mkdirSync(resultsDir, { recursive: true });
     cpSync(sourceSkillDir, codexSkillDir, { recursive: true });
     cpSync(sourceSkillDir, userSkillDir, { recursive: true });
     cpSync(sourceSkillDir, checkoutSkillDir, { recursive: true });
-    cpSync(defaultEvalDir, checkoutEvalDir, { recursive: true });
-    cpSync(schemaPath, workspaceSchemaPath);
+    cpSync(resolvedSchemaPath, workspaceSchemaPath);
 
     return { codexHome, homeDir, repoRoot: checkoutRoot, schemaPath: workspaceSchemaPath, resultsDir, tempRoot: rootTemp };
   } catch (error) {
@@ -212,6 +211,9 @@ export function scoreCase(testCase, events, options = {}) {
     for (const tool of testCase.expected.forbiddenTools ?? []) {
       if (orderedTools.includes(tool)) {
         failures.push(`forbidden tool present: ${tool}`);
+      }
+      if (finalAnswerTextFields(finalAnswer).some((text) => containsExactToolName(text, tool))) {
+        failures.push(`forbidden tool present in answer text: ${tool}`);
       }
     }
     for (const prefix of testCase.expected.forbiddenToolPrefixes ?? []) {
@@ -321,6 +323,9 @@ function buildTraceText(events) {
 
 function validateFinalAnswerShape(answer) {
   const failures = [];
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) {
+    return ["final answer must be an object"];
+  }
   for (const [field, type] of finalAnswerFields) {
     if (!(field in answer)) {
       failures.push(`final answer missing required field: ${field}`);
@@ -355,6 +360,10 @@ function containsToolPrefix(text, prefix) {
   return new RegExp(String.raw`\b${escapeRegExp(prefix)}[A-Za-z0-9_]*\b`).test(text);
 }
 
+function containsExactToolName(text, tool) {
+  return new RegExp(String.raw`\b${escapeRegExp(tool)}\b`).test(text);
+}
+
 function firstOrderFailure(actual, required) {
   let previousIndex = -1;
   for (const tool of required) {
@@ -378,7 +387,7 @@ function containsForbiddenTerm(text, term) {
   const needle = String(term);
   const matches = forbiddenTermMatches(text, needle);
   for (const match of matches) {
-    if (!isSafeForbiddenWarning(match.context, needle)) {
+    if (!isSafeForbiddenWarningAtMatch(text, match)) {
       return true;
     }
   }
@@ -392,7 +401,8 @@ function forbiddenTermMatches(text, term) {
     for (const match of text.matchAll(pattern)) {
       matches.push({
         text: match[0],
-        context: contextAround(text, match.index ?? 0, match[0].length),
+        index: match.index ?? 0,
+        length: match[0].length,
       });
     }
     return matches;
@@ -409,15 +419,12 @@ function forbiddenTermMatches(text, term) {
     }
     matches.push({
       text: text.slice(index, index + term.length),
-      context: contextAround(text, index, term.length),
+      index,
+      length: term.length,
     });
     offset = index + term.length;
   }
   return matches;
-}
-
-function contextAround(text, index, length) {
-  return text.slice(Math.max(0, index - 160), Math.min(text.length, index + length + 160));
 }
 
 function isConfirmedMutationTerm(term) {
@@ -425,14 +432,13 @@ function isConfirmedMutationTerm(term) {
   return normalized === "confirm:true" || normalized === "\"confirm\":true" || normalized === "confirm=true";
 }
 
-function isSafeForbiddenWarning(context, term) {
-  const target = isConfirmedMutationTerm(term)
-    ? String.raw`(?:\\?"confirm\\?"|confirm)\s*[:=]\s*true`
-    : escapeRegExp(term);
-  const beforePattern = new RegExp(String.raw`\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|pass|set|include|call|run\s+with)\s+)?${target}`, "i");
-  const noPattern = new RegExp(String.raw`\b(?:no|without)\s+${target}`, "i");
-  const afterPattern = new RegExp(String.raw`${target}[\s\S]{0,120}\b(?:is forbidden|is not allowed|must not be used|should not be used|must never be used|should never be used)\b`, "i");
-  return beforePattern.test(context) || noPattern.test(context) || afterPattern.test(context);
+function isSafeForbiddenWarningAtMatch(text, match) {
+  const before = text.slice(Math.max(0, match.index - 120), match.index);
+  const after = text.slice(match.index + match.length, Math.min(text.length, match.index + match.length + 120));
+  const beforePattern = /\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|pass|set|include|call|run\s+with)\s+)?$/i;
+  const noPattern = /\b(?:no|without)\s+$/i;
+  const afterPattern = /^\s*(?:is forbidden|is not allowed|must not be used|should not be used|must never be used|should never be used)\b/i;
+  return beforePattern.test(before) || noPattern.test(before) || afterPattern.test(after);
 }
 
 function escapeRegExp(value) {
@@ -440,7 +446,17 @@ function escapeRegExp(value) {
 }
 
 function invokesLiveDockerOrYdb(command) {
-  return /(^|[;&|(\n"']\s*)(?:sudo\s+)?(?:[^\s;&|()"'`]+\/)?(?:docker|ydbd?)\b/.test(command);
+  return commandSegments(command).some((segment) =>
+    /(^|[;&|(\n"']\s*)(?:sudo\s+)?(?:[^\s;&|()"'`]+\/)?(?:docker|ydbd?)\b/.test(segment));
+}
+
+function commandSegments(command) {
+  const segments = [command];
+  const shellWrapper = command.match(/\b(?:bash|sh|zsh)\s+(?:-[^\s]+\s+)*(.+)$/);
+  if (shellWrapper) {
+    segments.push(shellWrapper[1]);
+  }
+  return segments;
 }
 
 export function buildCodexEnv({
