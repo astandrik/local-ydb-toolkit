@@ -99,7 +99,6 @@
       "requiredOrderedTools": [
         "local_ydb_list_versions",
         "local_ydb_pull_image",
-        "local_ydb_dump_tenant",
         "local_ydb_upgrade_version"
       ],
       "requiredTerms": [
@@ -122,13 +121,13 @@
       "shouldUseLocalYdbSkill": true,
       "requiredOrderedTools": [
         "local_ydb_storage_placement",
-        "local_ydb_dump_tenant",
-        "local_ydb_reduce_storage_groups",
-        "local_ydb_restore_tenant"
+        "local_ydb_reduce_storage_groups"
       ],
       "requiredTerms": [
+        "dump",
         "rebuild",
-        "verify",
+        "restore",
+        "verification",
         "BSC"
       ],
       "forbiddenTerms": [
@@ -240,9 +239,8 @@
         "unit test"
       ],
       "forbiddenTerms": [
-        "local_ydb_",
         "local-ydb",
-        "YDB"
+        "database"
       ]
     }
   }

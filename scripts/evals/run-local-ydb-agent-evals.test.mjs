@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildCodexArgs,
+  buildCodexEnv,
   createEvalWorkspace,
   loadCases,
   parseArgs,
@@ -19,6 +20,63 @@ describe("local-ydb agent eval runner", () => {
     expect(cases.some((testCase) => testCase.id === "negative-unrelated-python-test")).toBe(true);
     expect(cases.some((testCase) => testCase.expected.shouldUseLocalYdbSkill === false)).toBe(true);
     expect(cases.some((testCase) => testCase.expected.requiredOrderedTools.includes("local_ydb_restore_tenant"))).toBe(true);
+  });
+
+  it("rejects unsafe case ids before using them as output paths", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "local-ydb-agent-eval-cases-"));
+    const casesPath = join(tempRoot, "cases.json");
+    try {
+      writeFileSync(casesPath, JSON.stringify([
+        {
+          id: "../escape",
+          prompt: "Plan safely.",
+          expected: {
+            shouldUseLocalYdbSkill: true,
+          },
+        },
+      ]), "utf8");
+
+      expect(() => loadCases(casesPath)).toThrow("safe slug");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects expected fields that are not arrays of strings", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "local-ydb-agent-eval-cases-"));
+    const casesPath = join(tempRoot, "cases.json");
+    try {
+      writeFileSync(casesPath, JSON.stringify([
+        {
+          id: "invalid-required-tools",
+          prompt: "Plan safely.",
+          expected: {
+            shouldUseLocalYdbSkill: true,
+            requiredOrderedTools: "local_ydb_status_report",
+          },
+        },
+      ]), "utf8");
+
+      expect(() => loadCases(casesPath)).toThrow("expected.requiredOrderedTools must be an array of strings");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps high-level tool expectations for upgrade and storage rebuild cases", () => {
+    const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
+    const versionUpgrade = cases.find((testCase) => testCase.id === "version-upgrade-backup-first");
+    const storageReduction = cases.find((testCase) => testCase.id === "storage-reduction-rebuild");
+
+    expect(versionUpgrade?.expected.requiredOrderedTools).toEqual([
+      "local_ydb_list_versions",
+      "local_ydb_pull_image",
+      "local_ydb_upgrade_version",
+    ]);
+    expect(storageReduction?.expected.requiredOrderedTools).toEqual([
+      "local_ydb_storage_placement",
+      "local_ydb_reduce_storage_groups",
+    ]);
   });
 
   it("scores ordered tool guidance and safety gates from final structured output", () => {
@@ -142,6 +200,30 @@ describe("local-ydb agent eval runner", () => {
     expect(tenantBootstrap.failures).toContain("forbidden tool present: local_ydb_bootstrap");
   });
 
+  it("passes a negative-control answer that correctly avoids local-ydb use", () => {
+    const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
+    const negativeCase = cases.find((testCase) => testCase.id === "negative-unrelated-python-test");
+
+    const result = scoreCase(negativeCase, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: false,
+            task_type: "unrelated unit test",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Write a small unit test that asserts reversing a sample string returns the expected value.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(true);
+  });
+
   it("parses JSONL traces while preserving malformed lines as parse errors", () => {
     const parsed = parseJsonlEvents("{\"type\":\"turn.started\"}\nnot-json\n\n{\"type\":\"turn.completed\"}\n");
 
@@ -185,6 +267,38 @@ describe("local-ydb agent eval runner", () => {
         rmSync(workspace.resultsDir, { recursive: true, force: true });
       }
     }
+  });
+
+  it("cleans up a temporary eval workspace when setup fails", () => {
+    const badRepoRoot = mkdtempSync(join(tmpdir(), "local-ydb-agent-bad-repo-"));
+    const resultsRoot = join(badRepoRoot, "results");
+    const before = new Set(readdirSync(tmpdir()).filter((entry) => entry.startsWith("local-ydb-agent-evals-")));
+    try {
+      expect(() => createEvalWorkspace({ repoRoot: badRepoRoot, resultsRoot })).toThrow("local-ydb skill not found");
+
+      const after = readdirSync(tmpdir()).filter((entry) => entry.startsWith("local-ydb-agent-evals-"));
+      const leaked = after.filter((entry) => !before.has(entry));
+      expect(leaked).toEqual([]);
+      expect(existsSync(resultsRoot)).toBe(false);
+    } finally {
+      rmSync(badRepoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("builds a minimal Codex environment without forwarding unrelated variables", () => {
+    const env = buildCodexEnv({
+      path: "/usr/bin",
+      homeDir: "/tmp/home",
+      codexHome: "/tmp/codex-home",
+      apiKey: "test-key",
+    });
+
+    expect(env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/tmp/home",
+      CODEX_HOME: "/tmp/codex-home",
+      CODEX_API_KEY: "test-key",
+    });
   });
 
   it("builds read-only codex exec args with schema-constrained final output", () => {

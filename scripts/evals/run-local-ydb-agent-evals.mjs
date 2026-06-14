@@ -17,6 +17,13 @@ const modulePath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(modulePath), "../..");
 const defaultCasesPath = join(repoRoot, "evals/local-ydb-agent/cases.json");
 const defaultSchemaPath = join(repoRoot, "evals/local-ydb-agent/final-answer.schema.json");
+const caseIdPattern = /^[a-z0-9][a-z0-9-]*$/;
+const optionalStringArrayFields = [
+  "requiredOrderedTools",
+  "forbiddenTools",
+  "requiredTerms",
+  "forbiddenTerms",
+];
 
 export function loadCases(casesPath = defaultCasesPath) {
   const raw = readFileSync(casesPath, "utf8");
@@ -32,6 +39,9 @@ export function loadCases(casesPath = defaultCasesPath) {
     if (typeof testCase.id !== "string" || testCase.id.length === 0) {
       throw new Error("Agent eval case is missing id.");
     }
+    if (!caseIdPattern.test(testCase.id)) {
+      throw new Error(`Agent eval case id must be a safe slug: ${testCase.id}`);
+    }
     if (ids.has(testCase.id)) {
       throw new Error(`Duplicate agent eval case id: ${testCase.id}`);
     }
@@ -42,8 +52,21 @@ export function loadCases(casesPath = defaultCasesPath) {
     if (!testCase.expected || typeof testCase.expected.shouldUseLocalYdbSkill !== "boolean") {
       throw new Error(`Agent eval case ${testCase.id} is missing expected.shouldUseLocalYdbSkill.`);
     }
+    for (const field of optionalStringArrayFields) {
+      assertOptionalStringArray(testCase, field);
+    }
   }
   return parsed;
+}
+
+function assertOptionalStringArray(testCase, field) {
+  const value = testCase.expected[field];
+  if (value === undefined) {
+    return;
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an array of strings.`);
+  }
 }
 
 export function parseJsonlEvents(stdout) {
@@ -91,6 +114,7 @@ export function createEvalWorkspace({
 } = {}) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const rootTemp = tempRoot ?? mkdtempSync(join(tmpdir(), "local-ydb-agent-evals-"));
+  const ownsTempRoot = tempRoot === undefined;
   const codexHome = join(rootTemp, "codex-home");
   const homeDir = join(rootTemp, "home");
   const codexSkillDir = join(codexHome, "skills", "local-ydb");
@@ -98,19 +122,27 @@ export function createEvalWorkspace({
   const sourceSkillDir = join(root, "skills", "local-ydb");
   const resultsDir = join(resultsRoot, stamp);
 
-  if (!existsSync(join(sourceSkillDir, "SKILL.md"))) {
-    throw new Error(`local-ydb skill not found at ${sourceSkillDir}`);
+  try {
+    if (!existsSync(join(sourceSkillDir, "SKILL.md"))) {
+      throw new Error(`local-ydb skill not found at ${sourceSkillDir}`);
+    }
+
+    mkdirSync(codexHome, { recursive: true });
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(dirname(codexSkillDir), { recursive: true });
+    mkdirSync(dirname(userSkillDir), { recursive: true });
+    mkdirSync(resultsDir, { recursive: true });
+    cpSync(sourceSkillDir, codexSkillDir, { recursive: true });
+    cpSync(sourceSkillDir, userSkillDir, { recursive: true });
+
+    return { codexHome, homeDir, resultsDir, tempRoot: rootTemp };
+  } catch (error) {
+    rmSync(resultsDir, { recursive: true, force: true });
+    if (ownsTempRoot) {
+      rmSync(rootTemp, { recursive: true, force: true });
+    }
+    throw error;
   }
-
-  mkdirSync(codexHome, { recursive: true });
-  mkdirSync(homeDir, { recursive: true });
-  mkdirSync(dirname(codexSkillDir), { recursive: true });
-  mkdirSync(dirname(userSkillDir), { recursive: true });
-  mkdirSync(resultsDir, { recursive: true });
-  cpSync(sourceSkillDir, codexSkillDir, { recursive: true });
-  cpSync(sourceSkillDir, userSkillDir, { recursive: true });
-
-  return { codexHome, homeDir, resultsDir, tempRoot: rootTemp };
 }
 
 export function buildPrompt(testCase) {
@@ -261,6 +293,22 @@ function includesIgnoreCase(text, needle) {
   return text.toLowerCase().includes(String(needle).toLowerCase());
 }
 
+export function buildCodexEnv({
+  path = process.env.PATH,
+  homeDir,
+  codexHome,
+  apiKey,
+}) {
+  const env = {};
+  if (path) {
+    env.PATH = path;
+  }
+  env.HOME = homeDir;
+  env.CODEX_HOME = codexHome;
+  env.CODEX_API_KEY = apiKey;
+  return env;
+}
+
 function runCase(testCase, workspace, options) {
   const prompt = buildPrompt(testCase);
   const args = buildCodexArgs({
@@ -270,12 +318,11 @@ function runCase(testCase, workspace, options) {
   });
   const result = spawnSync("codex", args, {
     cwd: options.repoRoot,
-    env: {
-      ...process.env,
-      CODEX_HOME: workspace.codexHome,
-      HOME: workspace.homeDir,
-      CODEX_API_KEY: options.apiKey,
-    },
+    env: buildCodexEnv({
+      homeDir: workspace.homeDir,
+      codexHome: workspace.codexHome,
+      apiKey: options.apiKey,
+    }),
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,

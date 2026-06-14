@@ -2,7 +2,7 @@
 
 Use the agent eval suite when changing `skills/local-ydb`, MCP server instructions, MCP prompts, or public tool-selection guidance.
 
-The suite is plan-only. It checks whether Codex chooses the right local-ydb workflow, preserves plan-first safety gates, avoids `confirm=true`, and ignores unrelated prompts. Real Docker/YDB behavior stays covered by the live MCP integration workflow. Full runs require the `codex` CLI and `CODEX_API_KEY`.
+The suite is plan-only. It checks whether Codex chooses the right local-ydb workflow, preserves plan-first safety gates, avoids `confirm=true`, and ignores unrelated prompts. Real Docker/YDB behavior stays covered by the live MCP integration workflow. Full runs require the `codex` CLI and `CODEX_API_KEY`. The suite is intentionally local-only for now; do not add a GitHub Actions workflow that passes `CODEX_API_KEY` into repository-controlled scripts without a separate security design.
 
 ## Local Commands
 
