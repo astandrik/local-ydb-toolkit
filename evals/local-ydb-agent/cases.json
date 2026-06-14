@@ -173,6 +173,7 @@
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiredOrderedTools": [
+        "local_ydb_status_report",
         "local_ydb_dump_tenant",
         "local_ydb_prepare_auth_config",
         "local_ydb_write_dynamic_auth_config",

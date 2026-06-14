@@ -34,15 +34,29 @@ const finalAnswerFields = new Map([
   ["would_execute_confirmed_mutation", "boolean"],
   ["answer", "string"],
 ]);
-const destructiveLocalYdbTools = new Set([
+const mutatingLocalYdbTools = new Set([
+  "local_ydb_add_dynamic_nodes",
+  "local_ydb_add_storage_groups",
+  "local_ydb_apply_auth_hardening",
   "local_ydb_apply_schema",
+  "local_ydb_bootstrap",
+  "local_ydb_bootstrap_root_database",
+  "local_ydb_check_prerequisites",
   "local_ydb_cleanup_storage",
+  "local_ydb_create_tenant",
   "local_ydb_destroy_stack",
+  "local_ydb_dump_tenant",
   "local_ydb_permissions",
+  "local_ydb_prepare_auth_config",
+  "local_ydb_pull_image",
   "local_ydb_reduce_storage_groups",
   "local_ydb_remove_dynamic_nodes",
+  "local_ydb_restart_stack",
   "local_ydb_restore_tenant",
+  "local_ydb_set_root_password",
+  "local_ydb_start_dynamic_node",
   "local_ydb_upgrade_version",
+  "local_ydb_write_dynamic_auth_config",
 ]);
 
 export function loadCases(casesPath = defaultCasesPath) {
@@ -210,18 +224,27 @@ export function scoreCase(testCase, events, options = {}) {
     if (finalAnswer.would_execute_confirmed_mutation !== false) {
       failures.push("would_execute_confirmed_mutation must be false");
     }
-    const orderedTools = Array.isArray(finalAnswer.tool_sequence) ? finalAnswer.tool_sequence : [];
+    const orderedTools = Array.isArray(finalAnswer.tool_sequence)
+      ? finalAnswer.tool_sequence.filter((tool) => typeof tool === "string")
+      : [];
+    const answerTextFields = finalAnswerTextFields(finalAnswer);
     if (!expectedSkill && orderedTools.some((tool) => tool.startsWith("local_ydb_"))) {
       failures.push("negative control must not include local-ydb tools");
     }
-    if (!expectedSkill && finalAnswerTextFields(finalAnswer).some((text) => containsForbiddenToolPrefix(text, "local_ydb_"))) {
+    if (!expectedSkill && answerTextFields.some((text) => containsForbiddenToolPrefix(text, "local_ydb_"))) {
       failures.push("negative control must not mention local-ydb tools");
+    }
+    if (!expectedSkill && containsForbiddenToolPrefix(traceText, "local_ydb_")) {
+      failures.push("negative control must not mention local-ydb tools in agent trace");
+    }
+    if (!expectedSkill && answerTextFields.some((text) => recommendsLocalYdbSkill(text))) {
+      failures.push("negative control must not recommend the local-ydb skill");
     }
     if (expectedSkill) {
       const requiredTools = new Set(testCase.expected.requiredOrderedTools ?? []);
       for (const tool of orderedTools) {
-        if (destructiveLocalYdbTools.has(tool) && !requiredTools.has(tool)) {
-          failures.push(`unexpected destructive tool present: ${tool}`);
+        if (mutatingLocalYdbTools.has(tool) && !requiredTools.has(tool)) {
+          failures.push(`unexpected mutating tool present: ${tool}`);
         }
       }
     }
@@ -234,16 +257,22 @@ export function scoreCase(testCase, events, options = {}) {
       if (orderedTools.includes(tool)) {
         failures.push(`forbidden tool present: ${tool}`);
       }
-      if (finalAnswerTextFields(finalAnswer).some((text) => containsForbiddenToolName(text, tool))) {
+      if (answerTextFields.some((text) => containsForbiddenToolName(text, tool))) {
         failures.push(`forbidden tool present in answer text: ${tool}`);
+      }
+      if (containsForbiddenToolName(finalText, tool)) {
+        failures.push(`forbidden tool present in final message: ${tool}`);
       }
     }
     for (const prefix of testCase.expected.forbiddenToolPrefixes ?? []) {
       if (orderedTools.some((tool) => tool.startsWith(prefix))) {
         failures.push(`forbidden tool prefix present: ${prefix}`);
       }
-      if (finalAnswerTextFields(finalAnswer).some((text) => containsForbiddenToolPrefix(text, prefix))) {
+      if (answerTextFields.some((text) => containsForbiddenToolPrefix(text, prefix))) {
         failures.push(`forbidden tool prefix present in answer text: ${prefix}`);
+      }
+      if (containsForbiddenToolPrefix(finalText, prefix)) {
+        failures.push(`forbidden tool prefix present in final message: ${prefix}`);
       }
       if (containsForbiddenToolPrefix(traceText, prefix)) {
         failures.push(`forbidden tool prefix present in agent trace: ${prefix}`);
@@ -284,7 +313,7 @@ export function scoreCase(testCase, events, options = {}) {
   const liveMcpTools = events.flatMap((event) => {
     const item = event?.item;
     const itemType = item?.type;
-    const name = item?.name;
+    const name = typeof item?.name === "string" ? item.name : item?.tool;
     const eventType = event?.type;
     const isToolEvent = [itemType, eventType].some((value) => typeof value === "string" && value.includes("tool"));
     return isToolEvent && typeof name === "string" && name.startsWith("local_ydb_") ? [name] : [];
@@ -412,12 +441,23 @@ function containsForbiddenToolName(text, tool) {
   return exactToolMatches(text, tool).some((match) => !isSafeForbiddenWarningAtMatch(text, match));
 }
 
+function recommendsLocalYdbSkill(text) {
+  return localYdbSkillMatches(text).some((match) => !isSafeForbiddenWarningAtMatch(text, match));
+}
+
 function toolPrefixMatches(text, prefix) {
   return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(prefix)}[A-Za-z0-9_]*\b`, "g"));
 }
 
 function exactToolMatches(text, tool) {
   return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(tool)}\b`, "g"));
+}
+
+function localYdbSkillMatches(text) {
+  return [
+    ...regexMatches(text, /\$local-ydb\b/gi),
+    ...regexMatches(text, /\blocal-ydb\s+(?:codex\s+)?skill\b/gi),
+  ];
 }
 
 function regexMatches(text, pattern) {
@@ -515,7 +555,7 @@ function escapeRegExp(value) {
 
 function invokesLiveDockerOrYdb(command) {
   return commandSegments(command).some((segment) =>
-    /(^|[;&|(\n"']\s*)(?:sudo\s+)?(?:[^\s;&|()"'`]+\/)?(?:docker|ydbd?)\b/.test(segment));
+    /(^|[;&|(\n"']\s*)(?:sudo\s+)?(?:[^\s;&|()"'`]*\/)?(?:docker|ydbd?)\b/.test(segment));
 }
 
 function commandSegments(command) {
