@@ -325,6 +325,13 @@ export function scoreCase(testCase, events, options = {}) {
     if (orderFailure) {
       failures.push(orderFailure);
     }
+    const earlyRequiredMutatingFailure = firstEarlyRequiredMutatingToolFailure(
+      orderedTools,
+      testCase.expected.requiredOrderedTools ?? [],
+    );
+    if (earlyRequiredMutatingFailure) {
+      failures.push(earlyRequiredMutatingFailure);
+    }
     for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
       const beforeIndex = orderedTools.indexOf(beforeTool);
       const lateToolIndex = orderedTools.findIndex((candidate, index) => candidate === tool && index > beforeIndex);
@@ -577,6 +584,27 @@ function firstOrderFailure(actual, required) {
   return undefined;
 }
 
+function firstEarlyRequiredMutatingToolFailure(actual, required) {
+  for (let requiredIndex = 1; requiredIndex < required.length; requiredIndex += 1) {
+    const tool = required[requiredIndex];
+    if (!mutatingLocalYdbTools.has(tool)) {
+      continue;
+    }
+    for (
+      let actualIndex = actual.indexOf(tool);
+      actualIndex !== -1;
+      actualIndex = actual.indexOf(tool, actualIndex + 1)
+    ) {
+      for (const predecessor of required.slice(0, requiredIndex)) {
+        if (!actual.slice(0, actualIndex).includes(predecessor)) {
+          return `required mutating tool ${tool} appears before required predecessor ${predecessor}`;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 function includesIgnoreCase(text, needle) {
   return text.toLowerCase().includes(String(needle).toLowerCase());
 }
@@ -635,8 +663,9 @@ function isSafeForbiddenWarningAtMatch(text, match) {
   const after = text.slice(match.index + match.length, Math.min(text.length, match.index + match.length + 120));
   const beforePattern = /\b(?:do not|don't|never|avoid|must not|should not)\s+(?:(?:use|using|pass|passing|set|setting|include|including|call|calling|run\s+with|running\s+with)\s+)?(?:(?:any|all|the|a|an)\s+)?[`'"([{]*\s*$/i;
   const noPattern = /\b(?:no|without)\s+[`'"([{]*\s*$/i;
+  const notClassificationPattern = /\bnot\s+(?:(?:a|an|the)\s+)?[`'"([{]*\s*$/i;
   const afterPattern = /^\s*[`'")\]}.,:;]*\s*(?:is forbidden|is not allowed|must not be used|should not be used|must never be used|should never be used|must not be passed|should not be passed|must never be passed|should never be passed)\b/i;
-  return beforePattern.test(before) || noPattern.test(before) || afterPattern.test(after);
+  return beforePattern.test(before) || noPattern.test(before) || notClassificationPattern.test(before) || afterPattern.test(after);
 }
 
 function escapeRegExp(value) {
@@ -644,21 +673,206 @@ function escapeRegExp(value) {
 }
 
 function invokesLiveDockerOrYdb(command) {
-  return commandSegments(command).some((segment) =>
-    /(^|[;&|(\n"']\s*)(?:sudo(?:\s+-[^\s]+)*\s+)?(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|()"'`]+)\s+)|(?:timeout\s+(?:-[^\s]+\s+)*\d+(?:\.\d+)?[a-zA-Z]?\s+)|(?:\/usr\/bin\/env\s+(?:-[^\s]+\s+)*)|(?:env\s+(?:-[^\s]+\s+)*)|(?:command\s+))*(?:[^\s;&|()"'`]*\/)?(?:docker|ydbd?)\b/.test(segment));
+  return commandSegments(command).some((segment) => commandInvokesLiveDockerOrYdb(shellTokens(segment)));
 }
 
 function commandSegments(command) {
-  const segments = [command];
-  const shellWrapper = command.match(/\b(?:bash|sh|zsh)\s+(?:-[^\s]+\s+)*(.+)$/);
-  if (shellWrapper) {
-    segments.push(shellWrapper[1]);
+  const segments = splitCommandSegments(command);
+  for (const segment of [...segments]) {
+    const shellCommand = shellWrappedCommand(shellTokens(segment));
+    if (shellCommand) {
+      segments.push(shellCommand);
+    }
   }
   return segments;
 }
 
+function commandInvokesLiveDockerOrYdb(tokens, depth = 0) {
+  const executableIndexValue = executableIndex(tokens);
+  if (executableIndexValue === -1) {
+    return false;
+  }
+  const executable = commandName(tokens[executableIndexValue]);
+  if (isLiveDockerOrYdbName(executable)) {
+    return true;
+  }
+  if (executable === "ssh" && depth < 2) {
+    const remoteTokens = sshRemoteCommandTokens(tokens, executableIndexValue);
+    return remoteTokens.length > 0 && commandInvokesLiveDockerOrYdb(remoteTokens, depth + 1);
+  }
+  return false;
+}
+
+function executableIndex(tokens, start = 0) {
+  let index = start;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    const name = commandName(token);
+    if (isEnvironmentAssignment(token)) {
+      index += 1;
+    } else if (name === "sudo") {
+      index += 1;
+      while (tokens[index]?.startsWith("-")) {
+        index += 1;
+      }
+    } else if (name === "timeout") {
+      index += 1;
+      while (tokens[index]?.startsWith("-")) {
+        index += 1;
+      }
+      if (index < tokens.length) {
+        index += 1;
+      }
+    } else if (name === "env") {
+      index += 1;
+      while (tokens[index]?.startsWith("-")) {
+        index += 1;
+      }
+    } else if (name === "command") {
+      index += 1;
+    } else {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function sshRemoteCommandTokens(tokens, sshIndex) {
+  let index = sshIndex + 1;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (!token.startsWith("-")) {
+      break;
+    }
+    index += sshOptionConsumesArgument(token) ? 2 : 1;
+  }
+  if (index >= tokens.length) {
+    return [];
+  }
+  return tokens.slice(index + 1);
+}
+
+function sshOptionConsumesArgument(token) {
+  return new Set(["-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w"]).has(token);
+}
+
+function splitCommandSegments(command) {
+  const segments = [];
+  let current = "";
+  let quote;
+  let escaped = false;
+  for (const char of command) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      current += char;
+      quote = char;
+    } else if (char === ";" || char === "|" || char === "&" || char === "\n") {
+      if (current.trim()) {
+        segments.push(current.trim());
+      }
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) {
+    segments.push(current.trim());
+  }
+  return segments;
+}
+
+function shellTokens(segment) {
+  const tokens = [];
+  let current = "";
+  let quote;
+  let escaped = false;
+  const pushCurrent = () => {
+    if (current.length > 0) {
+      tokens.push(current);
+      current = "";
+    }
+  };
+  for (const char of segment) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+    } else if (/\s/.test(char)) {
+      pushCurrent();
+    } else {
+      current += char;
+    }
+  }
+  pushCurrent();
+  return tokens;
+}
+
+function shellWrappedCommand(tokens) {
+  const index = executableIndex(tokens);
+  if (index === -1 || !["bash", "sh", "zsh"].includes(commandName(tokens[index]))) {
+    return undefined;
+  }
+  for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+    const token = tokens[cursor];
+    if (!token.startsWith("-")) {
+      return undefined;
+    }
+    if (token.includes("c")) {
+      return tokens.slice(cursor + 1).join(" ");
+    }
+  }
+  return undefined;
+}
+
+function commandName(token) {
+  return token.split("/").pop() ?? token;
+}
+
+function isLiveDockerOrYdbName(name) {
+  return /^(?:docker|ydbd?)$/.test(name);
+}
+
+function isEnvironmentAssignment(token) {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+
 export function buildCodexEnv({
-  path = process.env.PATH,
+  path = process.env.PATH ?? process.env.Path,
   homeDir,
   codexHome,
   apiKey,
