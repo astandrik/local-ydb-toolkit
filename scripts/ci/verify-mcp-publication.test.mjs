@@ -197,3 +197,26 @@ test("npm readback requires the exact package identity and version", async () =>
     /npm metadata does not match server\.json/,
   );
 });
+
+test("npm readback uses registryBaseUrl from server.json", async () => {
+  const metadata = serverMetadata();
+  metadata.packages[0].registryBaseUrl = "https://npm.example.test/custom";
+  let requestedUrl;
+
+  await checkPublication({
+    target: "npm",
+    metadata,
+    fetchImpl: async (url) => {
+      requestedUrl = url;
+      return response(200, {
+        name: "@astandrik/local-ydb-mcp",
+        version: "0.14.0",
+      });
+    },
+  });
+
+  assert.equal(
+    requestedUrl,
+    "https://npm.example.test/custom/%40astandrik%2Flocal-ydb-mcp/0.14.0",
+  );
+});
