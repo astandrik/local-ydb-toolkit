@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.14.0...mcp-server-v0.14.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **mcp:** improve Registry discovery metadata ([#104](https://github.com/astandrik/local-ydb-toolkit/issues/104)) ([c1add3c](https://github.com/astandrik/local-ydb-toolkit/commit/c1add3c996ebe928754436fe8a341db0da138409))
+
 ## [0.14.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.13.1...mcp-server-v0.14.0) (2026-06-13)
 
 
