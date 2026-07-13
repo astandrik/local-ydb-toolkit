@@ -10,6 +10,8 @@ Toolkit for operating `local-ydb` deployments across Codex, MCP clients, and Git
 
 Website: [local-ydb-toolkit.ydb-qdrant.tech](https://local-ydb-toolkit.ydb-qdrant.tech/).
 
+[Security policy](SECURITY.md) — supported versions, private vulnerability reporting, and the local process trust boundary.
+
 It includes:
 
 - a reusable Codex skill for local and SSH `local-ydb` operations;
