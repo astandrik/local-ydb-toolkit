@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_INTERVAL_MS = 15_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const SERVER_JSON_URL = new URL("../../server.json", import.meta.url);
 
 export function compareRegistryMetadata(expectedServer, registryResponse) {
@@ -33,18 +34,29 @@ export async function checkPublication({
   intervalMs = DEFAULT_INTERVAL_MS,
   fetchImpl = fetch,
   sleepImpl = sleep,
+  nowImpl = Date.now,
   writeOutput = async () => {},
 }) {
   validateOptions({ target, metadata, allowMissing, waitSeconds, intervalMs });
 
   const url = publicationUrl(target, metadata);
-  const maxAttempts = waitSeconds > 0
-    ? Math.ceil((waitSeconds * 1_000) / intervalMs) + 1
-    : 1;
+  const deadline = waitSeconds > 0
+    ? nowImpl() + waitSeconds * 1_000
+    : undefined;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  while (true) {
+    const remainingBeforeRequest = deadline === undefined
+      ? DEFAULT_REQUEST_TIMEOUT_MS
+      : deadline - nowImpl();
+    if (remainingBeforeRequest <= 0) {
+      throw publicationWaitError(target, metadata, waitSeconds);
+    }
+
     const response = await fetchImpl(url, {
       headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(
+        Math.min(DEFAULT_REQUEST_TIMEOUT_MS, remainingBeforeRequest),
+      ),
     });
 
     if (response.status === 200) {
@@ -61,26 +73,27 @@ export async function checkPublication({
       );
     }
 
-    if (attempt < maxAttempts) {
-      await sleepImpl(intervalMs);
-      continue;
-    }
-
     if (allowMissing) {
       await writeOutput("exists=false");
       return { exists: false };
     }
 
-    if (waitSeconds > 0) {
-      throw new Error(
-        `${publicationDescription(target, metadata)} was not found after waiting ${waitSeconds} seconds`,
-      );
+    if (deadline === undefined) {
+      throw new Error(`${publicationDescription(target, metadata)} was not found`);
     }
 
-    throw new Error(`${publicationDescription(target, metadata)} was not found`);
+    const remainingBeforeRetry = deadline - nowImpl();
+    if (remainingBeforeRetry <= 0) {
+      throw publicationWaitError(target, metadata, waitSeconds);
+    }
+    await sleepImpl(Math.min(intervalMs, remainingBeforeRetry));
   }
+}
 
-  throw new Error("Publication check exhausted unexpectedly");
+function publicationWaitError(target, metadata, waitSeconds) {
+  return new Error(
+    `${publicationDescription(target, metadata)} was not found after waiting ${waitSeconds} seconds`,
+  );
 }
 
 function normalizeServerMetadata(server) {

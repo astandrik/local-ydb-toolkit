@@ -115,17 +115,60 @@ test("allow-missing reports an exact 404 without retrying or hiding it", async (
 });
 
 test("wait mode fails after a persistent exact 404", async () => {
+  let now = 0;
+
   await assert.rejects(
     checkPublication({
       target: "registry",
       metadata: serverMetadata(),
       waitSeconds: 30,
       intervalMs: 15_000,
+      nowImpl: () => now,
       fetchImpl: async () => response(404, { message: "not found" }),
-      sleepImpl: async () => {},
+      sleepImpl: async (milliseconds) => {
+        now += milliseconds;
+      },
     }),
     /was not found after waiting 30 seconds/,
   );
+});
+
+test("wait mode includes request time in the wall-clock deadline", async () => {
+  let now = 0;
+  const sleeps = [];
+
+  await assert.rejects(
+    checkPublication({
+      target: "registry",
+      metadata: serverMetadata(),
+      waitSeconds: 30,
+      intervalMs: 15_000,
+      nowImpl: () => now,
+      fetchImpl: async () => {
+        now += 20_000;
+        return response(404, { message: "not found" });
+      },
+      sleepImpl: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        now += milliseconds;
+      },
+    }),
+    /was not found after waiting 30 seconds/,
+  );
+
+  assert.deepEqual(sleeps, [10_000]);
+});
+
+test("HTTP requests use a bounded abort signal", async () => {
+  await checkPublication({
+    target: "registry",
+    metadata: serverMetadata(),
+    allowMissing: true,
+    fetchImpl: async (_url, options) => {
+      assert.ok(options.signal instanceof AbortSignal);
+      return response(404, { message: "not found" });
+    },
+  });
 });
 
 test("HTTP 5xx is an error even when allow-missing is enabled", async () => {
