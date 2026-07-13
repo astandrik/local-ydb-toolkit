@@ -18,13 +18,7 @@ It includes:
 
 ## Discovery and trust
 
-Full listing hub: [local-ydb-toolkit.ydb-qdrant.tech/#mcp-registries](https://local-ydb-toolkit.ydb-qdrant.tech/#mcp-registries).
-
-| Surface | Badges |
-| --- | --- |
-| Official registries and lists | [![Official MCP Registry](https://img.shields.io/badge/Official%20MCP%20Registry-active-16a34a)](https://registry.modelcontextprotocol.io/?q=io.github.astandrik%2Flocal-ydb-mcp) [![Listed on Awesome MCP Servers](https://img.shields.io/badge/Awesome%20MCP%20Servers-listed-blue?logo=github)](https://github.com/punkpeye/awesome-mcp-servers#databases) [![Listed on Awesome Skills](https://img.shields.io/badge/Awesome%20Skills-listed-111827)](https://www.awesomeskills.dev/en/skill/astandrik-local-ydb-toolkit) |
-| Trust and audit | <a href="https://wmcp.sh/mcp/grade/npm%3A%40astandrik%2Flocal-ydb-mcp"><img alt="MCP Trust Grade A" src="https://wmcp.sh/mcp/grade/npm%3A%40astandrik%2Flocal-ydb-mcp/badge.svg"></a> [![Audited by MCP Sentinel](https://img.shields.io/badge/MCP%20Sentinel-audited-16a34a)](https://mcp-sentinelweb-production.up.railway.app/servers/astandrik-local-ydb-mcp) [![Listed on CuratedMCP](https://www.curatedmcp.com/api/badge/local-ydb-unofficial-mcp-server)](https://www.curatedmcp.com/marketplace/local-ydb-unofficial-mcp-server) [![local-ydb-toolkit MCP server](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit/badges/score.svg)](https://glama.ai/mcp/servers/astandrik/local-ydb-toolkit) [![PolicyLayer](https://img.shields.io/badge/PolicyLayer-policy%20catalog-7c3aed)](https://policylayer.com/tools/local-ydb) |
-| MCP directories | [![Listed on Enterprise DNA](https://img.shields.io/badge/Enterprise%20DNA-listed-111827)](https://enterprisedna.co/directories/mcp/astandrik-local-ydb-toolkit/) [![Available on LobeHub](https://lobehub.com/badge/mcp/astandrik-local-ydb-toolkit)](https://lobehub.com/mcp/astandrik-local-ydb-toolkit) [![Listed on MCP.so](https://img.shields.io/badge/MCP.so-listed-2563eb)](https://mcp.so/server/local-ydb-mcp/astandrik) [![Listed on MCP Toplist](https://img.shields.io/badge/MCP%20Toplist-listed-0ea5e9)](https://mcptoplist.com/server/io.github.astandrik%2Flocal-ydb-mcp) [![Listed on Claude Code Marketplaces](https://img.shields.io/badge/Claude%20Code%20Marketplaces-listed-8b5cf6)](https://claudemarketplaces.com/mcp/io.github.astandrik/local-ydb-mcp) [![Available on CodeGuilds](https://img.shields.io/badge/Available_on-CodeGuilds-6366f1)](https://codeguilds.dev/packages/local-ydb-toolkit) [![Listed on Skiln](https://img.shields.io/badge/Skiln-listed-0f766e)](https://skiln.co/mcp/mcp-io-github-astandrik-local-ydb-mcp) [![Listed on Timeahead MCPScore](https://img.shields.io/badge/Timeahead%20MCPScore-listed-f97316)](https://timeahead.in/mcp/local-ydb-mcp) [![Listed on PulseMCP](https://img.shields.io/badge/PulseMCP-listed-ff4f8b)](https://www.pulsemcp.com/servers/astandrik-local-ydb) [![Listed on MCP Store](https://img.shields.io/badge/MCP%20Store-listed-111827)](https://mcpstore.co/server/69eeaea69b1bda315bbc5a63) [![Listed on Unyly](https://img.shields.io/badge/Unyly-listed-7c3aed)](https://unyly.org/mcp/astandrik-local-ydb-toolkit) |
+The maintained listing hub, including third-party directory status and freshness notes, is on the [project website](https://local-ydb-toolkit.ydb-qdrant.tech/#mcp-registries). External scores, tool counts, and install metrics are directory snapshots, not security attestations.
 
 ## Relationship to `ydb/ydb-mcp`
 
@@ -104,6 +98,86 @@ The skill intentionally avoids private hostnames, IPs, user-specific paths, pass
 This repository also contains an unofficial local stdio MCP server for operating `local-ydb` targets. The MCP server itself runs locally; tools operate either on the local Docker host or over SSH to a named remote profile.
 
 Official MCP Registry metadata is prepared in `server.json` under the name `io.github.astandrik/local-ydb-mcp`. This remains a local stdio server, not a remote MCP endpoint.
+
+<!-- BEGIN GENERATED MCP TOOLS -->
+## Tools
+
+The server exposes 38 tools. This index is generated from the runtime tool registry; edit `toolDefinitions` and run `npm run docs:generate` to update it.
+
+### Checks
+
+| Tool | Mode | Description |
+| --- | --- | --- |
+| `local_ydb_inventory` | read-only | Read-only Docker inventory for a local-ydb target profile. Returns the public profile, Docker containers and volumes visible on the selected target, and inspect data for the configured static and primary dynamic containers; use before mutating tools to capture current stack state. |
+| `local_ydb_database_status` | read-only | Read-only YDB admin database status for the configured tenant path. Returns the command, stdout, stderr, and ok flag; use this for tenant state before bootstrap/restart troubleshooting, and use local_ydb_tenant_check for scheme reachability. |
+| `local_ydb_healthcheck` | read-only | Read-only YDB monitoring healthcheck for the configured tenant or root database. Uses the official YDB CLI SelfCheck path, returns selfCheckResult, issue counts, issue types, capped raw output, and whether the database is healthy; use after local_ydb_status_report for database-level diagnostics. |
+| `local_ydb_container_logs` | read-only | Read recent Docker logs from the configured static or primary dynamic local-ydb container. Use when bootstrap, restart, or readiness checks fail; target selects the container role and lines controls the tail length. |
+| `local_ydb_status_report` | read-only | Read-only aggregate report for quick diagnosis. Runs local_ydb_inventory, local_ydb_auth_check, local_ydb_tenant_check, local_ydb_nodes_check, and local_ydb_healthcheck, returning each result; use this first for broad stack health, then run focused checks for database status, GraphShard, storage, or logs. |
+| `local_ydb_tenant_check` | read-only | Read-only check that uses the YDB CLI to verify the configured tenant path is reachable. Use after bootstrap or restore to confirm tenant metadata before node or GraphShard checks. |
+| `local_ydb_scheme` | read-only | Read-only YDB scheme list or describe with capped stdout/stderr. It uses the root database for rootDatabase paths and the tenant database otherwise; list supports recursive/long/onePerLine flags, describe supports stats, and incompatible flag combinations are rejected. |
+| `local_ydb_nodes_check` | read-only | Read-only check of dynamic node registration through viewer/json nodelist. Use after starting, adding, or removing dynamic nodes; use local_ydb_tenant_check first when tenant reachability is unknown. |
+| `local_ydb_graphshard_check` | read-only | Read-only GraphShard check through viewer/json capabilities and tabletinfo for the configured tenant. Returns graphShardExists, tablet ids, and viewer status details; use after tenant bootstrap when GraphShard support or tablet visibility is the specific question. |
+| `local_ydb_auth_check` | read-only | Read-only auth audit that checks anonymous viewer whoami status and configured YDB CLI tenant access, using root credentials when rootPasswordFile is configured. Use after auth hardening or password rotation to verify the expected posture. |
+| `local_ydb_storage_placement` | read-only | Read-only storage inspection that returns ReadStoragePool output and BSC physical placement. Use before adding or reducing storage groups to confirm the exact pool shape. |
+| `local_ydb_storage_leftovers` | read-only | Read-only search for candidate leftover local-ydb Docker volumes, dumps, and PDisk/data paths. It scans Docker volume names plus profile.storageSearchPaths and deletes nothing; use before local_ydb_cleanup_storage to decide exact paths or volumes to remove. |
+| `local_ydb_list_versions` | read-only | List published registry tags for a local-ydb container image, with numeric version tags sorted newest first. Use before local_ydb_upgrade_version to choose a target tag; pageSize and maxPages bound registry pagination and the response reports truncation. |
+| `local_ydb_pull_status` | read-only | Check the status of a background Docker image pull started by local_ydb_pull_image. |
+
+### Schema
+
+| Tool | Mode | Description |
+| --- | --- | --- |
+| `local_ydb_generate_schema` | read-only | Read-only structured YDB table DDL generator. It renders strict JSON specs for CREATE TABLE, ALTER TABLE, DROP TABLE, and secondary indexes, returns the generated script with official references and warnings, and can optionally validate through the YDB JS SDK without applying changes. |
+| `local_ydb_apply_schema` | plan-first mutation | Validate or apply YDB table DDL through the official YDB JS SDK. It accepts raw YQL DDL for PRAGMA plus CREATE TABLE, ALTER TABLE, and DROP TABLE; action=apply validates first and executes only with confirm=true. |
+
+### Auth
+
+| Tool | Mode | Description |
+| --- | --- | --- |
+| `local_ydb_permissions` | plan-first mutation | Inspect or change YDB scheme permissions for a path. The default list action is read-only; grant, revoke, set, clear, chown, and inheritance changes return a plan unless confirm=true. |
+| `local_ydb_prepare_auth_config` | plan-first mutation | Generate a hardened YDB config from the current static-node config. Use before local_ydb_write_dynamic_auth_config and local_ydb_apply_auth_hardening; without confirm=true this returns the planned write only. |
+| `local_ydb_write_dynamic_auth_config` | plan-first mutation | Write the text-proto dynamic-node auth token file needed for mandatory-auth startup. Use after choosing the SID for auth hardening; without confirm=true this returns the planned file write only. |
+| `local_ydb_apply_auth_hardening` | plan-first mutation | Apply a reviewed hardened YDB config file and restart local-ydb so auth settings take effect. Use only after preparing and reviewing the config; without confirm=true this returns the apply/restart plan only. |
+| `local_ydb_set_root_password` | plan-first mutation | Rotate the runtime root password with ALTER USER and sync the host auth config and root password file to match. YDB may reject passwords that violate auth_config.password_complexity; this tool requires a non-empty password value. |
+
+### Storage
+
+| Tool | Mode | Description |
+| --- | --- | --- |
+| `local_ydb_add_storage_groups` | plan-first mutation | Increase NumGroups for one tenant storage pool using the current ReadStoragePool definition. Without confirm=true this returns the DefineStoragePool plan, rollback, target pool, and target count; when the update succeeds it verifies NumGroups and tenant metadata. |
+| `local_ydb_reduce_storage_groups` | plan-first mutation | Reduce NumGroups for a tenant storage pool by dumping the tenant, rebuilding the profile stack with a smaller storagePoolCount, restoring the dump, and reapplying auth when needed. |
+| `local_ydb_cleanup_storage` | plan-first mutation | Delete only the explicitly supplied local-ydb host paths or Docker volumes. Use after inspecting local_ydb_storage_leftovers; without confirm=true this returns the cleanup plan and removes nothing. |
+
+### Lifecycle
+
+| Tool | Mode | Description |
+| --- | --- | --- |
+| `local_ydb_pull_image` | plan-first mutation | Plan or start a background Docker pull for a local-ydb image on the selected target. Without confirm=true it returns inspect and pull commands only; with confirm=true it returns a jobId for local_ydb_pull_status unless the image is already present. |
+| `local_ydb_destroy_stack` | plan-first mutation | Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup. |
+| `local_ydb_bootstrap_root_database` | plan-first mutation | Bootstrap a plain local YDB database at /local with only a static node. Use for generic local database requests that do not need a CMS tenant, GraphShard, or dynamic nodes; without confirm=true this returns the image preflight, Docker network/storage/static-node, and verification plan without executing it. |
+| `local_ydb_bootstrap` | plan-first mutation | Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and primary dynamic tenant node. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing. |
+| `local_ydb_check_prerequisites` | plan-first mutation | Check target-host prerequisites for Docker, curl, ruby, and the configured rootPasswordFile when present. Without confirm=true it returns checks, missing items, manual actions, and any apt-get install plan; with confirm=true it may install only supported curl/ruby packages and never installs Docker. |
+| `local_ydb_create_tenant` | plan-first mutation | Create the configured CMS tenant when the static node is already running. Use before local_ydb_start_dynamic_node for tenant topologies; without confirm=true this returns the planned status/create command and creates nothing. |
+| `local_ydb_start_dynamic_node` | plan-first mutation | Start the configured primary dynamic tenant node for an existing CMS tenant. Use after local_ydb_create_tenant or when admin status is PENDING_RESOURCES; use local_ydb_add_dynamic_nodes for extra nodes. Without confirm=true this returns a plan only. |
+| `local_ydb_restart_stack` | plan-first mutation | Restart the selected profile by stopping dynamic and static containers, starting the static node, ensuring the configured tenant, then starting the dynamic node. Use after config or runtime changes; without confirm=true this returns the restart plan only. |
+| `local_ydb_upgrade_version` | plan-first mutation | Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; it preflights source and target images, dumps, rebuilds, restores, reapplies auth when configured, recreates extra nodes, verifies container images, and persists the profile image after successful confirmed execution. |
+
+### Dynamic Nodes
+
+| Tool | Mode | Description |
+| --- | --- | --- |
+| `local_ydb_add_dynamic_nodes` | plan-first mutation | Add extra dynamic tenant nodes beyond the configured primary dynamic node, one at a time. Without confirm=true it returns container/port plans; with confirm=true it starts each node, verifies its IC port appears in viewer/json nodelist, and checks tenant metadata. |
+| `local_ydb_remove_dynamic_nodes` | plan-first mutation | Remove extra dynamic tenant nodes one at a time and verify nodelist disappearance when the node IC port can be resolved. |
+
+### Backup Restore
+
+| Tool | Mode | Description |
+| --- | --- | --- |
+| `local_ydb_list_dumps` | read-only | Read-only list of available tenant dumps under profile.dumpHostPath. Use before restore to choose a dumpName; it only reports top-level dump directories that contain the existing tenant dump folder. |
+| `local_ydb_dump_tenant` | plan-first mutation | Dump the configured tenant or a tenant-relative path using a local-ydb helper container on the static container network. It creates profile.dumpHostPath/dumpName, excludes .sys objects, writes the dump under dumpName/tenant, and without confirm=true returns the mkdir/helper-container plan only. |
+| `local_ydb_restore_tenant` | plan-first mutation | Restore the configured tenant or destination path from a dump under profile.dumpHostPath, with optional post-restore scheme describe and bounded count-query verification. Use after bootstrap or rebuild when the target tenant is ready; without confirm=true this returns the restore plan and does not write data. |
+
+<!-- END GENERATED MCP TOOLS -->
 
 The npm package requires Node.js 20.19 or newer.
 

@@ -6,7 +6,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @local-ydb-toolkit/core && npm run build -w @astandrik/local-ydb-mcp",
+    "build": "npm run build -w @local-ydb-toolkit/core && npm run build -w @astandrik/local-ydb-mcp && npm run docs:check",
+    "docs:generate": "npm run build -w @local-ydb-toolkit/core && npm run build -w @astandrik/local-ydb-mcp && node scripts/ci/generate-mcp-tools-docs.mjs --write",
+    "docs:check": "node scripts/ci/generate-mcp-tools-docs.mjs --check",
     "test": "vitest run",
     "posttest": "node --test scripts/ci/*.test.mjs",
     "typecheck": "npm run typecheck --workspaces"
