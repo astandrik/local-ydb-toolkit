@@ -67,7 +67,13 @@ export function replaceGeneratedBlock(source, expectedBlock) {
   }
 
   const start = source.indexOf(START_MARKER);
-  const end = source.indexOf(END_MARKER, start) + END_MARKER.length;
+  const endIndex = source.indexOf(END_MARKER, start + START_MARKER.length);
+  if (endIndex === -1) {
+    throw new Error(
+      "Expected the generated tools end marker after the start marker.",
+    );
+  }
+  const end = endIndex + END_MARKER.length;
   const content = `${source.slice(0, start)}${expectedBlock}${source.slice(end)}`;
   return { content, changed: content !== source };
 }

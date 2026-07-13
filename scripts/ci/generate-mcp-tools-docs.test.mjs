@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -57,4 +58,35 @@ test("rejects missing or duplicate marker blocks", () => {
     () => replaceGeneratedBlock(`${block}\n${block}`, block),
     /exactly one/,
   );
+});
+
+test("rejects an end marker that appears before the start marker", () => {
+  const block = renderToolsBlock(definitions);
+  const reversed = `${END_MARKER}\ncontent\n${START_MARKER}`;
+
+  assert.throws(
+    () => replaceGeneratedBlock(reversed, block),
+    /end marker after the start marker/,
+  );
+});
+
+test("standalone docs check prepares runtime registry output without rewriting docs", () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  const scripts = packageJson.scripts;
+  const standaloneCommand = [
+    scripts["build:packages"],
+    scripts["predocs:check"],
+    scripts["docs:check"],
+    scripts["docs:check:built"],
+  ].filter(Boolean).join(" && ");
+
+  assert.equal(scripts["predocs:check"], "npm run build:packages");
+  assert.equal(scripts["docs:check"], "npm run docs:check:built");
+  assert.match(standaloneCommand, /build -w @local-ydb-toolkit\/core/);
+  assert.match(standaloneCommand, /build -w @astandrik\/local-ydb-mcp/);
+  assert.match(standaloneCommand, /generate-mcp-tools-docs\.mjs --check/);
+  assert.doesNotMatch(standaloneCommand, /--write/);
+  assert.match(packageJson.scripts.build, /docs:check:built$/);
 });
