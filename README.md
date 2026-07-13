@@ -293,9 +293,11 @@ Normal release flow:
 1. Merge conventional commits that touch `packages/core` or `packages/mcp-server` into `main`, for example `feat: add ...` or `fix: repair ...`.
 2. release-please opens or updates a release PR that bumps `packages/mcp-server/package.json`, updates `package-lock.json` and `server.json`, updates `packages/mcp-server/.release-please-version`, updates the release manifest, and writes `packages/mcp-server/CHANGELOG.md`.
 3. Review and merge the release PR.
-4. The same workflow creates the GitHub release and publishes `@astandrik/local-ydb-mcp` to npm.
+4. The same workflow creates the GitHub release, publishes and readbacks the matching npm version when it is missing, validates `server.json` with the pinned official `mcp-publisher`, and then publishes and readbacks the exact version from the official MCP Registry.
 
-To run a non-publishing package check from GitHub Actions, start the workflow manually with `dry_run: true`.
+Publication is idempotent across partial failures. Before either publish action, the workflow checks the exact immutable version. If npm already contains the matching package, it skips the npm publish step. If that npm version exists but the Registry step did not complete, rerun the workflow manually with `dry_run: false` and the existing `publish_tag`; the recovery run publishes only the missing MCP Registry record and verifies the final metadata. A Registry version that already exists with different metadata is never overwritten: correct `server.json` and release a new patch version instead.
+
+To run a non-publishing package check from GitHub Actions, start the workflow manually with `dry_run: true`. The dry run executes build, tests, typecheck, npm package inspection, and `mcp-publisher validate`, but does not log in or publish to npm or the MCP Registry.
 
 The release-please workflow can use the default `GITHUB_TOKEN`. If release PRs must trigger CI checks immediately when release-please updates them, create a fine-grained `RELEASE_PLEASE_TOKEN` secret with repository contents and pull request write access.
 
