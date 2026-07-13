@@ -149,7 +149,9 @@ function validateOptions({ target, metadata, allowMissing, waitSeconds, interval
 function publicationUrl(target, metadata) {
   if (target === "npm") {
     const packageMetadata = npmPackage(metadata);
-    return `https://registry.npmjs.org/${encodeURIComponent(packageMetadata.identifier)}/${encodeURIComponent(packageMetadata.version)}`;
+    const registryBaseUrl = packageMetadata.registryBaseUrl
+      ?? "https://registry.npmjs.org";
+    return `${registryBaseUrl.replace(/\/+$/, "")}/${encodeURIComponent(packageMetadata.identifier)}/${encodeURIComponent(packageMetadata.version)}`;
   }
 
   return `https://registry.modelcontextprotocol.io/v0.1/servers/${encodeURIComponent(metadata.name)}/versions/${encodeURIComponent(metadata.version)}`;

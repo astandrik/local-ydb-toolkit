@@ -31,6 +31,24 @@ describe("MCP publication workflow", () => {
     expect(publishWorkflow.match(/continue-on-error: true/g)).toHaveLength(4);
   });
 
+  it("validates publishable metadata only after exact npm readback", () => {
+    const releaseJob = publishWorkflow.slice(
+      publishWorkflow.indexOf("  publish:"),
+      publishWorkflow.indexOf("  publish-existing-release:"),
+    );
+    const recoveryJob = publishWorkflow.slice(
+      publishWorkflow.indexOf("  publish-existing-release:"),
+      publishWorkflow.indexOf("  dry-run:"),
+    );
+
+    for (const job of [releaseJob, recoveryJob]) {
+      expect(job.indexOf("Verify npm publication")).toBeGreaterThan(-1);
+      expect(job.indexOf("Validate MCP Registry metadata")).toBeGreaterThan(
+        job.indexOf("Verify npm publication"),
+      );
+    }
+  });
+
   it("documents the idempotent Registry recovery path", () => {
     expect(rootReadme).toContain("skips the npm publish step");
     expect(rootReadme).toContain("publishes only the missing MCP Registry record");

@@ -85,9 +85,6 @@ jobs:
           chmod +x "${RUNNER_TEMP}/mcp-publisher"
           echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
 
-      - name: Validate MCP Registry metadata
-        run: mcp-publisher validate
-
       - name: Check npm publication state
         id: npm-state
         run: node scripts/ci/verify-mcp-publication.mjs npm --allow-missing
@@ -99,6 +96,9 @@ jobs:
 
       - name: Verify npm publication
         run: node scripts/ci/verify-mcp-publication.mjs npm --wait-seconds 300
+
+      - name: Validate MCP Registry metadata
+        run: mcp-publisher validate
 
       - name: Check MCP Registry publication state
         id: registry-state
@@ -163,9 +163,6 @@ jobs:
           chmod +x "${RUNNER_TEMP}/mcp-publisher"
           echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
 
-      - name: Validate MCP Registry metadata
-        run: mcp-publisher validate
-
       - name: Check npm publication state
         id: npm-state
         run: node scripts/ci/verify-mcp-publication.mjs npm --allow-missing
@@ -177,6 +174,9 @@ jobs:
 
       - name: Verify npm publication
         run: node scripts/ci/verify-mcp-publication.mjs npm --wait-seconds 300
+
+      - name: Validate MCP Registry metadata
+        run: mcp-publisher validate
 
       - name: Check MCP Registry publication state
         id: registry-state
