@@ -8,6 +8,7 @@
   "scripts": {
     "build": "npm run build -w @local-ydb-toolkit/core && npm run build -w @astandrik/local-ydb-mcp",
     "test": "vitest run",
+    "posttest": "node --test scripts/ci/*.test.mjs",
     "typecheck": "npm run typecheck --workspaces"
   },
   "devDependencies": {

@@ -23,6 +23,10 @@ concurrency:
   group: release-mcp-server-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  MCP_PUBLISHER_VERSION: "v1.8.0"
+  MCP_PUBLISHER_LINUX_AMD64_SHA256: "1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf"
+
 jobs:
   release-please:
     if: ${{ github.event_name == 'push' }}
@@ -70,8 +74,45 @@ jobs:
 
       - run: npm pack -w @astandrik/local-ydb-mcp --dry-run
 
+      - name: Install verified mcp-publisher
+        run: |
+          archive="${RUNNER_TEMP}/mcp-publisher.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "${archive}" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}"
+          chmod +x "${RUNNER_TEMP}/mcp-publisher"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Validate MCP Registry metadata
+        run: mcp-publisher validate
+
+      - name: Check npm publication state
+        id: npm-state
+        run: node scripts/ci/verify-mcp-publication.mjs npm --allow-missing
+
       - name: Publish ${{ needs.release-please.outputs.tag_name }} to npm
+        if: ${{ steps.npm-state.outputs.exists != 'true' }}
+        continue-on-error: true
         run: npm publish -w @astandrik/local-ydb-mcp
+
+      - name: Verify npm publication
+        run: node scripts/ci/verify-mcp-publication.mjs npm --wait-seconds 300
+
+      - name: Check MCP Registry publication state
+        id: registry-state
+        run: node scripts/ci/verify-mcp-publication.mjs registry --allow-missing
+
+      - name: Publish ${{ needs.release-please.outputs.tag_name }} to MCP Registry
+        if: ${{ steps.registry-state.outputs.exists != 'true' }}
+        continue-on-error: true
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish
+
+      - name: Verify MCP Registry publication
+        run: node scripts/ci/verify-mcp-publication.mjs registry --wait-seconds 300
 
   publish-existing-release:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.publish_tag != '' }}
@@ -111,8 +152,45 @@ jobs:
 
       - run: npm pack -w @astandrik/local-ydb-mcp --dry-run
 
+      - name: Install verified mcp-publisher
+        run: |
+          archive="${RUNNER_TEMP}/mcp-publisher.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "${archive}" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}"
+          chmod +x "${RUNNER_TEMP}/mcp-publisher"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Validate MCP Registry metadata
+        run: mcp-publisher validate
+
+      - name: Check npm publication state
+        id: npm-state
+        run: node scripts/ci/verify-mcp-publication.mjs npm --allow-missing
+
       - name: Publish ${{ inputs.publish_tag }} to npm
+        if: ${{ steps.npm-state.outputs.exists != 'true' }}
+        continue-on-error: true
         run: npm publish -w @astandrik/local-ydb-mcp
+
+      - name: Verify npm publication
+        run: node scripts/ci/verify-mcp-publication.mjs npm --wait-seconds 300
+
+      - name: Check MCP Registry publication state
+        id: registry-state
+        run: node scripts/ci/verify-mcp-publication.mjs registry --allow-missing
+
+      - name: Publish ${{ inputs.publish_tag }} to MCP Registry
+        if: ${{ steps.registry-state.outputs.exists != 'true' }}
+        continue-on-error: true
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish
+
+      - name: Verify MCP Registry publication
+        run: node scripts/ci/verify-mcp-publication.mjs registry --wait-seconds 300
 
   dry-run:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
@@ -139,3 +217,17 @@ jobs:
       - run: npm run typecheck
 
       - run: npm pack -w @astandrik/local-ydb-mcp --dry-run
+
+      - name: Install verified mcp-publisher
+        run: |
+          archive="${RUNNER_TEMP}/mcp-publisher.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "${archive}" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}"
+          chmod +x "${RUNNER_TEMP}/mcp-publisher"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Validate MCP Registry metadata
+        run: mcp-publisher validate
