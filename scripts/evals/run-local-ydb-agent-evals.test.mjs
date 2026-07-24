@@ -557,6 +557,73 @@ describe("local-ydb agent eval runner", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("fails read-only required tools ordered before their predecessors in answer text", () => {
+    const result = scoreCase({
+      id: "diagnosis-with-required-order-prose",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [
+          "local_ydb_status_report",
+          "local_ydb_healthcheck",
+        ],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "diagnosis",
+            tool_sequence: [
+              "local_ydb_status_report",
+              "local_ydb_healthcheck",
+            ],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "First run local_ydb_healthcheck, then local_ydb_status_report.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("required tool local_ydb_healthcheck appears before local_ydb_status_report in answer text");
+  });
+
+  it("allows read-only required tools constrained by explicit only-after prose", () => {
+    const result = scoreCase({
+      id: "diagnosis-with-only-after-prose",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [
+          "local_ydb_status_report",
+          "local_ydb_healthcheck",
+        ],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "diagnosis",
+            tool_sequence: [
+              "local_ydb_status_report",
+              "local_ydb_healthcheck",
+            ],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Run local_ydb_healthcheck only after local_ydb_status_report.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(true);
+  });
+
   it("fails repeated allowed extra tools after the guarded mutating tool", () => {
     const result = scoreCase({
       id: "upgrade-with-repeated-extra-dump",
@@ -1821,6 +1888,14 @@ describe("local-ydb agent eval runner", () => {
       name: "process substitutions",
       command: "cat <(docker ps); tee >(ydb scheme ls)",
     },
+    {
+      name: "the time wrapper",
+      command: "time docker ps",
+    },
+    {
+      name: "nice options with operands",
+      command: "nice -n 5 ydb scheme ls",
+    },
   ])("fails live commands through $name", ({ command }) => {
     const result = scorePlanOnlyCommand(command);
 
@@ -1947,6 +2022,7 @@ describe("local-ydb agent eval runner", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures).toContain("forbidden tool prefix present in answer text: local_ydb_");
+    expect(result.failures).not.toContain("forbidden tool prefix present in final message: local_ydb_");
   });
 
   it("fails source-lookup answers that recommend forbidden tools outside fenced JSON", () => {

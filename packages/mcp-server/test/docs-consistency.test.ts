@@ -104,3 +104,21 @@ describe("MCP Registry metadata", () => {
     expect(configuredPaths.every((configuredPath) => !configuredPath.includes(".."))).toBe(true);
   });
 });
+
+describe("MCP prompt documentation", () => {
+  const repositoryReadme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const packageReadme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const promptSafetySummary = "Tenant dumps are mandatory for data-preserving version upgrades and storage-group reduction";
+  const authSafetySummary = "live or production-like auth hardening requires a reviewed tenant dump or copied-volume rehearsal";
+  const normalizeWhitespace = (value: string) => value.replace(/\s+/g, " ");
+
+  it.each([
+    ["repository README", repositoryReadme],
+    ["package README", packageReadme],
+  ])("documents destructive prompt preconditions in the %s", (_name, readme) => {
+    const normalizedReadme = normalizeWhitespace(readme);
+
+    expect(normalizedReadme).toContain(promptSafetySummary);
+    expect(normalizedReadme).toContain(authSafetySummary);
+  });
+});

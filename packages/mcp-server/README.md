@@ -41,8 +41,11 @@ Official MCP Registry metadata uses the name `io.github.astandrik/local-ydb-mcp`
 The server exposes local-ydb operation tools and static MCP prompts. Prompt
 templates guide stack diagnosis, root database bootstrap, tenant topology
 bootstrap, database diagnostics, schema generation/apply, version upgrades,
-auth hardening, and storage group reduction. Prompts return workflow instructions only; they do not
-execute commands.
+auth hardening, and storage group reduction. Tenant dumps are mandatory for
+data-preserving version upgrades and storage-group reduction; live or
+production-like auth hardening requires a reviewed tenant dump or copied-volume
+rehearsal. Prompts return workflow instructions only; they do not execute
+commands.
 
 Mutating tools remain plan-only unless called with `confirm: true`.
 

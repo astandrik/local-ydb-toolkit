@@ -245,22 +245,26 @@ export function scoreCase(testCase, events, options = {}) {
       ? finalAnswer.tool_sequence.filter((tool) => typeof tool === "string")
       : [];
     const answerTextFields = finalAnswerTextFields(finalAnswer);
+    const answerMentionsLocalYdbTool = answerTextFields.some(
+      (text) => containsForbiddenToolPrefix(text, "local_ydb_"),
+    );
     if (!expectedSkill && orderedTools.some((tool) => tool.startsWith("local_ydb_"))) {
       failures.push("negative control must not include local-ydb tools");
     }
-    if (!expectedSkill && answerTextFields.some((text) => containsForbiddenToolPrefix(text, "local_ydb_"))) {
+    if (!expectedSkill && answerMentionsLocalYdbTool) {
       failures.push("negative control must not mention local-ydb tools");
     }
-    if (!expectedSkill && containsForbiddenToolPrefix(finalText, "local_ydb_")) {
+    if (!expectedSkill && !answerMentionsLocalYdbTool && containsForbiddenToolPrefix(finalText, "local_ydb_")) {
       failures.push("negative control must not mention local-ydb tools in final message");
     }
     if (!expectedSkill && containsForbiddenToolPrefix(traceText, "local_ydb_")) {
       failures.push("negative control must not mention local-ydb tools in agent trace");
     }
-    if (!expectedSkill && answerTextFields.some((text) => recommendsLocalYdbSkill(text))) {
+    const answerRecommendsLocalYdbSkill = answerTextFields.some((text) => recommendsLocalYdbSkill(text));
+    if (!expectedSkill && answerRecommendsLocalYdbSkill) {
       failures.push("negative control must not recommend the local-ydb skill");
     }
-    if (!expectedSkill && recommendsLocalYdbSkill(finalText)) {
+    if (!expectedSkill && !answerRecommendsLocalYdbSkill && recommendsLocalYdbSkill(finalText)) {
       failures.push("negative control must not recommend the local-ydb skill in final message");
     }
     if (!expectedSkill && recommendsLocalYdbSkill(traceText)) {
@@ -280,10 +284,11 @@ export function scoreCase(testCase, events, options = {}) {
         if (allowedTools.has(tool)) {
           continue;
         }
-        if (answerTextFields.some((text) => containsForbiddenToolName(text, tool))) {
+        const answerMentionsTool = answerTextFields.some((text) => containsForbiddenToolName(text, tool));
+        if (answerMentionsTool) {
           failures.push(`unexpected mutating tool present in answer text: ${tool}`);
         }
-        if (!orderedTools.includes(tool) && containsForbiddenToolName(finalText, tool)) {
+        if (!orderedTools.includes(tool) && !answerMentionsTool && containsForbiddenToolName(finalText, tool)) {
           failures.push(`unexpected mutating tool present in final message: ${tool}`);
         }
         if (containsForbiddenToolName(traceText, tool)) {
@@ -297,24 +302,30 @@ export function scoreCase(testCase, events, options = {}) {
       }
     }
     for (const tool of testCase.expected.forbiddenTools ?? []) {
+      const answerMentionsTool = answerTextFields.some((text) => containsForbiddenToolName(text, tool));
       if (orderedTools.includes(tool)) {
         failures.push(`forbidden tool present: ${tool}`);
       }
-      if (answerTextFields.some((text) => containsForbiddenToolName(text, tool))) {
+      if (answerMentionsTool) {
         failures.push(`forbidden tool present in answer text: ${tool}`);
       }
-      if (!orderedTools.includes(tool) && containsForbiddenToolName(finalText, tool)) {
+      if (!orderedTools.includes(tool) && !answerMentionsTool && containsForbiddenToolName(finalText, tool)) {
         failures.push(`forbidden tool present in final message: ${tool}`);
       }
     }
     for (const prefix of testCase.expected.forbiddenToolPrefixes ?? []) {
+      const answerMentionsPrefix = answerTextFields.some((text) => containsForbiddenToolPrefix(text, prefix));
       if (orderedTools.some((tool) => tool.startsWith(prefix))) {
         failures.push(`forbidden tool prefix present: ${prefix}`);
       }
-      if (answerTextFields.some((text) => containsForbiddenToolPrefix(text, prefix))) {
+      if (answerMentionsPrefix) {
         failures.push(`forbidden tool prefix present in answer text: ${prefix}`);
       }
-      if (!orderedTools.some((tool) => tool.startsWith(prefix)) && containsForbiddenToolPrefix(finalText, prefix)) {
+      if (
+        !orderedTools.some((tool) => tool.startsWith(prefix)) &&
+        !answerMentionsPrefix &&
+        containsForbiddenToolPrefix(finalText, prefix)
+      ) {
         failures.push(`forbidden tool prefix present in final message: ${prefix}`);
       }
       if (containsForbiddenToolPrefix(traceText, prefix)) {
@@ -642,9 +653,6 @@ function firstEarlyRequiredMutatingToolFailure(actual, required) {
 function firstRequiredToolTextOrderFailure(text, required, location) {
   for (let requiredIndex = 1; requiredIndex < required.length; requiredIndex += 1) {
     const tool = required[requiredIndex];
-    if (!mutatingLocalYdbTools.has(tool)) {
-      continue;
-    }
     for (const predecessor of required.slice(0, requiredIndex)) {
       if (hasToolMentionBefore(text, tool, predecessor)) {
         return `required tool ${tool} appears before ${predecessor} in ${location}`;
@@ -669,12 +677,12 @@ function hasToolMentionBefore(text, firstTool, secondTool) {
   return firstMatches.some((firstMatch) =>
     secondMatches.some((secondMatch) =>
       firstMatch.index < secondMatch.index &&
-      !isExplicitOnlyAfterConstraint(text, firstMatch, secondMatch)));
+      !isExplicitAfterConstraint(text, firstMatch, secondMatch)));
 }
 
-function isExplicitOnlyAfterConstraint(text, firstMatch, secondMatch) {
+function isExplicitAfterConstraint(text, firstMatch, secondMatch) {
   const between = text.slice(firstMatch.index + firstMatch.length, secondMatch.index);
-  return /\bonly\s+after\s*[`'"\[({]*\s*$/i.test(between);
+  return /\b(?:only\s+)?after\s*[`'"\[({]*\s*$/i.test(between);
 }
 
 function nonSafeToolMatches(text, tool) {
@@ -824,6 +832,24 @@ function executableIndex(tokens, start = 0) {
         }
         index += envOptionConsumesArgument(tokens[index]) ? 2 : 1;
       }
+    } else if (name === "time") {
+      index += 1;
+      while (tokens[index]?.startsWith("-")) {
+        if (tokens[index] === "--") {
+          index += 1;
+          break;
+        }
+        index += timeOptionConsumesArgument(tokens[index]) ? 2 : 1;
+      }
+    } else if (name === "nice") {
+      index += 1;
+      while (tokens[index]?.startsWith("-")) {
+        if (tokens[index] === "--") {
+          index += 1;
+          break;
+        }
+        index += niceOptionConsumesArgument(tokens[index]) ? 2 : 1;
+      }
     } else if (name === "command") {
       index += 1;
     } else {
@@ -843,6 +869,14 @@ function timeoutOptionConsumesArgument(token) {
 
 function envOptionConsumesArgument(token) {
   return !token.includes("=") && new Set(["-u", "--unset", "-C", "--chdir"]).has(token);
+}
+
+function timeOptionConsumesArgument(token) {
+  return !token.includes("=") && new Set(["-o", "--output", "-f", "--format"]).has(token);
+}
+
+function niceOptionConsumesArgument(token) {
+  return !token.includes("=") && new Set(["-n", "--adjustment"]).has(token);
 }
 
 function sshRemoteCommandTokens(tokens, sshIndex) {
