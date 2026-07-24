@@ -258,7 +258,7 @@ Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH 
 The MCP server exposes tools for local-ydb operations and prompts for guided
 workflows. Prompt templates cover stack diagnosis, root database bootstrap,
 database diagnostics, tenant topology bootstrap, schema generation/apply,
-version upgrades, auth hardening, and storage group reduction. Tenant dumps are
+version upgrades, auth hardening, and storage-group reduction. Tenant dumps are
 mandatory for data-preserving version upgrades and storage-group reduction;
 live or production-like auth hardening requires a reviewed tenant dump or
 copied-volume rehearsal. Prompts do not execute commands; they return workflow

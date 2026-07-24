@@ -401,7 +401,7 @@ export function scoreCase(testCase, events, options = {}) {
 
   const searchableText = [finalText, traceText].join("\n");
   for (const term of testCase.expected.requiredTerms ?? []) {
-    if (!includesIgnoreCase(requiredTermsText, term)) {
+    if (!containsRequiredTerm(requiredTermsText, term)) {
       failures.push(`missing required term: ${term}`);
     }
   }
@@ -694,7 +694,7 @@ function hasToolMentionBefore(text, firstTool, secondTool) {
 
 function isExplicitAfterConstraint(text, firstMatch, secondMatch) {
   const between = text.slice(firstMatch.index + firstMatch.length, secondMatch.index);
-  return /\b(?:only\s+)?after\s*[`'"\[({]*\s*$/i.test(between);
+  return /^\s*[`'")\]}]*\s*,?\s*(?:only\s+)?after\s*[`'"\[({]*\s*$/i.test(between);
 }
 
 function isExplicitBeforeConstraint(text, firstMatch, secondMatch) {
@@ -708,8 +708,9 @@ function nonSafeToolMatches(text, tool) {
   return exactToolMatches(text, tool).filter((match) => !isSafeForbiddenWarningAtMatch(text, match));
 }
 
-function includesIgnoreCase(text, needle) {
-  return text.toLowerCase().includes(String(needle).toLowerCase());
+function containsRequiredTerm(text, term) {
+  return literalTermMatches(text, String(term))
+    .some((match) => !isNegatedRequiredTermAtMatch(text, match));
 }
 
 function containsForbiddenTerm(text, term) {
@@ -739,6 +740,10 @@ function forbiddenTermMatches(text, term) {
     return matches;
   }
 
+  return literalTermMatches(text, term);
+}
+
+function literalTermMatches(text, term) {
   const matches = [];
   const haystack = text.toLowerCase();
   const needle = term.toLowerCase();
@@ -756,6 +761,22 @@ function forbiddenTermMatches(text, term) {
     offset = index + term.length;
   }
   return matches;
+}
+
+function isNegatedRequiredTermAtMatch(text, match) {
+  if (isSafeForbiddenWarningAtMatch(text, match)) {
+    return true;
+  }
+  const clauseStart = Math.max(
+    text.lastIndexOf(".", match.index - 1),
+    text.lastIndexOf("!", match.index - 1),
+    text.lastIndexOf("?", match.index - 1),
+    text.lastIndexOf(";", match.index - 1),
+    text.lastIndexOf(":", match.index - 1),
+    text.lastIndexOf("\n", match.index - 1),
+  );
+  const before = text.slice(clauseStart + 1, match.index);
+  return /(?:\b(?:do not|don't|never|must not|should not)\s+(?:use|using|inspect|inspecting|read|reading|search|searching|check|checking|call|calling|run|running|consult|consulting)\b|\bavoid(?:\s+(?:using|inspecting|reading|searching|checking|calling|running|consulting))?\b)[^.!?;:\n]*$/i.test(before);
 }
 
 function isConfirmedMutationTerm(term) {
@@ -798,6 +819,9 @@ function commandSegments(command) {
     if (shellCommand) {
       addSegments(splitCommandSegments(shellCommand));
     }
+    for (const subshellGroup of subshellGroupSegments(segment)) {
+      addSegments(splitCommandSegments(subshellGroup));
+    }
     for (const substitution of commandSubstitutionSegments(segment)) {
       addSegments(splitCommandSegments(substitution));
     }
@@ -830,7 +854,10 @@ function executableIndex(tokens, start = 0) {
   while (index < tokens.length) {
     const token = tokens[index];
     const name = commandName(token);
-    if (isEnvironmentAssignment(token)) {
+    const redirectionSpan = shellRedirectionTokenSpan(token);
+    if (redirectionSpan !== 0) {
+      index += redirectionSpan;
+    } else if (isEnvironmentAssignment(token)) {
       index += 1;
     } else if (name === "sudo") {
       index += 1;
@@ -880,6 +907,15 @@ function executableIndex(tokens, start = 0) {
       if (tokens[index] === "--") {
         index += 1;
       }
+    } else if (name === "exec") {
+      index += 1;
+      while (tokens[index]?.startsWith("-")) {
+        if (tokens[index] === "--") {
+          index += 1;
+          break;
+        }
+        index += execOptionConsumesArgument(tokens[index]) ? 2 : 1;
+      }
     } else {
       return index;
     }
@@ -905,6 +941,18 @@ function timeOptionConsumesArgument(token) {
 
 function niceOptionConsumesArgument(token) {
   return !token.includes("=") && new Set(["-n", "--adjustment"]).has(token);
+}
+
+function execOptionConsumesArgument(token) {
+  return /^-[acl]+$/.test(token) && token.includes("a");
+}
+
+function shellRedirectionTokenSpan(token) {
+  const match = token.match(/^(?:(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\}))?(?:<<<|<<-|<<|>>|<>|<&|>&|>\||&>>|&>|>|<)(.*)$/);
+  if (!match) {
+    return 0;
+  }
+  return match[1].length > 0 ? 1 : 2;
 }
 
 function sshRemoteCommandTokens(tokens, sshIndex) {
@@ -969,6 +1017,15 @@ function splitCommandSegments(command) {
     segments.push(current.trim());
   }
   return segments;
+}
+
+function subshellGroupSegments(segment) {
+  const trimmed = segment.trim();
+  if (!trimmed.startsWith("(") || trimmed.startsWith("((")) {
+    return [];
+  }
+  const group = readParenthesizedSubstitution(trimmed, 1);
+  return group ? [group.text] : [];
 }
 
 function commandSubstitutionSegments(segment) {
@@ -1089,6 +1146,9 @@ function shellTokens(segment) {
       continue;
     }
     if (char === "'" || char === "\"") {
+      if (current.endsWith("$")) {
+        current = current.slice(0, -1);
+      }
       quote = char;
     } else if (/\s/.test(char)) {
       pushCurrent();
@@ -1109,6 +1169,13 @@ function shellWrappedCommand(tokens) {
     const token = tokens[cursor];
     if (!token.startsWith("-")) {
       return undefined;
+    }
+    if (new Set(["-O", "-o", "--init-file", "--rcfile"]).has(token)) {
+      cursor += 1;
+      continue;
+    }
+    if (/^-[Oo].+/.test(token)) {
+      continue;
     }
     if (!token.startsWith("--") && token.slice(1).includes("c")) {
       const commandIndex = tokens[cursor + 1] === "--" ? cursor + 2 : cursor + 1;

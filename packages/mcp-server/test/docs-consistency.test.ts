@@ -120,5 +120,6 @@ describe("MCP prompt documentation", () => {
 
     expect(normalizedReadme).toContain(promptSafetySummary);
     expect(normalizedReadme).toContain(authSafetySummary);
+    expect(normalizedReadme).not.toContain("storage group reduction");
   });
 });
