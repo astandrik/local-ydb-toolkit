@@ -485,7 +485,7 @@ function buildTraceText(events) {
   return parts.join("\n");
 }
 
-const traceTextFieldNames = new Set(["text", "content", "title", "summary", "description"]);
+const traceTextFieldNames = new Set(["text", "content", "title", "summary", "description", "step"]);
 
 function traceItemTextParts(value) {
   const parts = [];
@@ -586,8 +586,8 @@ function exactToolMatches(text, tool) {
 function localYdbSkillMatches(text) {
   return [
     ...regexMatches(text, /\$local-ydb\b/gi),
-    ...regexMatches(text, /\blocal-ydb\s+(?:codex\s+)?skill\b/gi),
-    ...regexMatches(text, /\blocal\s+ydb\s+(?:codex\s+)?skill\b/gi),
+    ...regexMatches(text, /\blocal-ydb\s+(?:codex\s+)?(?:skill|workflow|guidance)\b/gi),
+    ...regexMatches(text, /\blocal\s+ydb\s+(?:codex\s+)?(?:skill|workflow|guidance)\b/gi),
   ];
 }
 
@@ -667,7 +667,14 @@ function hasToolMentionBefore(text, firstTool, secondTool) {
   const firstMatches = nonSafeToolMatches(text, firstTool);
   const secondMatches = nonSafeToolMatches(text, secondTool);
   return firstMatches.some((firstMatch) =>
-    secondMatches.some((secondMatch) => firstMatch.index < secondMatch.index));
+    secondMatches.some((secondMatch) =>
+      firstMatch.index < secondMatch.index &&
+      !isExplicitOnlyAfterConstraint(text, firstMatch, secondMatch)));
+}
+
+function isExplicitOnlyAfterConstraint(text, firstMatch, secondMatch) {
+  const between = text.slice(firstMatch.index + firstMatch.length, secondMatch.index);
+  return /\bonly\s+after\s*[`'"\[({]*\s*$/i.test(between);
 }
 
 function nonSafeToolMatches(text, tool) {
@@ -692,8 +699,9 @@ function containsForbiddenTerm(text, term) {
 function forbiddenTermMatches(text, term) {
   if (isConfirmedMutationTerm(term)) {
     const matches = [];
-    const confirmName = String.raw`[` + "`" + String.raw`"']*confirm[` + "`" + String.raw`"']*`;
-    const pattern = new RegExp(String.raw`(?:(?:\\?["']confirm\\?["']|confirm)\s*[:=]\s*true|(?:set|pass|use|include|call|run\s+with)\s+${confirmName}\s+(?:to|as)\s+true)`, "gi");
+    const confirmQuote = "[`\"']";
+    const confirmName = `(?:\\\\?${confirmQuote})*confirm(?:\\\\?${confirmQuote})*`;
+    const pattern = new RegExp(String.raw`(?:${confirmName}\s*[:=]\s*true|(?:set|pass|use|include|call|run\s+with)\s+${confirmName}\s+(?:to|as)\s+true)`, "gi");
     for (const match of text.matchAll(pattern)) {
       matches.push({
         text: match[0],
@@ -781,7 +789,8 @@ function commandInvokesLiveDockerOrYdb(tokens, depth = 0) {
   }
   if (executable === "ssh" && depth < 2) {
     const remoteTokens = sshRemoteCommandTokens(tokens, executableIndexValue);
-    return remoteTokens.length > 0 && commandInvokesLiveDockerOrYdb(remoteTokens, depth + 1);
+    return remoteTokens.length > 0 && splitCommandSegments(remoteTokens.join(" "))
+      .some((segment) => commandInvokesLiveDockerOrYdb(shellTokens(segment), depth + 1));
   }
   return false;
 }
@@ -809,7 +818,11 @@ function executableIndex(tokens, start = 0) {
     } else if (name === "env") {
       index += 1;
       while (tokens[index]?.startsWith("-")) {
-        index += 1;
+        if (tokens[index] === "--") {
+          index += 1;
+          break;
+        }
+        index += envOptionConsumesArgument(tokens[index]) ? 2 : 1;
       }
     } else if (name === "command") {
       index += 1;
@@ -826,6 +839,10 @@ function sudoOptionConsumesArgument(token) {
 
 function timeoutOptionConsumesArgument(token) {
   return !token.includes("=") && new Set(["-k", "--kill-after", "-s", "--signal"]).has(token);
+}
+
+function envOptionConsumesArgument(token) {
+  return !token.includes("=") && new Set(["-u", "--unset", "-C", "--chdir"]).has(token);
 }
 
 function sshRemoteCommandTokens(tokens, sshIndex) {
@@ -906,17 +923,27 @@ function commandSubstitutionSegments(segment) {
       escaped = true;
       continue;
     }
-    if (quote) {
-      if (char === quote) {
+    if (quote === "'") {
+      if (char === "'") {
         quote = undefined;
       }
       continue;
     }
-    if (char === "'" || char === "\"") {
-      quote = char;
+    if (char === "'" && !quote) {
+      quote = "'";
+      continue;
+    }
+    if (char === "\"") {
+      quote = quote === "\"" ? undefined : "\"";
       continue;
     }
     if (char === "$" && segment[index + 1] === "(") {
+      const substitution = readParenthesizedSubstitution(segment, index + 2);
+      if (substitution) {
+        segments.push(substitution.text);
+        index = substitution.endIndex;
+      }
+    } else if (!quote && (char === "<" || char === ">") && segment[index + 1] === "(") {
       const substitution = readParenthesizedSubstitution(segment, index + 2);
       if (substitution) {
         segments.push(substitution.text);
@@ -1021,7 +1048,7 @@ function shellWrappedCommand(tokens) {
     if (!token.startsWith("-")) {
       return undefined;
     }
-    if (token.includes("c")) {
+    if (!token.startsWith("--") && token.slice(1).includes("c")) {
       return tokens.slice(cursor + 1).join(" ");
     }
   }

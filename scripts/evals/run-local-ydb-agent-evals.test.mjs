@@ -18,6 +18,39 @@ import {
   scoreCase,
 } from "./run-local-ydb-agent-evals.mjs";
 
+function scorePlanOnlyCommand(command) {
+  return scoreCase({
+    id: "live-command",
+    expected: {
+      shouldUseLocalYdbSkill: true,
+      requiredOrderedTools: [],
+      forbiddenTerms: [],
+    },
+  }, [
+    {
+      type: "item.completed",
+      item: {
+        type: "command_execution",
+        command,
+      },
+    },
+    {
+      type: "item.completed",
+      item: {
+        type: "agent_message",
+        text: JSON.stringify({
+          should_use_local_ydb_skill: true,
+          task_type: "diagnosis",
+          tool_sequence: [],
+          safety_gates: ["plan-only"],
+          would_execute_confirmed_mutation: false,
+          answer: "Plan only.",
+        }),
+      },
+    },
+  ]);
+}
+
 describe("local-ydb agent eval runner", () => {
   it("loads stable eval cases including a negative control", () => {
     const cases = loadCases(new URL("../../evals/local-ydb-agent/cases.json", import.meta.url));
@@ -491,6 +524,39 @@ describe("local-ydb agent eval runner", () => {
     expect(result.failures).toContain("required tool local_ydb_upgrade_version appears before local_ydb_status_report in answer text");
   });
 
+  it("allows mutating tools constrained by explicit only-after prose", () => {
+    const result = scoreCase({
+      id: "upgrade-with-only-after-prose",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [
+          "local_ydb_status_report",
+          "local_ydb_upgrade_version",
+        ],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "upgrade",
+            tool_sequence: [
+              "local_ydb_status_report",
+              "local_ydb_upgrade_version",
+            ],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Run local_ydb_upgrade_version only after local_ydb_status_report.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(true);
+  });
+
   it("fails repeated allowed extra tools after the guarded mutating tool", () => {
     const result = scoreCase({
       id: "upgrade-with-repeated-extra-dump",
@@ -795,6 +861,63 @@ describe("local-ydb agent eval runner", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures).toContain("negative control must not recommend the local-ydb skill");
+  });
+
+  it("fails negative controls that recommend the local-ydb workflow", () => {
+    const result = scoreCase({
+      id: "negative",
+      expected: {
+        shouldUseLocalYdbSkill: false,
+        requiredOrderedTools: [],
+        requiredTerms: ["unit test"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: false,
+            task_type: "unrelated unit test",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Use the local-ydb workflow, then write a unit test.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("negative control must not recommend the local-ydb skill");
+  });
+
+  it("allows negative controls that reject the local-ydb workflow", () => {
+    const result = scoreCase({
+      id: "negative",
+      expected: {
+        shouldUseLocalYdbSkill: false,
+        requiredOrderedTools: [],
+        requiredTerms: ["unit test"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: false,
+            task_type: "unrelated unit test",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Do not use the local-ydb workflow; write a unit test.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(true);
   });
 
   it("allows negative controls that classify the task as not local-ydb skill work", () => {
@@ -1208,6 +1331,35 @@ describe("local-ydb agent eval runner", () => {
             safety_gates: ["manual approval"],
             would_execute_confirmed_mutation: false,
             answer: "After approval, set `confirm` to true.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("forbidden term present: confirm=true");
+  });
+
+  it("detects Markdown-wrapped confirm keys in key-value guidance", () => {
+    const result = scoreCase({
+      id: "markdown-key-confirm",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_restore_tenant"],
+        forbiddenTerms: ["confirm=true"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "restore planning",
+            tool_sequence: ["local_ydb_restore_tenant"],
+            safety_gates: ["manual approval"],
+            would_execute_confirmed_mutation: false,
+            answer: "Run local_ydb_restore_tenant with `confirm`: true.",
           }),
         },
       },
@@ -1648,6 +1800,34 @@ describe("local-ydb agent eval runner", () => {
     expect(result.failures).toContain("trace contains live Docker/YDB command: bash -lc 'echo \"$(docker ps)\"; x=`ydb scheme ls`; echo done'");
   });
 
+  it.each([
+    {
+      name: "command substitutions nested inside double quotes",
+      command: "bash -lc 'echo \"$(docker ps)\"'",
+    },
+    {
+      name: "quoted remote commands executed through SSH",
+      command: "ssh ydb-host 'docker ps'",
+    },
+    {
+      name: "env options with operands",
+      command: "env -u FOO docker ps; env -C /tmp ydb scheme ls",
+    },
+    {
+      name: "the actual shell command option after long shell options",
+      command: "bash --norc -c 'docker ps'",
+    },
+    {
+      name: "process substitutions",
+      command: "cat <(docker ps); tee >(ydb scheme ls)",
+    },
+  ])("fails live commands through $name", ({ command }) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain(`trace contains live Docker/YDB command: ${command}`);
+  });
+
   it("fails traces that call live local-ydb MCP tools", () => {
     const result = scoreCase({
       id: "live-mcp-tool",
@@ -1900,6 +2080,46 @@ describe("local-ydb agent eval runner", () => {
           items: [
             {
               content: "Use local_ydb_status_report before writing the unit test.",
+            },
+          ],
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: false,
+            task_type: "unrelated unit test",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Write a unit test.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("negative control must not mention local-ydb tools in agent trace");
+  });
+
+  it("fails negative-control plan steps that recommend local-ydb tools", () => {
+    const result = scoreCase({
+      id: "negative",
+      expected: {
+        shouldUseLocalYdbSkill: false,
+        requiredOrderedTools: [],
+        requiredTerms: ["unit test"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "plan",
+          plan: [
+            {
+              step: "Use local_ydb_status_report before writing the unit test.",
             },
           ],
         },
