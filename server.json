@@ -3,7 +3,7 @@
   "name": "io.github.astandrik/local-ydb-mcp",
   "title": "Local YDB MCP",
   "description": "Operate local-ydb deployments through local or SSH-backed MCP tools.",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "websiteUrl": "https://local-ydb-toolkit.ydb-qdrant.tech/",
   "repository": {
     "url": "https://github.com/astandrik/local-ydb-toolkit",
@@ -16,7 +16,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@astandrik/local-ydb-mcp",
-      "version": "0.14.0",
+      "version": "0.14.1",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {
@@ -40,6 +40,11 @@
           "name": "LOCAL_YDB_MCP_CONTENT_FORMAT",
           "description": "Optional LLM-facing tool response text format. Use toon to prefer TOON for the second text content block, with JSON fallback if TOON cannot round-trip losslessly; omit or set json for pretty JSON. MCP JSON-RPC and structuredContent stay JSON.",
           "isRequired": false,
+          "choices": [
+            "json",
+            "toon"
+          ],
+          "default": "json",
           "placeholder": "toon"
         }
       ],

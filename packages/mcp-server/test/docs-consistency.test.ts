@@ -21,7 +21,13 @@ interface ServerJson {
     runtimeHint?: string;
     runtimeArguments?: Array<{ name?: string; value?: string }>;
     transport: { type: string };
-    environmentVariables?: Array<{ name: string; isRequired?: boolean }>;
+    environmentVariables?: Array<{
+      name: string;
+      isRequired?: boolean;
+      choices?: string[];
+      default?: string;
+      placeholder?: string;
+    }>;
   }>;
 }
 
@@ -66,9 +72,14 @@ describe("MCP Registry metadata", () => {
       name: "LOCAL_YDB_TOOLKIT_CONFIG",
       isRequired: false
     }));
-    expect(npmPackage.environmentVariables).toContainEqual(expect.objectContaining({
-      name: "LOCAL_YDB_MCP_CONTENT_FORMAT",
-      isRequired: false
+    const contentFormat = npmPackage.environmentVariables?.find(
+      ({ name }) => name === "LOCAL_YDB_MCP_CONTENT_FORMAT",
+    );
+    expect(contentFormat).toEqual(expect.objectContaining({
+      isRequired: false,
+      choices: ["json", "toon"],
+      default: "json",
+      placeholder: "toon",
     }));
   });
 
