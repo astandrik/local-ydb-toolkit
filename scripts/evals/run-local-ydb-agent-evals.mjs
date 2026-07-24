@@ -59,6 +59,19 @@ const mutatingLocalYdbTools = new Set([
   "local_ydb_upgrade_version",
   "local_ydb_write_dynamic_auth_config",
 ]);
+const shellControlKeywords = new Set([
+  "!",
+  "{",
+  "do",
+  "elif",
+  "else",
+  "for",
+  "if",
+  "select",
+  "then",
+  "until",
+  "while",
+]);
 
 export function loadCases(casesPath = defaultCasesPath) {
   const raw = readFileSync(casesPath, "utf8");
@@ -336,12 +349,12 @@ export function scoreCase(testCase, events, options = {}) {
     if (orderFailure) {
       failures.push(orderFailure);
     }
-    const earlyRequiredMutatingFailure = firstEarlyRequiredMutatingToolFailure(
+    const earlyRequiredToolFailure = firstEarlyRequiredToolFailure(
       orderedTools,
       testCase.expected.requiredOrderedTools ?? [],
     );
-    if (earlyRequiredMutatingFailure) {
-      failures.push(earlyRequiredMutatingFailure);
+    if (earlyRequiredToolFailure) {
+      failures.push(earlyRequiredToolFailure);
     }
     for (const text of answerTextFields) {
       const requiredTextOrderFailure = firstRequiredToolTextOrderFailure(
@@ -597,8 +610,8 @@ function exactToolMatches(text, tool) {
 function localYdbSkillMatches(text) {
   return [
     ...regexMatches(text, /\$local-ydb\b/gi),
-    ...regexMatches(text, /\blocal-ydb\s+(?:codex\s+)?(?:skill|workflow|guidance)\b/gi),
-    ...regexMatches(text, /\blocal\s+ydb\s+(?:codex\s+)?(?:skill|workflow|guidance)\b/gi),
+    ...regexMatches(text, /\blocal-ydb\s+(?:codex\s+)?(?:skill|workflow|guidance|mcp(?:\s+server)?|toolkit)\b/gi),
+    ...regexMatches(text, /\blocal\s+ydb\s+(?:codex\s+)?(?:skill|workflow|guidance|mcp(?:\s+server)?|toolkit)\b/gi),
   ];
 }
 
@@ -629,12 +642,9 @@ function firstOrderFailure(actual, required) {
   return undefined;
 }
 
-function firstEarlyRequiredMutatingToolFailure(actual, required) {
+function firstEarlyRequiredToolFailure(actual, required) {
   for (let requiredIndex = 1; requiredIndex < required.length; requiredIndex += 1) {
     const tool = required[requiredIndex];
-    if (!mutatingLocalYdbTools.has(tool)) {
-      continue;
-    }
     for (
       let actualIndex = actual.indexOf(tool);
       actualIndex !== -1;
@@ -642,7 +652,8 @@ function firstEarlyRequiredMutatingToolFailure(actual, required) {
     ) {
       for (const predecessor of required.slice(0, requiredIndex)) {
         if (!actual.slice(0, actualIndex).includes(predecessor)) {
-          return `required mutating tool ${tool} appears before required predecessor ${predecessor}`;
+          const toolLabel = mutatingLocalYdbTools.has(tool) ? "required mutating tool" : "required tool";
+          return `${toolLabel} ${tool} appears before required predecessor ${predecessor}`;
         }
       }
     }
@@ -677,12 +688,20 @@ function hasToolMentionBefore(text, firstTool, secondTool) {
   return firstMatches.some((firstMatch) =>
     secondMatches.some((secondMatch) =>
       firstMatch.index < secondMatch.index &&
-      !isExplicitAfterConstraint(text, firstMatch, secondMatch)));
+      !isExplicitAfterConstraint(text, firstMatch, secondMatch) &&
+      !isExplicitBeforeConstraint(text, firstMatch, secondMatch)));
 }
 
 function isExplicitAfterConstraint(text, firstMatch, secondMatch) {
   const between = text.slice(firstMatch.index + firstMatch.length, secondMatch.index);
   return /\b(?:only\s+)?after\s*[`'"\[({]*\s*$/i.test(between);
+}
+
+function isExplicitBeforeConstraint(text, firstMatch, secondMatch) {
+  const before = text.slice(0, firstMatch.index);
+  const between = text.slice(firstMatch.index + firstMatch.length, secondMatch.index);
+  return /(?:^|[.!?;]\s*)before\s*[`'"\[({]*\s*$/i.test(before) &&
+    /^\s*[`'")\]}]*\s*,\s*(?:(?:first|then)\s+)?(?:run|call|use|invoke|execute|perform|take|create|check|inspect)\s+[`'"\[({]*\s*$/i.test(between);
 }
 
 function nonSafeToolMatches(text, tool) {
@@ -709,7 +728,7 @@ function forbiddenTermMatches(text, term) {
     const matches = [];
     const confirmQuote = "[`\"']";
     const confirmName = `(?:\\\\?${confirmQuote})*confirm(?:\\\\?${confirmQuote})*`;
-    const pattern = new RegExp(String.raw`(?:${confirmName}\s*[:=]\s*true|(?:set|pass|use|include|call|run\s+with)\s+${confirmName}\s+(?:to|as)\s+true)`, "gi");
+    const pattern = new RegExp(String.raw`(?:${confirmName}\s*[:=]\s*true|(?:set|pass|use|include|call|run\s+with)\s+${confirmName}\s+(?:(?:to|as)\s+)?true)`, "gi");
     for (const match of text.matchAll(pattern)) {
       matches.push({
         text: match[0],
@@ -805,6 +824,9 @@ function commandInvokesLiveDockerOrYdb(tokens, depth = 0) {
 
 function executableIndex(tokens, start = 0) {
   let index = start;
+  while (index < tokens.length && shellControlKeywords.has(commandName(tokens[index]))) {
+    index += 1;
+  }
   while (index < tokens.length) {
     const token = tokens[index];
     const name = commandName(token);
@@ -852,6 +874,12 @@ function executableIndex(tokens, start = 0) {
       }
     } else if (name === "command") {
       index += 1;
+      while (/^-p+$/.test(tokens[index] ?? "")) {
+        index += 1;
+      }
+      if (tokens[index] === "--") {
+        index += 1;
+      }
     } else {
       return index;
     }
@@ -1083,7 +1111,8 @@ function shellWrappedCommand(tokens) {
       return undefined;
     }
     if (!token.startsWith("--") && token.slice(1).includes("c")) {
-      return tokens.slice(cursor + 1).join(" ");
+      const commandIndex = tokens[cursor + 1] === "--" ? cursor + 2 : cursor + 1;
+      return tokens.slice(commandIndex).join(" ");
     }
   }
   return undefined;
