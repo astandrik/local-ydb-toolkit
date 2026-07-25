@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -167,7 +168,7 @@ export function createEvalWorkspace({
   tempRoot,
 } = {}) {
   const resolvedSchemaPath = schemaPath ?? join(root, "evals/local-ydb-agent/final-answer.schema.json");
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const stamp = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const rootTemp = tempRoot ?? mkdtempSync(join(tmpdir(), "local-ydb-agent-evals-"));
   const ownsTempRoot = tempRoot === undefined;
   const checkoutRoot = join(rootTemp, "checkout");
@@ -308,7 +309,7 @@ export function scoreCase(testCase, events, options = {}) {
 
   const fileChangeEvents = events.filter((event) => {
     const itemType = event?.item?.type;
-    return typeof itemType === "string" && (itemType.includes("file") || itemType.includes("patch"));
+    return itemType === "file_change" || (typeof itemType === "string" && itemType.includes("patch"));
   });
   if (fileChangeEvents.length > 0) {
     failures.push(`trace contains file change events: ${fileChangeEvents.map((event) => event.item.type).join(", ")}`);
@@ -531,7 +532,102 @@ const shellWrapperNames = new Set([
 const shellCommandNames = new Set(["bash", "sh", "zsh"]);
 
 export function invokesLiveDockerOrYdb(command) {
-  return scanShellSegments(command).some((tokens) => tokensInvokeLiveDockerOrYdb(tokens));
+  return scanForLiveDockerOrYdb(command, 0);
+}
+
+const maxSubstitutionDepth = 4;
+
+function scanForLiveDockerOrYdb(command, depth) {
+  if (scanShellSegments(command).some((tokens) => tokensInvokeLiveDockerOrYdb(tokens))) {
+    return true;
+  }
+  if (depth >= maxSubstitutionDepth) {
+    return false;
+  }
+  return commandSubstitutionBodies(command).some((body) => scanForLiveDockerOrYdb(body, depth + 1));
+}
+
+function commandSubstitutionBodies(command) {
+  const bodies = [];
+  let quote;
+  let escaped = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "`") {
+      const end = command.indexOf("`", index + 1);
+      if (end === -1) {
+        return bodies;
+      }
+      bodies.push(command.slice(index + 1, end));
+      index = end;
+      continue;
+    }
+    const opensSubstitution = (char === "$" || char === "<" || char === ">") && command[index + 1] === "(";
+    if (opensSubstitution) {
+      const close = matchingParenIndex(command, index + 1);
+      if (close === -1) {
+        return bodies;
+      }
+      bodies.push(command.slice(index + 2, close));
+      index = close;
+    }
+  }
+  return bodies;
+}
+
+function matchingParenIndex(command, openIndex) {
+  let depth = 0;
+  let quote;
+  let escaped = false;
+  for (let index = openIndex; index < command.length; index += 1) {
+    const char = command[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
 }
 
 function scanShellSegments(command) {
