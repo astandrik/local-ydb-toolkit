@@ -28,6 +28,12 @@ const optionalStringArrayFields = [
   "requiredTerms",
   "forbiddenTerms",
 ];
+const caseFields = new Set(["id", "name", "prompt", "expected"]);
+const expectedFields = new Set([
+  "shouldUseLocalYdbSkill",
+  "allowedExtraToolsBefore",
+  ...optionalStringArrayFields,
+]);
 const finalAnswerFields = new Map([
   ["should_use_local_ydb_skill", "boolean"],
   ["task_type", "string"],
@@ -60,11 +66,21 @@ export function loadCases(casesPath = defaultCasesPath) {
       throw new Error(`Duplicate agent eval case id: ${testCase.id}`);
     }
     ids.add(testCase.id);
+    for (const field of Object.keys(testCase)) {
+      if (!caseFields.has(field)) {
+        throw new Error(`Agent eval case ${testCase.id} has unknown field: ${field}`);
+      }
+    }
     if (typeof testCase.prompt !== "string" || testCase.prompt.length === 0) {
       throw new Error(`Agent eval case ${testCase.id} is missing prompt.`);
     }
     if (!testCase.expected || typeof testCase.expected.shouldUseLocalYdbSkill !== "boolean") {
       throw new Error(`Agent eval case ${testCase.id} is missing expected.shouldUseLocalYdbSkill.`);
+    }
+    for (const field of Object.keys(testCase.expected)) {
+      if (!expectedFields.has(field)) {
+        throw new Error(`Agent eval case ${testCase.id} has unknown expected field: ${field}`);
+      }
     }
     for (const field of optionalStringArrayFields) {
       assertOptionalStringArray(testCase, field);
@@ -227,7 +243,9 @@ export function scoreCase(testCase, events, options = {}) {
     if (!expectedSkill && orderedTools.some((tool) => tool.startsWith("local_ydb_"))) {
       failures.push("negative control must not include local-ydb tools");
     }
-    if (!expectedSkill && containsForbiddenToolPrefix(answerText, "local_ydb_")) {
+    // Negative controls fail on any local-ydb tool mention, negated or not:
+    // naming a tool means the agent reached for local-ydb tooling at all.
+    if (!expectedSkill && toolPrefixMatches(answerText, "local_ydb_").length > 0) {
       failures.push("negative control must not mention local-ydb tools");
     }
     if (expectedSkill) {
@@ -457,7 +475,9 @@ function firstOrderFailure(actual, required) {
 }
 
 function containsRequiredTerm(text, term) {
-  return requiredTermMatches(text, String(term)).length > 0;
+  // A required term counts only when affirmed: guidance like "do not dump or
+  // restore" must not satisfy a mandatory dump/restore expectation.
+  return requiredTermMatches(text, String(term)).some((match) => !isNegatedWarningAt(text, match.index));
 }
 
 function requiredTermMatches(text, term) {
@@ -514,7 +534,6 @@ const shellWrapperNames = new Set([
   "exec",
   "nohup",
   "setsid",
-  "eval",
   "xargs",
 ]);
 const shellCommandNames = new Set(["bash", "sh", "zsh"]);
@@ -724,6 +743,11 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
       index += 1;
       continue;
     }
+    if (name === "eval") {
+      // eval concatenates its arguments into a command and executes it, so a
+      // quoted payload ("eval 'docker stop x'") must be scanned as shell.
+      return invokesLiveDockerOrYdb(tokens.slice(index + 1).join(" "));
+    }
     if (shellWrapperNames.has(name)) {
       index = nextCommandIndexAfterWrapper(tokens, index, name);
       continue;
@@ -733,7 +757,12 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
     }
     if (shellCommandNames.has(name)) {
       const flagIndex = tokens.findIndex((candidate, cursor) => cursor > index && /^-[^-]*c/.test(candidate));
-      const script = flagIndex === -1 ? undefined : tokens[flagIndex + 1];
+      if (flagIndex === -1) {
+        return false;
+      }
+      // A "--" after -c is the end-of-options marker, not the script.
+      const scriptIndex = tokens[flagIndex + 1] === "--" ? flagIndex + 2 : flagIndex + 1;
+      const script = tokens[scriptIndex];
       return typeof script === "string" && invokesLiveDockerOrYdb(script);
     }
     return false;
