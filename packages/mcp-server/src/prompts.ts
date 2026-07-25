@@ -115,6 +115,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
         workflowSafety,
         "Run local_ydb_status_report or local_ydb_inventory first to establish the current stack state.",
         "Run local_ydb_list_versions before choosing or trusting the target tag. If the source or target image must be pulled, call local_ydb_pull_image without confirm first to review the pull plan. For the upgrade target, pass image set to the exact target image from the upgrade preflight, not the current profile image. After explicit approval, repeat the same local_ydb_pull_image call with confirm=true; poll local_ydb_pull_status with the returned jobId until completed.",
+        "Treat the tenant dump in this workflow as mandatory for data-preserving upgrades. Use tenant-wide dumps for full rebuilds; use path-level dumps only for narrower table or directory probes outside this upgrade workflow.",
         "Call local_ydb_upgrade_version without confirm using the exact version argument. Include dumpName only if the user supplied it. Review the returned plan for image preflight, dump, teardown, bootstrap, restore, auth reapply, extra-node recreation, image verification, and profile image persistence before asking for execution approval.",
         "Do not use this automatic upgrade path for bindMountPath profiles.",
       ].join("\n\n");
@@ -147,6 +148,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
       argumentBlock(args),
       workflowSafety,
       "Run local_ydb_status_report first and note whether the profile already uses auth artifacts.",
+      "For live or production-like stacks where data must be preserved, take a reviewed tenant dump before applying auth/config hardening or rehearse the hardening on a copied volume first.",
       "Call local_ydb_prepare_auth_config without confirm to review the hardened config plan. Call local_ydb_write_dynamic_auth_config without confirm to review the dynamic-node auth token plan, passing sid and tokenHostPath when the selected profile does not provide them. If the user approves both artifact plans, execute local_ydb_prepare_auth_config with confirm=true and local_ydb_write_dynamic_auth_config with confirm=true to create the files. Then call local_ydb_apply_auth_hardening without confirm to review the restart plan, and execute it only after explicit approval.",
       "After approved execution, verify that anonymous viewer checks fail as expected while authenticated tenant checks still pass by using local_ydb_auth_check and local_ydb_status_report.",
     ].join("\n\n"),
@@ -181,6 +183,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
         workflowSafety,
         "Run local_ydb_status_report and local_ydb_storage_placement first to capture the current tenant and storage state.",
         "Do not try to live-decrease NumGroups. Call local_ydb_reduce_storage_groups without confirm, passing count as the number of groups to remove as a JSON number.",
+        "Treat the tenant dump as mandatory before storage reduction because the workflow destroys and rebuilds the stack. Do not clean the source storage or dump until restore verification succeeds.",
         "If local_ydb_storage_placement reports a concrete pool name such as dynamic_storage_pool:1, pass that exact value as poolName. Use poolName when the default pool lookup does not match the current stack. If local_ydb_reduce_storage_groups reports `Storage pool not found`, rerun it without confirm using the explicit poolName value from local_ydb_storage_placement. Include dumpName only if the user supplied it.",
         "Review the plan for tenant dump, stack teardown, rebuild with the smaller storagePoolCount, restore, verification, and auth reapply when needed before asking for execution approval.",
       ].join("\n\n");

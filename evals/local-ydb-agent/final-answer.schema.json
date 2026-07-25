@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "should_use_local_ydb_skill": {
+      "type": "boolean"
+    },
+    "task_type": {
+      "type": "string"
+    },
+    "tool_sequence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "safety_gates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "would_execute_confirmed_mutation": {
+      "type": "boolean"
+    },
+    "answer": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "should_use_local_ydb_skill",
+    "task_type",
+    "tool_sequence",
+    "safety_gates",
+    "would_execute_confirmed_mutation",
+    "answer"
+  ]
+}
