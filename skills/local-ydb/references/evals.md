@@ -12,7 +12,7 @@ CODEX_API_KEY=... npm run eval:agent -- --case explicit-database-diagnosis
 CODEX_API_KEY=... npm run eval:agent
 ```
 
-Results are written to `eval-results/local-ydb-agent/<timestamp>/` and are intentionally ignored by git.
+Results are written to `eval-results/local-ydb-agent/<timestamp>-<random-suffix>/` and are intentionally ignored by git.
 
 ## Adding Cases
 

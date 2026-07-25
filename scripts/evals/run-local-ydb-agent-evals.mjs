@@ -524,7 +524,7 @@ function scanForLiveDockerOrYdb(command, depth) {
 
 function commandSubstitutionBodies(command) {
   const bodies = [];
-  let quote;
+  let singleQuoted = false;
   let escaped = false;
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
@@ -536,14 +536,14 @@ function commandSubstitutionBodies(command) {
       escaped = true;
       continue;
     }
-    if (quote) {
-      if (char === quote) {
-        quote = undefined;
+    if (singleQuoted) {
+      if (char === "'") {
+        singleQuoted = false;
       }
       continue;
     }
-    if (char === "'" || char === '"') {
-      quote = char;
+    if (char === "'") {
+      singleQuoted = true;
       continue;
     }
     if (char === "`") {
