@@ -82,6 +82,18 @@ describe("local-ydb agent eval runner", () => {
     }
   });
 
+  it("rejects an empty case suite", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "local-ydb-agent-eval-cases-"));
+    const casesPath = join(tempRoot, "cases.json");
+    try {
+      writeFileSync(casesPath, "[]", "utf8");
+
+      expect(() => loadCases(casesPath)).toThrow("at least one case");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects expected fields that are not arrays of strings", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "local-ydb-agent-eval-cases-"));
     const casesPath = join(tempRoot, "cases.json");
@@ -242,6 +254,91 @@ describe("local-ydb agent eval runner", () => {
     expect(result.failures).toContain("required tools are out of order: local_ydb_status_report -> local_ydb_healthcheck");
     expect(result.failures).not.toContain("missing required tool local_ydb_status_report");
     expect(result.failures).not.toContain("missing required tool local_ydb_healthcheck");
+  });
+
+  it("rejects required tools whose first occurrence precedes their prerequisites", () => {
+    const result = scoreCase({
+      id: "premature-required-tool",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_list_dumps", "local_ydb_restore_tenant"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "restore planning",
+            tool_sequence: ["local_ydb_restore_tenant", "local_ydb_list_dumps", "local_ydb_restore_tenant"],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Plan local_ydb_restore_tenant, then local_ydb_list_dumps, then local_ydb_restore_tenant.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("required tools are out of order: local_ydb_list_dumps -> local_ydb_restore_tenant");
+  });
+
+  it("requires word boundaries around multi-word required terms", () => {
+    const result = scoreCase({
+      id: "embedded-phrase-required-term",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        requiredTerms: ["gh api"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "diagnosis",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Read it through API documentation.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("missing required term: gh api");
+  });
+
+  it("allows a trailing plural for multi-word required terms", () => {
+    const result = scoreCase({
+      id: "plural-phrase-required-term",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        requiredTerms: ["unit test"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "diagnosis",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Add unit tests for the parser.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(true);
   });
 
   it("fails positive cases that include unexpected read-only tools", () => {
@@ -556,6 +653,35 @@ describe("local-ydb agent eval runner", () => {
     ]);
 
     expect(result.ok).toBe(true);
+  });
+
+  it("does not let an unrelated negation suppress a forbidden confirmed mutation", () => {
+    const result = scoreCase({
+      id: "unrelated-negation",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: ["confirm=true"],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "restore planning",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Do not stop at the plan, pass confirm=true",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("forbidden term present: confirm=true");
   });
 
   it("checks forbidden tools exactly instead of by substring", () => {
