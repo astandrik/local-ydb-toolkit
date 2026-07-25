@@ -699,6 +699,9 @@ function nextCommandIndexAfterWrapper(tokens, index, name) {
   if (name === "time") {
     return skipOptions(tokens, cursor, timeOptionsWithValues);
   }
+  if (name === "exec") {
+    return skipOptions(tokens, cursor, execOptionsWithValues);
+  }
   return cursor;
 }
 
@@ -771,6 +774,7 @@ const xargsOptionsWithValues = [
   "--replace",
 ];
 const timeOptionsWithValues = ["-f", "-o", "--format", "--output"];
+const execOptionsWithValues = ["-a"];
 
 function commandName(token) {
   return token.split("/").pop() ?? token;
