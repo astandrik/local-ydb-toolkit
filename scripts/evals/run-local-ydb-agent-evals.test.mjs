@@ -1247,6 +1247,10 @@ describe("local-ydb agent eval runner", () => {
     "ydb scheme ls",
     "ydbd --version",
     "xargs docker",
+    "echo $(docker ps)",
+    "echo `docker ps`",
+    "cat <(docker ps)",
+    "echo $(echo $(docker ps))",
   ])("fails live Docker/YDB commands through additional scanner forms: %s", (command) => {
     const result = scorePlanOnlyCommand(command);
 
@@ -1257,10 +1261,49 @@ describe("local-ydb agent eval runner", () => {
   it.each([
     "echo docker",
     "printf '%s\\n' ydb",
+    "echo $(echo hello)",
   ])("allows commands that only mention Docker or YDB: %s", (command) => {
     const result = scorePlanOnlyCommand(command);
 
     expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    ["file_change", false],
+    ["file_read", true],
+  ])("scores trace item type %s as file mutation: %s", (itemType, expectedOk) => {
+    const result = scoreCase({
+      id: "trace-item-type",
+      expected: {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [],
+        forbiddenTerms: [],
+      },
+    }, [
+      {
+        type: "item.completed",
+        item: { type: itemType },
+      },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "diagnosis",
+            tool_sequence: [],
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer: "Plan only.",
+          }),
+        },
+      },
+    ]);
+
+    expect(result.ok).toBe(expectedOk);
+    if (!expectedOk) {
+      expect(result.failures).toContain(`trace contains file change events: ${itemType}`);
+    }
   });
 
   it("fails traces that call live local-ydb MCP tools", () => {
@@ -1757,6 +1800,26 @@ describe("local-ydb agent eval runner", () => {
       expect(existsSync(resultsRoot)).toBe(false);
     } finally {
       rmSync(badRepoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("creates unique result directories for back-to-back workspaces", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "local-ydb-agent-eval-unique-"));
+    const resultsRoot = join(tempRoot, "results");
+    const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const workspaces = [];
+    try {
+      workspaces.push(createEvalWorkspace({ repoRoot, resultsRoot, tempRoot: join(tempRoot, "w1") }));
+      workspaces.push(createEvalWorkspace({ repoRoot, resultsRoot, tempRoot: join(tempRoot, "w2") }));
+
+      expect(workspaces[0].resultsDir).not.toBe(workspaces[1].resultsDir);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+      for (const workspace of workspaces) {
+        if (!workspace.resultsDir.startsWith(tempRoot)) {
+          rmSync(workspace.resultsDir, { recursive: true, force: true });
+        }
+      }
     }
   });
 
