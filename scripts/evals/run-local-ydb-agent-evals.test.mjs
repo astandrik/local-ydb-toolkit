@@ -244,7 +244,7 @@ describe("local-ydb agent eval runner", () => {
     expect(result.failures).not.toContain("missing required tool local_ydb_healthcheck");
   });
 
-  it("allows required tools interleaved with other planned tools", () => {
+  it("fails positive cases that include unexpected read-only tools", () => {
     const result = scoreCase({
       id: "interleaved-required-tools",
       expected: {
@@ -268,7 +268,8 @@ describe("local-ydb agent eval runner", () => {
       },
     ]);
 
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain("unexpected tool present: local_ydb_scheme");
   });
 
   it("fails positive cases that include unexpected mutating tools", () => {
@@ -296,8 +297,8 @@ describe("local-ydb agent eval runner", () => {
     ]);
 
     expect(result.ok).toBe(false);
-    expect(result.failures).toContain("unexpected mutating tool present: local_ydb_bootstrap");
-    expect(result.failures).not.toContain("unexpected mutating tool present in final message: local_ydb_bootstrap");
+    expect(result.failures).toContain("unexpected tool present: local_ydb_bootstrap");
+    expect(result.failures).not.toContain("unexpected tool present in final message: local_ydb_bootstrap");
   });
 
   it("allows explicitly configured extra dump tools", () => {
@@ -1803,17 +1804,20 @@ describe("local-ydb agent eval runner", () => {
     }
   });
 
-  it("creates unique result directories for back-to-back workspaces", () => {
+  it("creates unique result directories for back-to-back workspaces in the same timestamp", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "local-ydb-agent-eval-unique-"));
     const resultsRoot = join(tempRoot, "results");
     const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
     const workspaces = [];
+    const originalToISOString = Date.prototype.toISOString;
     try {
+      Date.prototype.toISOString = () => "2026-01-01T00:00:00.000Z";
       workspaces.push(createEvalWorkspace({ repoRoot, resultsRoot, tempRoot: join(tempRoot, "w1") }));
       workspaces.push(createEvalWorkspace({ repoRoot, resultsRoot, tempRoot: join(tempRoot, "w2") }));
 
       expect(workspaces[0].resultsDir).not.toBe(workspaces[1].resultsDir);
     } finally {
+      Date.prototype.toISOString = originalToISOString;
       rmSync(tempRoot, { recursive: true, force: true });
       for (const workspace of workspaces) {
         if (!workspace.resultsDir.startsWith(tempRoot)) {
