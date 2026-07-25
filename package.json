@@ -8,6 +8,7 @@
   "scripts": {
     "build": "npm run build:packages && npm run docs:check:built",
     "build:packages": "npm run build -w @local-ydb-toolkit/core && npm run build -w @astandrik/local-ydb-mcp",
+    "eval:agent": "node scripts/evals/run-local-ydb-agent-evals.mjs",
     "predocs:generate": "npm run build:packages",
     "docs:generate": "node scripts/ci/generate-mcp-tools-docs.mjs --write",
     "predocs:check": "npm run build:packages",
