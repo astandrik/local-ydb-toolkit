@@ -494,7 +494,9 @@ function containsRequiredTerm(text, term) {
 
 function requiredTermMatches(text, term) {
   if (/^[A-Za-z0-9_]+$/.test(term)) {
-    return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(term)}\b`, "gi"));
+    // Single words allow a trailing plural "s" just like phrase terms do, so
+    // "dumps" satisfies a required "dump" term.
+    return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(term)}s?\b`, "gi"));
   }
   // Phrase terms get word-boundary edges so "gh api" does not match inside
   // "through API". A trailing plural "s" stays allowed: "unit tests" still
@@ -676,6 +678,9 @@ function scanShellSegments(command) {
   let current = "";
   let quote;
   let escaped = false;
+  // Paren depth inside arithmetic expansion/commands, where "<<" is a bit
+  // shift, not a here-doc ("$((1<<2))", "((a<<b))").
+  let arithDepth = 0;
   const pushToken = () => {
     if (current.length > 0) {
       segments[segments.length - 1].push(current);
@@ -722,14 +727,65 @@ function scanShellSegments(command) {
       charIndex += 1;
       continue;
     }
+    if (char === "(") {
+      if (command[charIndex + 1] === "(") {
+        arithDepth += 1;
+      }
+      pushToken();
+      continue;
+    }
     // A ")" closes a case pattern or a function name; keep it as a token so
     // the scanner can resume at the real command that follows it.
     if (char === ")") {
+      if (arithDepth > 0) {
+        arithDepth -= 1;
+      }
       pushToken();
       segments[segments.length - 1].push(")");
       continue;
     }
-    if (/\s/.test(char) || char === "(" || char === "{" || char === "}") {
+    // Here-doc operators only exist outside quotes: quoted "<<EOF" text must
+    // stay an ordinary word instead of declaring a here-doc. Real operators
+    // get a sentinel prefix so later stages can trust them; the delimiter
+    // keeps its own quotes stripped ("<<'EOF'" declares EOF).
+    if (char === "<" && command[charIndex + 1] === "<" && arithDepth === 0) {
+      pushToken();
+      charIndex += 2;
+      let marker = "\u0000<<";
+      if (command[charIndex] === "-") {
+        marker += "-";
+        charIndex += 1;
+      }
+      let delimiter = "";
+      let delimiterQuote;
+      while (charIndex < command.length) {
+        const markerChar = command[charIndex];
+        if (delimiterQuote) {
+          if (markerChar === delimiterQuote) {
+            delimiterQuote = undefined;
+          } else {
+            delimiter += markerChar;
+          }
+          charIndex += 1;
+          continue;
+        }
+        if (markerChar === "'" || markerChar === "\"") {
+          delimiterQuote = markerChar;
+          charIndex += 1;
+          continue;
+        }
+        if (/[A-Za-z0-9_]/.test(markerChar)) {
+          delimiter += markerChar;
+          charIndex += 1;
+          continue;
+        }
+        break;
+      }
+      segments[segments.length - 1].push(marker + delimiter);
+      charIndex -= 1;
+      continue;
+    }
+    if (/\s/.test(char) || char === "{" || char === "}") {
       pushToken();
       continue;
     }
@@ -757,7 +813,7 @@ function excludeHereDocBodies(segments, segmentEndsLine) {
       continue;
     }
     for (const token of tokens) {
-      const marker = /^<<-?([A-Za-z0-9_]+)/.exec(token);
+      const marker = /^\u0000<<-?([A-Za-z0-9_]+)/.exec(token);
       if (marker) {
         declared.push(marker[1]);
       }
