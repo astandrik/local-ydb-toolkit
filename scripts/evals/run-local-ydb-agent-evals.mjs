@@ -36,31 +36,6 @@ const finalAnswerFields = new Map([
   ["would_execute_confirmed_mutation", "boolean"],
   ["answer", "string"],
 ]);
-const mutatingLocalYdbTools = new Set([
-  "local_ydb_add_dynamic_nodes",
-  "local_ydb_add_storage_groups",
-  "local_ydb_apply_auth_hardening",
-  "local_ydb_apply_schema",
-  "local_ydb_bootstrap",
-  "local_ydb_bootstrap_root_database",
-  "local_ydb_check_prerequisites",
-  "local_ydb_cleanup_storage",
-  "local_ydb_create_tenant",
-  "local_ydb_destroy_stack",
-  "local_ydb_dump_tenant",
-  "local_ydb_permissions",
-  "local_ydb_prepare_auth_config",
-  "local_ydb_pull_image",
-  "local_ydb_reduce_storage_groups",
-  "local_ydb_remove_dynamic_nodes",
-  "local_ydb_restart_stack",
-  "local_ydb_restore_tenant",
-  "local_ydb_set_root_password",
-  "local_ydb_start_dynamic_node",
-  "local_ydb_upgrade_version",
-  "local_ydb_write_dynamic_auth_config",
-]);
-
 export function loadCases(casesPath = defaultCasesPath) {
   const raw = readFileSync(casesPath, "utf8");
   const parsed = JSON.parse(raw);
@@ -258,8 +233,8 @@ export function scoreCase(testCase, events, options = {}) {
         ...(testCase.expected.allowedExtraTools ?? []),
       ]);
       for (const tool of orderedTools) {
-        if (mutatingLocalYdbTools.has(tool) && !allowedTools.has(tool)) {
-          failures.push(`unexpected mutating tool present: ${tool}`);
+        if (!allowedTools.has(tool)) {
+          failures.push(`unexpected tool present: ${tool}`);
         }
       }
     }
