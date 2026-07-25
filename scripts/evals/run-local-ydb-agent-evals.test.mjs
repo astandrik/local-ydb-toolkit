@@ -1252,6 +1252,8 @@ describe("local-ydb agent eval runner", () => {
     "echo `docker ps`",
     "cat <(docker ps)",
     "echo $(echo $(docker ps))",
+    "echo \"$(docker ps)\"",
+    "echo \"`docker ps`\"",
   ])("fails live Docker/YDB commands through additional scanner forms: %s", (command) => {
     const result = scorePlanOnlyCommand(command);
 
@@ -1263,6 +1265,7 @@ describe("local-ydb agent eval runner", () => {
     "echo docker",
     "printf '%s\\n' ydb",
     "echo $(echo hello)",
+    "echo '$(docker ps)'",
   ])("allows commands that only mention Docker or YDB: %s", (command) => {
     const result = scorePlanOnlyCommand(command);
 
