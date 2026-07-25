@@ -42,6 +42,9 @@ export function loadCases(casesPath = defaultCasesPath) {
   if (!Array.isArray(parsed)) {
     throw new Error("Agent eval cases file must contain an array.");
   }
+  if (parsed.length === 0) {
+    throw new Error("Agent eval cases file must contain at least one case.");
+  }
   const ids = new Set();
   for (const testCase of parsed) {
     if (!testCase || typeof testCase !== "object") {
@@ -423,14 +426,16 @@ function regexMatches(text, pattern) {
 }
 
 function firstOrderFailure(actual, required) {
+  // Validate the first occurrence of each required tool: a required tool that
+  // runs before its prerequisites is unsafe even if it is repeated later.
   let previousIndex = -1;
   for (const tool of required) {
-    const index = actual.indexOf(tool, previousIndex + 1);
+    const index = actual.indexOf(tool);
     if (index === -1) {
-      if (actual.includes(tool)) {
-        return `required tools are out of order: ${required.join(" -> ")}`;
-      }
       continue;
+    }
+    if (index < previousIndex) {
+      return `required tools are out of order: ${required.join(" -> ")}`;
     }
     previousIndex = index;
   }
@@ -445,27 +450,12 @@ function requiredTermMatches(text, term) {
   if (/^[A-Za-z0-9_]+$/.test(term)) {
     return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(term)}\b`, "gi"));
   }
-  return literalTermMatches(text, term);
-}
-
-function literalTermMatches(text, term) {
-  const matches = [];
-  const haystack = text.toLowerCase();
-  const needle = term.toLowerCase();
-  let offset = 0;
-  while (offset < haystack.length) {
-    const index = haystack.indexOf(needle, offset);
-    if (index === -1) {
-      return matches;
-    }
-    matches.push({
-      text: text.slice(index, index + term.length),
-      index,
-      length: term.length,
-    });
-    offset = index + term.length;
-  }
-  return matches;
+  // Phrase terms get word-boundary edges so "gh api" does not match inside
+  // "through API". A trailing plural "s" stays allowed: "unit tests" still
+  // satisfies a required "unit test" term.
+  const leftBoundary = /^[A-Za-z0-9_]/.test(term) ? String.raw`(?<![A-Za-z0-9_])` : "";
+  const rightBoundary = /[A-Za-z0-9_]$/.test(term) ? String.raw`s?(?![A-Za-z0-9_])` : "";
+  return regexMatches(text, new RegExp(`${leftBoundary}${escapeRegExp(term)}${rightBoundary}`, "gi"));
 }
 
 function containsForbiddenTerm(text, term) {
@@ -484,7 +474,9 @@ function forbiddenTermPattern(term) {
 
 function isNegatedWarningAt(text, index) {
   const before = text.slice(Math.max(0, index - 40), index);
-  return /\b(?:no|not|never|without|avoid)\b[^.!?;\n]*$/i.test(before);
+  // Clause punctuation ends the negation scope: in "do not stop, pass X" the
+  // "not" does not govern the forbidden action after the comma.
+  return /\b(?:no|not|never|without|avoid)\b[^.!?;,\n]*$/i.test(before);
 }
 
 function escapeRegExp(value) {
