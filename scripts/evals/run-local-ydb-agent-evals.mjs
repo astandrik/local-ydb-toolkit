@@ -208,7 +208,7 @@ export function createEvalWorkspace({
     cpSync(sourceSkillDir, checkoutSkillDir, { recursive: true });
     cpSync(resolvedSchemaPath, workspaceSchemaPath);
 
-    return { codexHome, homeDir, repoRoot: checkoutRoot, schemaPath: workspaceSchemaPath, resultsDir, tempRoot: rootTemp };
+    return { codexHome, homeDir, repoRoot: checkoutRoot, schemaPath: workspaceSchemaPath, resultsDir, tempRoot: rootTemp, ownsTempRoot };
   } catch (error) {
     rmSync(resultsDir, { recursive: true, force: true });
     if (ownsTempRoot) {
@@ -416,18 +416,16 @@ function validateFinalAnswerShape(answer) {
 }
 
 function finalAnswerTextFields(answer) {
+  // task_type is a free-form metadata label, not user-facing guidance, so
+  // tool-name scans only look at the answer and safety gates.
   return [
-    answer.task_type,
     answer.answer,
     ...(Array.isArray(answer.safety_gates) ? answer.safety_gates : []),
   ].filter((value) => typeof value === "string");
 }
 
 function finalAnswerGuidanceText(answer) {
-  return [
-    answer.answer,
-    ...(Array.isArray(answer.safety_gates) ? answer.safety_gates : []),
-  ].filter((value) => typeof value === "string").join("\n");
+  return finalAnswerTextFields(answer).join("\n");
 }
 
 function containsForbiddenToolPrefix(text, prefix) {
@@ -528,6 +526,12 @@ function isNegatedWarningAt(text, index) {
   }
   const lastNegation = negations[negations.length - 1];
   const scope = before.slice(lastNegation.index + lastNegation[0].length);
+  // A negation governing a negative verb ("do not forget", "never skip",
+  // "avoid omitting") is affirmative advice about what follows, so it does
+  // not suppress the match.
+  if (/\b(?:forget|forgets|forgetting|skip|skips|skipping|omit|omits|omitting|neglect|neglects|neglecting)\b/i.test(scope)) {
+    return false;
+  }
   // Clause punctuation and coordinating conjunctions end the negation scope:
   // in "do not stop, pass X" or "do not skip the backup and pass X" the
   // "not" does not govern the forbidden action that follows.
@@ -716,8 +720,19 @@ function scanShellSegments(command) {
       quote = char;
       continue;
     }
-    if (char === ";" || char === "|" || char === "&" || char === "\n") {
+    if (char === ";" || char === "|" || char === "\n") {
       pushSegment(char === "\n");
+      continue;
+    }
+    if (char === "&") {
+      // ">&", "<&", and "&>" are redirection operators ("2>&1 cmd",
+      // "cmd &>file"), not command separators.
+      const previous = command[charIndex - 1];
+      if (previous === ">" || previous === "<" || command[charIndex + 1] === ">") {
+        current += char;
+        continue;
+      }
+      pushSegment(false);
       continue;
     }
     // "{}" is a literal word in shell (xargs/find placeholder), not a brace
@@ -774,7 +789,10 @@ function scanShellSegments(command) {
           charIndex += 1;
           continue;
         }
-        if (/[A-Za-z0-9_]/.test(markerChar)) {
+        // Unquoted delimiter text ends at whitespace or shell metacharacters;
+        // punctuation like "-" or "." stays part of the delimiter
+        // ("<<'END-JSON'" declares END-JSON).
+        if (!/[\s;|&(){}<>\\]/.test(markerChar)) {
           delimiter += markerChar;
           charIndex += 1;
           continue;
@@ -813,7 +831,7 @@ function excludeHereDocBodies(segments, segmentEndsLine) {
       continue;
     }
     for (const token of tokens) {
-      const marker = /^\u0000<<-?([A-Za-z0-9_]+)/.exec(token);
+      const marker = /^\u0000<<-?(.+)$/.exec(token);
       if (marker) {
         declared.push(marker[1]);
       }
@@ -835,6 +853,11 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
   }
   while (index < tokens.length) {
     const token = tokens[index];
+    const redirectionWidth = redirectionTokenWidth(token);
+    if (redirectionWidth > 0) {
+      index += redirectionWidth;
+      continue;
+    }
     if (isEnvironmentAssignment(token) || token.startsWith("-")) {
       index += 1;
       continue;
@@ -1015,6 +1038,15 @@ function isLiveDockerOrYdbName(name) {
 
 function isEnvironmentAssignment(token) {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+
+// A leading redirection ("2>/dev/null cmd", ">out cmd") precedes the real
+// command; a bare operator consumes the next token as its target.
+function redirectionTokenWidth(token) {
+  if (!/^(?:\d+(?=[<>])|&>|[<>])/.test(token)) {
+    return 0;
+  }
+  return /^(?:\d*(?:>>?|<|>&|&>>?))$/.test(token) ? 2 : 1;
 }
 
 export function buildCodexEnv({
@@ -1199,7 +1231,9 @@ function main() {
       process.exitCode = 1;
     }
   } finally {
-    rmSync(workspace.tempRoot, { recursive: true, force: true });
+    if (workspace.ownsTempRoot) {
+      rmSync(workspace.tempRoot, { recursive: true, force: true });
+    }
   }
 }
 
