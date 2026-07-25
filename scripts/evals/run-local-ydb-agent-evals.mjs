@@ -658,7 +658,7 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
     }
     const name = commandName(token);
     if (shellWrapperNames.has(name)) {
-      index += name === "timeout" && /^\d/.test(tokens[index + 1] ?? "") ? 2 : 1;
+      index = nextCommandIndexAfterWrapper(tokens, index, name);
       continue;
     }
     if (isLiveDockerOrYdbName(name)) {
@@ -673,6 +673,104 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
   }
   return false;
 }
+
+function nextCommandIndexAfterWrapper(tokens, index, name) {
+  let cursor = index + 1;
+  if (name === "timeout") {
+    cursor = skipOptions(tokens, cursor, timeoutOptionsWithValues);
+    return isDurationToken(tokens[cursor] ?? "") ? cursor + 1 : cursor;
+  }
+  if (name === "nice") {
+    return skipOptions(tokens, cursor, niceOptionsWithValues);
+  }
+  if (name === "sudo") {
+    return skipOptions(tokens, cursor, sudoOptionsWithValues);
+  }
+  if (name === "env") {
+    cursor = skipOptions(tokens, cursor, envOptionsWithValues);
+    while (isEnvironmentAssignment(tokens[cursor] ?? "")) {
+      cursor += 1;
+    }
+    return cursor;
+  }
+  if (name === "xargs") {
+    return skipOptions(tokens, cursor, xargsOptionsWithValues);
+  }
+  if (name === "time") {
+    return skipOptions(tokens, cursor, timeOptionsWithValues);
+  }
+  return cursor;
+}
+
+function skipOptions(tokens, index, optionsWithValues) {
+  let cursor = index;
+  while (cursor < tokens.length) {
+    const token = tokens[cursor];
+    if (token === "--") {
+      return cursor + 1;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      return cursor;
+    }
+    cursor += optionTokenWidth(token, optionsWithValues);
+  }
+  return cursor;
+}
+
+function optionTokenWidth(token, optionsWithValues) {
+  if (optionsWithValues.some((option) => token === option)) {
+    return 2;
+  }
+  return 1;
+}
+
+function isDurationToken(token) {
+  return /^\d+(?:\.\d+)?[a-z]?$/i.test(token);
+}
+
+const timeoutOptionsWithValues = ["-k", "-s", "--kill-after", "--signal"];
+const niceOptionsWithValues = ["-n", "--adjustment"];
+const sudoOptionsWithValues = [
+  "-C",
+  "-g",
+  "-h",
+  "-p",
+  "-r",
+  "-T",
+  "-t",
+  "-U",
+  "-u",
+  "--close-from",
+  "--command-timeout",
+  "--group",
+  "--host",
+  "--login-class",
+  "--prompt",
+  "--role",
+  "--type",
+  "--user",
+];
+const envOptionsWithValues = ["-C", "-S", "-u", "--chdir", "--split-string", "--unset"];
+const xargsOptionsWithValues = [
+  "-a",
+  "-d",
+  "-E",
+  "-I",
+  "-L",
+  "-l",
+  "-n",
+  "-P",
+  "-s",
+  "--arg-file",
+  "--delimiter",
+  "--eof",
+  "--max-args",
+  "--max-chars",
+  "--max-lines",
+  "--max-procs",
+  "--replace",
+];
+const timeOptionsWithValues = ["-f", "-o", "--format", "--output"];
 
 function commandName(token) {
   return token.split("/").pop() ?? token;

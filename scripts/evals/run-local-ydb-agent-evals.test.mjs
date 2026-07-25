@@ -1380,6 +1380,8 @@ describe("local-ydb agent eval runner", () => {
     "echo $(echo $(docker ps))",
     "echo \"$(docker ps)\"",
     "echo \"`docker ps`\"",
+    "nice -n 10 docker ps",
+    "timeout -k 5 10 docker ps",
   ])("fails live Docker/YDB commands through additional scanner forms: %s", (command) => {
     const result = scorePlanOnlyCommand(command);
 
