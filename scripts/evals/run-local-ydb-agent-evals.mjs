@@ -86,6 +86,18 @@ export function loadCases(casesPath = defaultCasesPath) {
       assertOptionalStringArray(testCase, field);
     }
     assertOptionalStringMap(testCase, "allowedExtraToolsBefore");
+    // Ordering constraints must reference declared tools, otherwise a typo
+    // silently disables the constraint (beforeIndex is -1 at scoring time).
+    const allowedExtraTools = new Set(testCase.expected.allowedExtraTools ?? []);
+    const requiredOrderedTools = new Set(testCase.expected.requiredOrderedTools ?? []);
+    for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
+      if (!allowedExtraTools.has(tool)) {
+        throw new Error(`Agent eval case ${testCase.id} expected.allowedExtraToolsBefore key must be listed in allowedExtraTools: ${tool}`);
+      }
+      if (!requiredOrderedTools.has(beforeTool)) {
+        throw new Error(`Agent eval case ${testCase.id} expected.allowedExtraToolsBefore target must be listed in requiredOrderedTools: ${beforeTool}`);
+      }
+    }
   }
   return parsed;
 }
@@ -660,6 +672,7 @@ function matchingParenIndex(command, openIndex) {
 
 function scanShellSegments(command) {
   const segments = [[]];
+  const segmentEndsLine = [false];
   let current = "";
   let quote;
   let escaped = false;
@@ -669,9 +682,11 @@ function scanShellSegments(command) {
       current = "";
     }
   };
-  const pushSegment = () => {
+  const pushSegment = (endsLine) => {
     pushToken();
+    segmentEndsLine[segments.length - 1] = endsLine;
     segments.push([]);
+    segmentEndsLine.push(false);
   };
   for (let charIndex = 0; charIndex < command.length; charIndex += 1) {
     const char = command[charIndex];
@@ -697,7 +712,7 @@ function scanShellSegments(command) {
       continue;
     }
     if (char === ";" || char === "|" || char === "&" || char === "\n") {
-      pushSegment();
+      pushSegment(char === "\n");
       continue;
     }
     // "{}" is a literal word in shell (xargs/find placeholder), not a brace
@@ -721,7 +736,37 @@ function scanShellSegments(command) {
     current += char;
   }
   pushToken();
-  return segments.filter((segment) => segment.length > 0);
+  return excludeHereDocBodies(segments, segmentEndsLine).filter((segment) => segment.length > 0);
+}
+
+// Here-document bodies are standard-input data, not commands: every line
+// after the line that declares "<<MARKER" is skipped up to the delimiter
+// line. The body only starts after a newline, so "cat <<EOF; docker ps"
+// still scans the docker command on the same line.
+function excludeHereDocBodies(segments, segmentEndsLine) {
+  const keep = new Array(segments.length).fill(true);
+  const declared = [];
+  let bodies = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    const tokens = segments[index];
+    if (bodies.length > 0) {
+      keep[index] = false;
+      if (tokens.length === 1 && tokens[0] === bodies[0]) {
+        bodies.shift();
+      }
+      continue;
+    }
+    for (const token of tokens) {
+      const marker = /^<<-?([A-Za-z0-9_]+)/.exec(token);
+      if (marker) {
+        declared.push(marker[1]);
+      }
+    }
+    if (segmentEndsLine[index] && declared.length > 0) {
+      bodies = declared.splice(0);
+    }
+  }
+  return segments.filter((_, index) => keep[index]);
 }
 
 function tokensInvokeLiveDockerOrYdb(tokens) {
@@ -749,6 +794,14 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
       return invokesLiveDockerOrYdb(tokens.slice(index + 1).join(" "));
     }
     if (shellWrapperNames.has(name)) {
+      if (name === "env") {
+        // env -S/--split-string splits its payload into the command to run,
+        // so the payload itself must be scanned as shell.
+        const splitString = envSplitStringPayload(tokens, index);
+        if (splitString !== undefined && invokesLiveDockerOrYdb(splitString)) {
+          return true;
+        }
+      }
       index = nextCommandIndexAfterWrapper(tokens, index, name);
       continue;
     }
@@ -816,6 +869,30 @@ function skipOptions(tokens, index, optionsWithValues) {
   return cursor;
 }
 
+function envSplitStringPayload(tokens, index) {
+  let cursor = index + 1;
+  while (cursor < tokens.length) {
+    const token = tokens[cursor];
+    if (token === "--") {
+      return undefined;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      return undefined;
+    }
+    if (token === "-S" || token === "--split-string") {
+      return tokens[cursor + 1];
+    }
+    if (token.startsWith("--split-string=")) {
+      return token.slice("--split-string=".length);
+    }
+    if (token.startsWith("-S") && !token.startsWith("--")) {
+      return token.slice(2);
+    }
+    cursor += optionTokenWidth(token, envOptionsWithValues);
+  }
+  return undefined;
+}
+
 function optionTokenWidth(token, optionsWithValues) {
   if (optionsWithValues.some((option) => token === option)) {
     return 2;
@@ -850,22 +927,22 @@ const sudoOptionsWithValues = [
   "--user",
 ];
 const envOptionsWithValues = ["-C", "-S", "-u", "--chdir", "--split-string", "--unset"];
+// GNU xargs takes -l, --max-lines, and --eof with an optional ATTACHED
+// argument only ("-l5", "--eof=EOF"); a separate token after them is the
+// command to run, so they must not consume the next token here.
 const xargsOptionsWithValues = [
   "-a",
   "-d",
   "-E",
   "-I",
   "-L",
-  "-l",
   "-n",
   "-P",
   "-s",
   "--arg-file",
   "--delimiter",
-  "--eof",
   "--max-args",
   "--max-chars",
-  "--max-lines",
   "--max-procs",
   "--replace",
 ];
