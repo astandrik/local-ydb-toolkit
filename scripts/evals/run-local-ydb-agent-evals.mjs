@@ -79,8 +79,8 @@ function assertOptionalStringArray(testCase, field) {
   if (value === undefined) {
     return;
   }
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an array of strings.`);
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0)) {
+    throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an array of non-empty strings.`);
   }
 }
 
@@ -239,6 +239,9 @@ export function scoreCase(testCase, events, options = {}) {
         if (!allowedTools.has(tool)) {
           failures.push(`unexpected tool present: ${tool}`);
         }
+      }
+      for (const tool of unexpectedAnswerTools(answerText, allowedTools)) {
+        failures.push(`unexpected tool recommended in answer text: ${tool}`);
       }
     }
     for (const tool of testCase.expected.requiredOrderedTools ?? []) {
@@ -401,6 +404,17 @@ function containsForbiddenToolPrefix(text, prefix) {
   return toolPrefixMatches(text, prefix).some((match) => !isNegatedWarningAt(text, match.index));
 }
 
+function unexpectedAnswerTools(text, allowedTools) {
+  const unexpected = new Set();
+  for (const match of text.matchAll(/\blocal_ydb_[a-z0-9_]+\b/g)) {
+    const tool = match[0];
+    if (!allowedTools.has(tool) && !isNegatedWarningAt(text, match.index ?? 0)) {
+      unexpected.add(tool);
+    }
+  }
+  return [...unexpected];
+}
+
 function containsForbiddenToolName(text, tool) {
   return exactToolMatches(text, tool).some((match) => !isNegatedWarningAt(text, match.index));
 }
@@ -523,6 +537,7 @@ const shellControlWords = new Set([
   "select",
   "function",
   "!",
+  ")",
 ]);
 
 export function invokesLiveDockerOrYdb(command) {
@@ -673,7 +688,14 @@ function scanShellSegments(command) {
       charIndex += 1;
       continue;
     }
-    if (/\s/.test(char) || char === "(" || char === ")" || char === "{" || char === "}") {
+    // A ")" closes a case pattern or a function name; keep it as a token so
+    // the scanner can resume at the real command that follows it.
+    if (char === ")") {
+      pushToken();
+      segments[segments.length - 1].push(")");
+      continue;
+    }
+    if (/\s/.test(char) || char === "(" || char === "{" || char === "}") {
       pushToken();
       continue;
     }
@@ -685,6 +707,12 @@ function scanShellSegments(command) {
 
 function tokensInvokeLiveDockerOrYdb(tokens) {
   let index = 0;
+  // Case-arm patterns and function names precede the first ")" token; the
+  // real command follows it ("foo) docker stop;;", "f() { ydb ...; }").
+  const closeParen = tokens.indexOf(")");
+  if (closeParen !== -1 && closeParen < tokens.length - 1) {
+    index = closeParen + 1;
+  }
   while (index < tokens.length) {
     const token = tokens[index];
     if (isEnvironmentAssignment(token) || token.startsWith("-")) {
