@@ -1390,6 +1390,33 @@ describe("local-ydb agent eval runner", () => {
   });
 
   it.each([
+    "nice --adjustment 10 docker ps",
+    "timeout -k 5s 10 docker ps",
+    "sudo -u root docker stop local-ydb",
+    "sudo --user root docker ps",
+    "env -u FOO docker ps",
+    "env --unset FOO docker ps",
+    "time -o out.txt docker ps",
+    "exec -a ydb docker ps",
+    "xargs -I {} docker inspect {}",
+  ])("fails live Docker/YDB commands behind wrapper option arguments: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain(`trace contains live Docker/YDB command: ${command}`);
+  });
+
+  it.each([
+    "sudo systemctl status docker",
+    "nice -n 10 echo hello",
+    "timeout 5 curl example.com",
+  ])("allows non-Docker/YDB commands behind wrappers: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
     "echo docker",
     "printf '%s\\n' ydb",
     "echo $(echo hello)",
