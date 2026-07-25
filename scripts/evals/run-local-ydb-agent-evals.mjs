@@ -474,9 +474,16 @@ function forbiddenTermPattern(term) {
 
 function isNegatedWarningAt(text, index) {
   const before = text.slice(Math.max(0, index - 40), index);
-  // Clause punctuation ends the negation scope: in "do not stop, pass X" the
-  // "not" does not govern the forbidden action after the comma.
-  return /\b(?:no|not|never|without|avoid)\b[^.!?;,\n]*$/i.test(before);
+  const negations = [...before.matchAll(/\b(?:no|not|never|without|avoid)\b/gi)];
+  if (negations.length === 0) {
+    return false;
+  }
+  const lastNegation = negations[negations.length - 1];
+  const scope = before.slice(lastNegation.index + lastNegation[0].length);
+  // Clause punctuation and coordinating conjunctions end the negation scope:
+  // in "do not stop, pass X" or "do not skip the backup and pass X" the
+  // "not" does not govern the forbidden action that follows.
+  return !/[.!?;,\n]|\b(?:and|or|but)\b/i.test(scope);
 }
 
 function escapeRegExp(value) {
@@ -497,6 +504,26 @@ const shellWrapperNames = new Set([
   "xargs",
 ]);
 const shellCommandNames = new Set(["bash", "sh", "zsh"]);
+// Shell grammar keywords that can precede the real command in compound
+// commands ("if ...; then docker stop x; fi", "for f in ...; do ...; done").
+const shellControlWords = new Set([
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "for",
+  "while",
+  "until",
+  "do",
+  "done",
+  "case",
+  "esac",
+  "in",
+  "select",
+  "function",
+  "!",
+]);
 
 export function invokesLiveDockerOrYdb(command) {
   return scanForLiveDockerOrYdb(command, 0);
@@ -612,7 +639,8 @@ function scanShellSegments(command) {
     pushToken();
     segments.push([]);
   };
-  for (const char of command) {
+  for (let charIndex = 0; charIndex < command.length; charIndex += 1) {
+    const char = command[charIndex];
     if (escaped) {
       current += char;
       escaped = false;
@@ -638,7 +666,14 @@ function scanShellSegments(command) {
       pushSegment();
       continue;
     }
-    if (/\s/.test(char)) {
+    // "{}" is a literal word in shell (xargs/find placeholder), not a brace
+    // group, so it must survive as a token instead of becoming a delimiter.
+    if (char === "{" && command[charIndex + 1] === "}") {
+      current += "{}";
+      charIndex += 1;
+      continue;
+    }
+    if (/\s/.test(char) || char === "(" || char === ")" || char === "{" || char === "}") {
       pushToken();
       continue;
     }
@@ -657,6 +692,10 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
       continue;
     }
     const name = commandName(token);
+    if (shellControlWords.has(name)) {
+      index += 1;
+      continue;
+    }
     if (shellWrapperNames.has(name)) {
       index = nextCommandIndexAfterWrapper(tokens, index, name);
       continue;
@@ -895,7 +934,7 @@ export function parseArgs(argv) {
 
 function requiredOptionValue(argv, index, flag, placeholder) {
   const value = argv[index + 1];
-  if (!value || value.startsWith("--")) {
+  if (!value || value.startsWith("-")) {
     throw new Error(`${flag} requires ${placeholder}`);
   }
   return value;
