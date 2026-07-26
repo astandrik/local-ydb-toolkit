@@ -539,15 +539,66 @@ function firstOrderFailure(actual, required) {
 // and other indirection are out of scope — the threat model is an agent
 // that accidentally runs a direct command, and structured MCP tool calls in
 // the trace remain the authoritative gate for local-ydb mutations.
+
+// sudo options that consume the following token as their value (sudo(8)).
+// Attached forms (-uroot, --user=root) are single tokens and need no skip.
+const sudoValueOptions = new Set([
+  "-C",
+  "-D",
+  "-g",
+  "-h",
+  "-p",
+  "-r",
+  "-T",
+  "-t",
+  "-u",
+  "--chdir",
+  "--close-from",
+  "--group",
+  "--host",
+  "--login-class",
+  "--prompt",
+  "--role",
+  "--type",
+  "--user",
+]);
+
+// Returns the command tokens after an optional sudo prefix, consuming sudo's
+// option tokens and the `--` separator. Unknown options are skipped without
+// a value, so an exotic value-taking option can still hide a command — that
+// residual miss is accepted by the tripwire contract.
+function tokensAfterSudo(segment) {
+  const tokens = segment.trim().split(/\s+/);
+  if (tokens[0] !== "sudo") {
+    return tokens;
+  }
+  let index = 1;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    index += 1;
+    if (sudoValueOptions.has(token) && index < tokens.length) {
+      index += 1;
+    }
+  }
+  return tokens.slice(index);
+}
+
 export function invokesLiveDockerOrYdb(command) {
   return String(command)
     .split(/[\n;|&]+/)
     .some((segment) => {
-      const match = /^\s*(?:sudo\s+)?(\S+)/.exec(segment);
-      if (!match) {
+      const executableToken = tokensAfterSudo(segment)[0];
+      if (!executableToken) {
         return false;
       }
-      const executable = match[1].replace(/^["']+|["']+$/g, "");
+      const executable = executableToken.replace(/^["']+|["']+$/g, "");
       const name = executable.slice(executable.lastIndexOf("/") + 1);
       return /^(?:docker|ydbd?)$/.test(name);
     });
