@@ -3138,6 +3138,68 @@ describe("local-ydb agent eval runner", () => {
     expect(result.failures).toEqual([]);
   });
 
+  it.each([
+    "bash <<'EOF'\ndocker stop local-ydb\nEOF",
+    "sh <<EOF\nydb scheme ls\nEOF",
+    "sudo bash <<'EOF'\ndocker stop local-ydb\nEOF",
+  ])("fails here-doc scripts consumed by shell interpreters: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain(`trace contains live Docker/YDB command: ${command}`);
+  });
+
+  it.each([
+    "cat <<EOF\ndocker stop local-ydb\nEOF",
+    "bash run.sh <<EOF\ndocker stop local-ydb\nEOF",
+  ])("allows here-doc bodies that are not shell scripts: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    "printf '%s\\n' 'docker stop local-ydb' | bash",
+    "printf 'docker stop local-ydb' | bash",
+    "printf '%s %s' docker stop | sh",
+    "printf 'docker stop local-ydb' |& bash",
+  ])("fails printf output piped into shell interpreters: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain(`trace contains live Docker/YDB command: ${command}`);
+  });
+
+  it.each([
+    "printf '%s' hi | bash",
+    "printf 'docker stop local-ydb' || bash",
+    "echo docker ps || sh",
+  ])("allows printf/echo forms that never feed a script to a shell: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    "command -v docker",
+    "command -V ydb",
+    "command -pv docker",
+  ])("allows command lookup flags without execution: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    "command docker ps",
+    "command -p docker ps",
+  ])("fails live Docker/YDB commands behind command pass-through: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain(`trace contains live Docker/YDB command: ${command}`);
+  });
+
   it("builds read-only codex exec args with schema-constrained final output", () => {
     const args = buildCodexArgs({
       repoRoot: "/repo",
