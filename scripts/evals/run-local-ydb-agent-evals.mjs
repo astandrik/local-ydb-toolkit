@@ -626,8 +626,8 @@ function scanForLiveDockerOrYdb(command, depth) {
     if (!pipeInto[index] || !bareStdinShellCommand(segments[index])) {
       continue;
     }
-    const payload = echoLikeStdoutPayload(segments[index - 1]);
-    if (payload !== undefined && scanForLiveDockerOrYdb(payload, depth + 1)) {
+    const payloads = echoLikeStdoutPayloads(segments[index - 1]);
+    if (payloads.some((payload) => scanForLiveDockerOrYdb(payload, depth + 1))) {
       return true;
     }
   }
@@ -683,8 +683,11 @@ function bareStdinShellCommand(tokens) {
 
 // The stdout of echo/printf is its argument text, so a pipeline like
 // "echo docker stop x | bash" hands that text to the consumer as a script.
-// Other producers generate output statically unknowable; skip them.
-function echoLikeStdoutPayload(tokens) {
+// printf renders its first operand as the format and the rest as data, so
+// the format and the argument payload are scanned separately ("%s\n" is not
+// part of the executed script). Other producers generate output statically
+// unknowable and return no payloads.
+function echoLikeStdoutPayloads(tokens) {
   let index = 0;
   while (index < tokens.length) {
     const token = tokens[index];
@@ -707,7 +710,7 @@ function echoLikeStdoutPayload(tokens) {
       continue;
     }
     if (name !== "echo" && name !== "printf") {
-      return undefined;
+      return [];
     }
     const words = [];
     for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
@@ -721,9 +724,12 @@ function echoLikeStdoutPayload(tokens) {
       }
       words.push(argument);
     }
-    return words.join(" ");
+    if (name === "printf" && words.length > 0) {
+      return [words[0], words.slice(1).join(" ")];
+    }
+    return [words.join(" ")];
   }
-  return undefined;
+  return [];
 }
 
 function commandSubstitutionBodies(command) {
@@ -855,8 +861,22 @@ function scanShellSegments(command) {
       quote = char;
       continue;
     }
-    if (char === ";" || char === "|" || char === "\n") {
-      pushSegment(char === "\n", char === "|");
+    if (char === "|") {
+      if (command[charIndex + 1] === "|") {
+        // "||" is logical OR (sequencing), not a pipeline.
+        pushSegment(false);
+        charIndex += 1;
+        continue;
+      }
+      // "|&" pipes standard output and standard error together.
+      pushSegment(false, true);
+      if (command[charIndex + 1] === "&") {
+        charIndex += 1;
+      }
+      continue;
+    }
+    if (char === ";" || char === "\n") {
+      pushSegment(char === "\n");
       continue;
     }
     if (char === "&") {
@@ -959,10 +979,14 @@ function excludeHereDocBodies(segments, segmentEndsLine, segmentStartsWithPipe) 
   for (let index = 0; index < segments.length; index += 1) {
     const tokens = segments[index];
     if (bodies.length > 0) {
-      keep[index] = false;
-      if (tokens.length === 1 && tokens[0] === bodies[0]) {
+      if (tokens.length === 1 && tokens[0] === bodies[0].delimiter) {
+        keep[index] = false;
         bodies.shift();
+        continue;
       }
+      // A here-doc feeding a bare shell interpreter is its script, not data:
+      // "bash <<EOF\ndocker stop x\nEOF" makes Bash execute the body.
+      keep[index] = bodies[0].scan;
       continue;
     }
     for (const token of tokens) {
@@ -972,7 +996,9 @@ function excludeHereDocBodies(segments, segmentEndsLine, segmentStartsWithPipe) 
       }
     }
     if (segmentEndsLine[index] && declared.length > 0) {
-      bodies = declared.splice(0);
+      const consumerTokens = tokens.filter((token) => token.charCodeAt(0) !== 0);
+      const scan = bareStdinShellCommand(consumerTokens);
+      bodies = declared.splice(0).map((delimiter) => ({ delimiter, scan }));
     }
   }
   const keptSegments = [];
@@ -1016,6 +1042,19 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
       return invokesLiveDockerOrYdb(tokens.slice(index + 1).join(" "));
     }
     if (shellWrapperNames.has(name)) {
+      if (name === "command") {
+        // command -v/-V only prints a description of the named executable;
+        // nothing runs, so "command -v docker" is a lookup, not a call.
+        let lookupOnly = false;
+        for (let cursor = index + 1; cursor < tokens.length && tokens[cursor].startsWith("-"); cursor += 1) {
+          if (/^-[a-zA-Z]*[vV][a-zA-Z]*$/.test(tokens[cursor])) {
+            lookupOnly = true;
+          }
+        }
+        if (lookupOnly) {
+          return false;
+        }
+      }
       if (name === "env") {
         // env -S/--split-string splits its payload into the command to run,
         // so the payload itself must be scanned as shell.
