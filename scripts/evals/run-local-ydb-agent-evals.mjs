@@ -623,7 +623,11 @@ function forbiddenTermPattern(term) {
   // "confirm=true" forbidden term by spelling the gate out in words.
   const separator = "[\\s`\"':=]*(?:(?:to|as|of|with|a|an|the|value|flag|set)\\b[\\s`\"':=]*){0,4}";
   const flexible = escapeRegExp(String(term)).replace(/[\s`"':=]+/g, separator);
-  return new RegExp(flexible, "gi");
+  // Identifier edges are word-guarded like required terms, so "reconfirm=true"
+  // or "confirm=trueish" do not match a "confirm=true" forbidden term.
+  const leftBoundary = /^[A-Za-z0-9_]/.test(term) ? String.raw`(?<![A-Za-z0-9_])` : "";
+  const rightBoundary = /[A-Za-z0-9_]$/.test(term) ? String.raw`(?![A-Za-z0-9_])` : "";
+  return new RegExp(`${leftBoundary}${flexible}${rightBoundary}`, "gi");
 }
 
 function isNegatedWarningAt(text, index) {
@@ -1147,6 +1151,14 @@ function scanShellSegments(command) {
           charIndex += 1;
           continue;
         }
+        // Bash quote removal applies to the delimiter word, so a
+        // backslash-quoted character stays part of the delimiter
+        // ("<<E\OF" declares EOF).
+        if (markerChar === "\\" && charIndex + 1 < command.length) {
+          delimiter += command[charIndex + 1];
+          charIndex += 2;
+          continue;
+        }
         // Unquoted delimiter text ends at whitespace or shell metacharacters;
         // punctuation like "-" or "." stays part of the delimiter
         // ("<<'END-JSON'" declares END-JSON).
@@ -1299,6 +1311,19 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
       }
       return typeof script === "string" && invokesLiveDockerOrYdb(script);
     }
+    const runtimePayloadFlags = scriptRuntimePayloadFlags(name);
+    if (runtimePayloadFlags !== undefined) {
+      // Inline program payloads ("python -c '...'", "node -e '...'") execute
+      // arbitrary code, so conservatively flag payloads that mention a live
+      // executable, even when the mention is only a printed string
+      // (fail-closed).
+      const flagIndex = tokens.findIndex((candidate, cursor) => cursor > index && runtimePayloadFlags.has(candidate));
+      if (flagIndex === -1) {
+        return false;
+      }
+      const payload = tokens[flagIndex + 1];
+      return typeof payload === "string" && /\b(?:docker|ydbd?)\b/i.test(payload);
+    }
     if (name === "find") {
       // find -exec/-execdir/-ok/-okdir run their payload as a command, so
       // "find /tmp -exec docker stop x \;" must be scanned like xargs.
@@ -1318,8 +1343,14 @@ function positionalExpansionKind(script) {
   }
   const { segments } = scanShellSegments(script);
   // "${@}" tokenizes as "$", "@" because braces are word delimiters, so
-  // compare the reassembled words of an expansion-only script.
-  const joined = segments.length === 1 ? segments[0].join("") : "";
+  // compare the reassembled words of an expansion-only script. Pass-through
+  // prefixes are stripped first: 'exec "$@"' and 'command $*' still expand
+  // the positional arguments into the executed command line.
+  const words = segments.length === 1 ? [...segments[0]] : [];
+  while (words[0] === "exec" || words[0] === "command") {
+    words.shift();
+  }
+  const joined = words.join("");
   if (/^\$(?:@|\*|\{@\}|\{\*\})$/.test(joined)) {
     return "args";
   }
@@ -1516,6 +1547,17 @@ function commandName(token) {
 
 function isLiveDockerOrYdbName(name) {
   return /^(?:docker|ydbd?)$/.test(name);
+}
+
+const pythonPayloadFlags = new Set(["-c"]);
+const evalPayloadFlags = new Set(["-e"]);
+
+// Inline-code flags for known scripting runtimes: python -c, node/ruby/perl -e.
+function scriptRuntimePayloadFlags(name) {
+  if (/^python[0-9.]*$/.test(name)) {
+    return pythonPayloadFlags;
+  }
+  return name === "node" || name === "ruby" || name === "perl" ? evalPayloadFlags : undefined;
 }
 
 function isEnvironmentAssignment(token) {
