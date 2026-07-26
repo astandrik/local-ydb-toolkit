@@ -450,12 +450,11 @@ describe("createEvalWorkspace", () => {
           "utf8",
         ),
       ).toBe("skill\n");
+      // The skill must be installed into exactly one discovery root so
+      // current Codex CLI versions advertise a single local-ydb entry.
       expect(
-        readFileSync(
-          join(workspace.homeDir, ".agents", "skills", "local-ydb", "SKILL.md"),
-          "utf8",
-        ),
-      ).toBe("skill\n");
+        existsSync(join(workspace.homeDir, ".agents", "skills")),
+      ).toBe(false);
       expect(
         readFileSync(
           join(workspace.repoRoot, "skills", "local-ydb", "SKILL.md"),
