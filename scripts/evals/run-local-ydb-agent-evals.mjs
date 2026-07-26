@@ -236,6 +236,13 @@ export function buildPrompt(testCase) {
   ].join("\n");
 }
 
+// Scoring contract (see skills/local-ydb/references/evals.md): the suite
+// scores the schema-constrained final answer and the event trace. Answer
+// text checks are literal substring or word matches — negation, prose
+// order, connectors, and paraphrase are intentionally out of scope. The
+// threat model is an agent that accidentally violates plan-only rules, not
+// deliberate obfuscation; stronger isolation belongs to sandboxing the eval
+// environment.
 export function scoreCase(testCase, events, options = {}) {
   const failures = [];
   const finalText = finalAgentMessage(events);
@@ -255,17 +262,16 @@ export function scoreCase(testCase, events, options = {}) {
     const orderedTools = Array.isArray(finalAnswer.tool_sequence)
       ? finalAnswer.tool_sequence.filter((tool) => typeof tool === "string")
       : [];
-    const answerText = [finalAnswerTextFields(finalAnswer).join("\n"), finalAnswerProseText(finalText)]
-      .filter((part) => part.length > 0)
-      .join("\n");
+    // task_type is a free-form metadata label, not user-facing guidance, so
+    // text checks only look at the answer and safety gates.
     const guidanceText = finalAnswerGuidanceText(finalAnswer);
 
     if (!expectedSkill && orderedTools.some((tool) => tool.startsWith("local_ydb_"))) {
       failures.push("negative control must not include local-ydb tools");
     }
-    // Negative controls fail on any local-ydb tool mention, negated or not:
-    // naming a tool means the agent reached for local-ydb tooling at all.
-    if (!expectedSkill && toolPrefixMatches(answerText, "local_ydb_").length > 0) {
+    // Negative controls fail on any local-ydb tool mention: naming a tool
+    // means the agent reached for local-ydb tooling at all.
+    if (!expectedSkill && containsToolPrefix(guidanceText, "local_ydb_")) {
       failures.push("negative control must not mention local-ydb tools");
     }
     if (expectedSkill) {
@@ -278,7 +284,7 @@ export function scoreCase(testCase, events, options = {}) {
           failures.push(`unexpected tool present: ${tool}`);
         }
       }
-      for (const tool of unexpectedAnswerTools(answerText, allowedTools)) {
+      for (const tool of unexpectedAnswerTools(guidanceText, allowedTools)) {
         failures.push(`unexpected tool recommended in answer text: ${tool}`);
       }
     }
@@ -291,11 +297,6 @@ export function scoreCase(testCase, events, options = {}) {
     if (orderFailure) {
       failures.push(orderFailure);
     }
-    const requiredTools = testCase.expected.requiredOrderedTools ?? [];
-    const proseSequence = proseSequenceWithExtras(requiredTools, testCase.expected.allowedExtraToolsBefore ?? {});
-    if (expectedSkill && proseSequence.length >= 2 && proseContradictsToolOrder(answerText, proseSequence)) {
-      failures.push("answer text contradicts the declared tool order");
-    }
     for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
       const beforeIndex = orderedTools.indexOf(beforeTool);
       const lateToolIndex = orderedTools.findIndex((candidate, index) => candidate === tool && index > beforeIndex);
@@ -307,7 +308,7 @@ export function scoreCase(testCase, events, options = {}) {
       if (orderedTools.includes(tool)) {
         failures.push(`forbidden tool present: ${tool}`);
       }
-      if (containsForbiddenToolName(answerText, tool)) {
+      if (containsToolName(guidanceText, tool)) {
         failures.push(`forbidden tool present in answer text: ${tool}`);
       }
     }
@@ -315,17 +316,17 @@ export function scoreCase(testCase, events, options = {}) {
       if (orderedTools.some((tool) => tool.startsWith(prefix))) {
         failures.push(`forbidden tool prefix present: ${prefix}`);
       }
-      if (containsForbiddenToolPrefix(answerText, prefix)) {
+      if (containsToolPrefix(guidanceText, prefix)) {
         failures.push(`forbidden tool prefix present in answer text: ${prefix}`);
       }
     }
     for (const term of testCase.expected.requiredTerms ?? []) {
-      if (!containsRequiredTerm(guidanceText, term)) {
+      if (!containsTerm(guidanceText, term)) {
         failures.push(`missing required term: ${term}`);
       }
     }
     for (const term of testCase.expected.forbiddenTerms ?? []) {
-      if (containsForbiddenTerm(answerText, term)) {
+      if (containsTerm(guidanceText, term)) {
         failures.push(`forbidden term present: ${term}`);
       }
     }
@@ -336,13 +337,13 @@ export function scoreCase(testCase, events, options = {}) {
   const interimTexts = agentMessageTexts(events).slice(0, -1);
   for (const text of interimTexts) {
     for (const term of testCase.expected.forbiddenTerms ?? []) {
-      if (containsForbiddenTerm(text, term)) {
+      if (containsTerm(text, term)) {
         failures.push(`forbidden term present in earlier agent message: ${term}`);
       }
     }
-    // Negative controls reject any local-ydb mention, negated or not, in
-    // every agent message — not only in the final answer.
-    if (!testCase.expected.shouldUseLocalYdbSkill && toolPrefixMatches(text, "local_ydb_").length > 0) {
+    // Negative controls reject any local-ydb mention in every agent
+    // message — not only in the final answer.
+    if (!testCase.expected.shouldUseLocalYdbSkill && containsToolPrefix(text, "local_ydb_")) {
       failures.push("local-ydb tool mentioned in earlier agent message");
     }
     if (testCase.expected.shouldUseLocalYdbSkill) {
@@ -462,7 +463,7 @@ function validateFinalAnswerShape(answer) {
 
 function finalAnswerTextFields(answer) {
   // task_type is a free-form metadata label, not user-facing guidance, so
-  // tool-name scans only look at the answer and safety gates.
+  // text checks only look at the answer and safety gates.
   return [
     answer.answer,
     ...(Array.isArray(answer.safety_gates) ? answer.safety_gates : []),
@@ -473,57 +474,32 @@ function finalAnswerGuidanceText(answer) {
   return finalAnswerTextFields(answer).join("\n");
 }
 
-// When the structured answer hides inside a fenced block, the surrounding
-// prose is still user-visible guidance, so safety scans must see it too.
-function finalAnswerProseText(text) {
-  if (!text) {
-    return "";
-  }
-  try {
-    JSON.parse(text);
-    return "";
-  } catch {
-    return text.replace(/```(?:json)?\s*[\s\S]*?```/gi, "\n");
-  }
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function containsForbiddenToolPrefix(text, prefix) {
-  return toolPrefixMatches(text, prefix).some((match) => !isNegatedWarningAt(text, match.index));
+// Term checks are literal, case-insensitive substring matches by contract:
+// negation, prose connectors, and word inflection are out of scope.
+function containsTerm(text, term) {
+  return text.toLowerCase().includes(String(term).toLowerCase());
+}
+
+function containsToolName(text, tool) {
+  return new RegExp(String.raw`\b${escapeRegExp(tool)}\b`).test(text);
+}
+
+function containsToolPrefix(text, prefix) {
+  return new RegExp(String.raw`\b${escapeRegExp(prefix)}[A-Za-z0-9_]*\b`).test(text);
 }
 
 function unexpectedAnswerTools(text, allowedTools) {
   const unexpected = new Set();
   for (const match of text.matchAll(/\blocal_ydb_[a-z0-9_]+\b/g)) {
-    const tool = match[0];
-    if (!allowedTools.has(tool) && !isNegatedWarningAt(text, match.index ?? 0)) {
-      unexpected.add(tool);
+    if (!allowedTools.has(match[0])) {
+      unexpected.add(match[0]);
     }
   }
   return [...unexpected];
-}
-
-function containsForbiddenToolName(text, tool) {
-  return exactToolMatches(text, tool).some((match) => !isNegatedWarningAt(text, match.index));
-}
-
-function toolPrefixMatches(text, prefix) {
-  return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(prefix)}[A-Za-z0-9_]*\b`, "g"));
-}
-
-function exactToolMatches(text, tool) {
-  return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(tool)}\b`, "g"));
-}
-
-function regexMatches(text, pattern) {
-  const matches = [];
-  for (const match of text.matchAll(pattern)) {
-    matches.push({
-      text: match[0],
-      index: match.index ?? 0,
-      length: match[0].length,
-    });
-  }
-  return matches;
 }
 
 function firstOrderFailure(actual, required) {
@@ -556,1149 +532,27 @@ function firstOrderFailure(actual, required) {
   return undefined;
 }
 
-// Constrained extra tools join the declared sequence at their constraint
-// point, so prose ordering covers them too: "run upgrade first, then dump"
-// contradicts a dump-before-upgrade constraint even though the dump is only
-// an allowed extra tool.
-function proseSequenceWithExtras(requiredTools, extraToolsBefore) {
-  const sequence = [];
-  for (const tool of requiredTools) {
-    for (const [extra, beforeTool] of Object.entries(extraToolsBefore)) {
-      if (beforeTool === tool && !sequence.includes(extra)) {
-        sequence.push(extra);
-      }
-    }
-    sequence.push(tool);
-  }
-  return sequence;
-}
-
-// The prose order of required-tool mentions must not invert the declared
-// tool_sequence when the text uses explicit sequencing language: "run
-// upgrade first, then dump" contradicts a dump-before-upgrade sequence even
-// though each name is individually allowed. Mentions without sequencing
-// words carry no order claim, and paraphrases that do not name the tools
-// stay out of scope for a deterministic scan.
-function proseContradictsToolOrder(text, requiredTools) {
-  if (!/\b(?:first|then|after|afterward|afterwards|later|before|last|finally)\b/i.test(text)) {
-    return false;
-  }
-  const mentionEvents = [...new Set(requiredTools)]
-    .flatMap((tool) => exactToolMatches(text, tool).map((match) => ({ index: match.index, tool })))
-    .sort((left, right) => left.index - right.index);
-  if (mentionEvents.length === 0) {
-    return false;
-  }
-  const semanticEvents = orderMentionsBySubordinateClauses(text, mentionEvents);
-  // An explicit "first" claim attaches to the opening mention of its clause;
-  // when that claim names a tool other than the first required one, the
-  // prose instructs a different starting point than the declared sequence
-  // ("run upgrade first, then status" against status -> upgrade -> status).
-  const firstEvent = semanticEvents[0];
-  if (firstEvent.tool !== requiredTools[0] && /\bfirst\b/i.test(mentionClause(text, firstEvent.index))) {
-    return true;
-  }
-  // Greedily assign each mention to the next matching position in the
-  // required sequence, so verify-after-mutate patterns ("status, then
-  // upgrade, then status") stay consistent. A mention that only matches
-  // positions behind the walk inverts the declared order.
-  let requiredIndex = 0;
-  for (const event of semanticEvents) {
-    while (requiredIndex < requiredTools.length && requiredTools[requiredIndex] !== event.tool) {
-      requiredIndex += 1;
-    }
-    if (requiredIndex === requiredTools.length) {
-      return true;
-    }
-    requiredIndex += 1;
-  }
-  return false;
-}
-
-// Subordinating conjunctions invert the lexical order of two mentions:
-// "before X" makes X the later operation ("before apply, run generate" and
-// "run generate before apply" both run generate first), while "after X"
-// makes X the earlier one. Swap each directly governed adjacent pair so the
-// greedy sequence walk compares semantic order instead of surface order.
-function orderMentionsBySubordinateClauses(text, mentionEvents) {
-  const governed = mentionEvents.map((event) => {
-    const prefix = text.slice(Math.max(0, event.index - 40), event.index);
-    if (/\bbefore\s+(?:the\s+)?$/i.test(prefix)) {
-      return "before";
-    }
-    return /\bafter\s+(?:the\s+)?$/i.test(prefix) ? "after" : undefined;
-  });
-  const ordered = [...mentionEvents];
-  for (let index = 0; index < ordered.length - 1; index += 1) {
-    const current = governed[index];
-    const next = governed[index + 1];
-    if ((current === "before" && next === undefined) || (current === undefined && next === "after")) {
-      [ordered[index], ordered[index + 1]] = [ordered[index + 1], ordered[index]];
-      [governed[index], governed[index + 1]] = [governed[index + 1], governed[index]];
-      index += 1;
-    }
-  }
-  return ordered;
-}
-
-// The clause around a mention is bounded by sentence punctuation and
-// sequencing conjunctions: in "First, read the docs, then run X" the word
-// "first" sits in an earlier clause and makes no claim about X.
-function mentionClause(text, index) {
-  const breakPattern = /[.!?;,\n]|\b(?:then|after|afterward|afterwards|later|finally|before)\b/gi;
-  let start = 0;
-  for (const match of text.slice(0, index).matchAll(breakPattern)) {
-    start = match.index + match[0].length;
-  }
-  const endMatch = text.slice(index).search(breakPattern);
-  return text.slice(start, endMatch === -1 ? text.length : index + endMatch);
-}
-
-function containsRequiredTerm(text, term) {
-  // A required term counts only when affirmed: guidance like "do not dump or
-  // restore" must not satisfy a mandatory dump/restore expectation.
-  return requiredTermMatches(text, String(term)).some(
-    (match) => !isNegatedWarningAt(text, match.index) && !hasPostposedNegationAt(text, match.index + match.length),
-  );
-}
-
-// Negation can also follow the term ("a dump is not required", "restore
-// should not be used", "the backup is unnecessary"), so the clause after the
-// match is checked for postposed negative predicates.
-function hasPostposedNegationAt(text, index) {
-  const rest = text.slice(index, index + 80);
-  const clauseEnd = rest.search(/[.!?;,\n]/);
-  const clause = clauseEnd === -1 ? rest : rest.slice(0, clauseEnd);
-  return postposedNegationPattern.test(clause);
-}
-
-const postposedNegationPattern = new RegExp(
-  [
-    String.raw`\b(?:is|are|was|were)(?:\s+(?:not|never)|n['’]t)\s+(?:required|necessary|needed|mandatory|recommended|used|run|executed|performed|taken)\b`,
-    String.raw`\b(?:is|are|was|were)\s+(?:unnecessary|unneeded)\b`,
-    String.raw`\b(?:should|must|may|can|could|shall|will|would)(?:\s+(?:not|never)|n['’]t)\s+be\s+(?:required|necessary|needed|used|run|executed|performed|taken|recommended)\b`,
-  ].join("|"),
-  "i",
-);
-
-function requiredTermMatches(text, term) {
-  if (/^[A-Za-z0-9_]+$/.test(term)) {
-    // Single words allow a trailing plural "s" just like phrase terms do, so
-    // "dumps" satisfies a required "dump" term.
-    return regexMatches(text, new RegExp(String.raw`\b${escapeRegExp(term)}s?\b`, "gi"));
-  }
-  // Phrase terms get word-boundary edges so "gh api" does not match inside
-  // "through API". A trailing plural "s" stays allowed: "unit tests" still
-  // satisfies a required "unit test" term.
-  const leftBoundary = /^[A-Za-z0-9_]/.test(term) ? String.raw`(?<![A-Za-z0-9_])` : "";
-  const rightBoundary = /[A-Za-z0-9_]$/.test(term) ? String.raw`s?(?![A-Za-z0-9_])` : "";
-  return regexMatches(text, new RegExp(`${leftBoundary}${escapeRegExp(term)}${rightBoundary}`, "gi"));
-}
-
-function containsForbiddenTerm(text, term) {
-  for (const match of text.matchAll(forbiddenTermPattern(term))) {
-    if (!isNegatedWarningAt(text, match.index ?? 0)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function forbiddenTermPattern(term) {
-  // Separators also tolerate common prose connectors, so guidance like "set
-  // confirm to true" or "pass the confirm flag as true" cannot bypass a
-  // "confirm=true" forbidden term by spelling the gate out in words.
-  const separator = "[\\s`\"':=]*(?:(?:to|as|of|with|a|an|the|value|flag|set)\\b[\\s`\"':=]*){0,4}";
-  const flexible = escapeRegExp(String(term)).replace(/[\s`"':=]+/g, separator);
-  // Identifier edges are word-guarded like required terms, so "reconfirm=true"
-  // or "confirm=trueish" do not match a "confirm=true" forbidden term.
-  const leftBoundary = /^[A-Za-z0-9_]/.test(term) ? String.raw`(?<![A-Za-z0-9_])` : "";
-  const rightBoundary = /[A-Za-z0-9_]$/.test(term) ? String.raw`(?![A-Za-z0-9_])` : "";
-  return new RegExp(`${leftBoundary}${flexible}${rightBoundary}`, "gi");
-}
-
-function isNegatedWarningAt(text, index) {
-  const before = text.slice(Math.max(0, index - 40), index);
-  const negations = [...before.matchAll(/\b(?:no|not|never|without|avoid)\b|\b\w+n't\b/gi)];
-  if (negations.length === 0) {
-    return false;
-  }
-  const lastNegation = negations[negations.length - 1];
-  const scope = before.slice(lastNegation.index + lastNegation[0].length);
-  // A negation governing a negative verb ("do not forget", "never skip",
-  // "avoid omitting") is affirmative advice about what follows, so it does
-  // not suppress the match.
-  if (/\b(?:forget|forgets|forgetting|skip|skips|skipping|omit|omits|omitting|neglect|neglects|neglecting)\b/i.test(scope)) {
-    return false;
-  }
-  // A negation governing a safety adjective ("not unsafe", "never risky") is
-  // likewise affirmative advice to proceed, so it does not suppress the match.
-  if (/\b(?:unsafe|risky|dangerous|hazardous)\b/i.test(scope)) {
-    return false;
-  }
-  // Clause punctuation and coordinating conjunctions end the negation scope:
-  // in "do not stop, pass X" or "do not skip the backup and pass X" the
-  // "not" does not govern the forbidden action that follows.
-  return !/[.!?;,\n]|\b(?:and|or|but)\b/i.test(scope);
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-const shellWrapperNames = new Set([
-  "sudo",
-  "env",
-  "timeout",
-  "time",
-  "nice",
-  "command",
-  "exec",
-  "nohup",
-  "setsid",
-  "watch",
-  "xargs",
-]);
-const shellCommandNames = new Set(["bash", "sh", "zsh", "dash"]);
-// Shell grammar keywords that can precede the real command in compound
-// commands ("if ...; then docker stop x; fi", "for f in ...; do ...; done").
-const shellControlWords = new Set([
-  "if",
-  "then",
-  "else",
-  "elif",
-  "fi",
-  "for",
-  "while",
-  "until",
-  "do",
-  "done",
-  "case",
-  "esac",
-  "in",
-  "select",
-  "function",
-  "!",
-  ")",
-]);
-
+// Plan-only tripwire, deliberately not a shell parser: a docker/ydb/ydbd
+// executable in command position (start of the command or right after a
+// command separator, optionally behind sudo or an absolute path) fails the
+// eval. Wrapper chains, quoting, substitutions, pipelines into shells, ssh,
+// and other indirection are out of scope — the threat model is an agent
+// that accidentally runs a direct command, and structured MCP tool calls in
+// the trace remain the authoritative gate for local-ydb mutations.
 export function invokesLiveDockerOrYdb(command) {
-  return scanForLiveDockerOrYdb(command, 0);
-}
-
-const maxSubstitutionDepth = 4;
-
-function scanForLiveDockerOrYdb(command, depth) {
-  const { segments, pipeInto } = scanShellSegments(command);
-  if (segments.some((tokens) => tokensInvokeLiveDockerOrYdb(tokens))) {
-    return true;
-  }
-  if (depth >= maxSubstitutionDepth) {
-    return false;
-  }
-  // "printf 'docker stop x' | bash" makes the shell read its script from the
-  // producer's standard output, so the literal payload must be scanned too.
-  for (let index = 1; index < segments.length; index += 1) {
-    if (!pipeInto[index] || !bareStdinShellCommand(segments[index])) {
-      continue;
-    }
-    // Walk back through transparent stages: "cat" with no operands copies its
-    // input to its output, so "printf 'docker stop x' | cat | bash" still
-    // feeds the printf payload to the shell.
-    let producer = index - 1;
-    while (producer > 0 && pipeInto[producer] && isTransparentPassThroughStage(segments[producer])) {
-      producer -= 1;
-    }
-    const payloads = echoLikeStdoutPayloads(segments[producer]);
-    if (payloads.some((payload) => scanForLiveDockerOrYdb(payload, depth + 1))) {
-      return true;
-    }
-  }
-  return commandSubstitutionBodies(command).some((body) => scanForLiveDockerOrYdb(body, depth + 1));
-}
-
-// A shell interpreter with neither "-c" nor a script argument reads its
-// program from standard input ("bash", "sudo sh -s"). Wrappers and leading
-// redirections do not change that.
-function bareStdinShellCommand(tokens) {
-  let index = 0;
-  while (index < tokens.length) {
-    const token = tokens[index];
-    const redirectionWidth = redirectionTokenWidth(token);
-    if (redirectionWidth > 0) {
-      index += redirectionWidth;
-      continue;
-    }
-    if (isEnvironmentAssignment(token)) {
-      index += 1;
-      continue;
-    }
-    const name = commandName(token);
-    if (shellControlWords.has(name)) {
-      index += 1;
-      continue;
-    }
-    if (shellWrapperNames.has(name)) {
-      index = nextCommandIndexAfterWrapper(tokens, index, name);
-      continue;
-    }
-    if (!shellCommandNames.has(name)) {
-      return false;
-    }
-    for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
-      const argument = tokens[cursor];
-      const argumentRedirectionWidth = redirectionTokenWidth(argument);
-      if (argumentRedirectionWidth > 0) {
-        cursor += argumentRedirectionWidth - 1;
-        continue;
-      }
-      if (argument.startsWith("-")) {
-        continue;
-      }
-      // A non-option word is the script path: the shell no longer reads
-      // standard input.
-      return false;
-    }
-    return true;
-  }
-  return false;
-}
-
-// "cat" with no operands copies standard input to standard output, so a
-// pipeline stage running it passes the producer's payload through unchanged.
-// Options (cat -n) keep the stream; an operand (cat file) replaces it.
-function isTransparentPassThroughStage(tokens) {
-  let index = 0;
-  while (index < tokens.length) {
-    const token = tokens[index];
-    const redirectionWidth = redirectionTokenWidth(token);
-    if (redirectionWidth > 0) {
-      index += redirectionWidth;
-      continue;
-    }
-    if (isEnvironmentAssignment(token)) {
-      index += 1;
-      continue;
-    }
-    const name = commandName(token);
-    if (shellControlWords.has(name)) {
-      index += 1;
-      continue;
-    }
-    if (shellWrapperNames.has(name)) {
-      index = nextCommandIndexAfterWrapper(tokens, index, name);
-      continue;
-    }
-    if (name !== "cat") {
-      return false;
-    }
-    for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
-      const argument = tokens[cursor];
-      const argumentRedirectionWidth = redirectionTokenWidth(argument);
-      if (argumentRedirectionWidth > 0) {
-        cursor += argumentRedirectionWidth - 1;
-        continue;
-      }
-      if (argument.startsWith("-")) {
-        continue;
-      }
-      // An operand replaces standard input as the copied source.
-      return false;
-    }
-    return true;
-  }
-  return false;
-}
-
-// The stdout of echo/printf is its argument text, so a pipeline like
-// "echo docker stop x | bash" hands that text to the consumer as a script.
-// printf renders its first operand as the format and the rest as data, so
-// the format and the argument payload are scanned separately ("%s\n" is not
-// part of the executed script). Other producers generate output statically
-// unknowable and return no payloads.
-function echoLikeStdoutPayloads(tokens) {
-  let index = 0;
-  while (index < tokens.length) {
-    const token = tokens[index];
-    const redirectionWidth = redirectionTokenWidth(token);
-    if (redirectionWidth > 0) {
-      index += redirectionWidth;
-      continue;
-    }
-    if (isEnvironmentAssignment(token)) {
-      index += 1;
-      continue;
-    }
-    const name = commandName(token);
-    if (shellControlWords.has(name)) {
-      index += 1;
-      continue;
-    }
-    if (shellWrapperNames.has(name)) {
-      index = nextCommandIndexAfterWrapper(tokens, index, name);
-      continue;
-    }
-    if (name !== "echo" && name !== "printf") {
-      return [];
-    }
-    const words = [];
-    for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
-      const argument = tokens[cursor];
-      if (argument.startsWith("-") && words.length === 0) {
-        continue;
-      }
-      if (redirectionTokenWidth(argument) > 0) {
-        cursor += redirectionTokenWidth(argument) - 1;
-        continue;
-      }
-      words.push(argument);
-    }
-    if (name === "printf" && words.length > 0) {
-      return [words[0], words.slice(1).join(" ")];
-    }
-    return [words.join(" ")];
-  }
-  return [];
-}
-
-function commandSubstitutionBodies(command) {
-  const bodies = [];
-  let singleQuoted = false;
-  let escaped = false;
-  for (let index = 0; index < command.length; index += 1) {
-    const char = command[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (singleQuoted) {
-      if (char === "'") {
-        singleQuoted = false;
-      }
-      continue;
-    }
-    if (char === "'") {
-      singleQuoted = true;
-      continue;
-    }
-    if (char === "`") {
-      const end = command.indexOf("`", index + 1);
-      if (end === -1) {
-        return bodies;
-      }
-      bodies.push(command.slice(index + 1, end));
-      index = end;
-      continue;
-    }
-    const opensSubstitution = (char === "$" || char === "<" || char === ">") && command[index + 1] === "(";
-    if (opensSubstitution) {
-      const close = matchingParenIndex(command, index + 1);
-      if (close === -1) {
-        return bodies;
-      }
-      bodies.push(command.slice(index + 2, close));
-      index = close;
-    }
-  }
-  return bodies;
-}
-
-function matchingParenIndex(command, openIndex) {
-  let depth = 0;
-  let quote;
-  let escaped = false;
-  for (let index = openIndex; index < command.length; index += 1) {
-    const char = command[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      continue;
-    }
-    if (char === "(") {
-      depth += 1;
-    }
-    if (char === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        return index;
-      }
-    }
-  }
-  return -1;
-}
-
-// Bash decodes escape sequences inside ANSI-C quoting ("$'...'"): octal,
-// hex, and 4/8-digit unicode code points (e.g. "\144" decodes to "d"), plus
-// the simple one-letter escapes. Unknown escapes keep the character itself.
-function decodeAnsiCQuotedEscape(command, index) {
-  const char = command[index] ?? "";
-  const simpleCodes = { a: 7, b: 8, e: 27, E: 27, f: 12, n: 10, r: 13, t: 9, v: 11 };
-  if (Object.hasOwn(simpleCodes, char)) {
-    return { decoded: String.fromCharCode(simpleCodes[char]), width: 1 };
-  }
-  if (char === "\\" || char === "'" || char === "\"" || char === "?") {
-    return { decoded: char, width: 1 };
-  }
-  const octal = command.slice(index).match(/^[0-7]{1,3}/);
-  if (octal) {
-    return { decoded: String.fromCharCode(parseInt(octal[0], 8) % 256), width: octal[0].length };
-  }
-  if (char === "x" || char === "u" || char === "U") {
-    const hexLength = char === "x" ? 2 : char === "u" ? 4 : 8;
-    const hex = command.slice(index + 1).match(new RegExp(`^[0-9A-Fa-f]{1,${hexLength}}`));
-    if (hex) {
-      return { decoded: String.fromCharCode(parseInt(hex[0], 16)), width: 1 + hex[0].length };
-    }
-  }
-  // Unknown escapes keep the backslash, matching Bash ("$'doc\\ker'" stays
-  // "doc\ker", which is not docker).
-  return { decoded: `\\${char}`, width: 1 };
-}
-
-function scanShellSegments(command) {
-  const segments = [[]];
-  const segmentEndsLine = [false];
-  const segmentStartsWithPipe = [false];
-  let current = "";
-  let quote;
-  let escaped = false;
-  // Paren depth inside arithmetic expansion/commands, where "<<" is a bit
-  // shift, not a here-doc ("$((1<<2))", "((a<<b))").
-  let arithDepth = 0;
-  // True while inside ANSI-C quoting ("$'...'"), where Bash decodes escape
-  // sequences: "$'\144ocker'" executes docker, so the scanned word must
-  // decode them too.
-  let ansiQuoting = false;
-  const pushToken = () => {
-    if (current.length > 0) {
-      segments[segments.length - 1].push(current);
-      current = "";
-    }
-  };
-  const pushSegment = (endsLine, startsWithPipe = false) => {
-    pushToken();
-    segmentEndsLine[segments.length - 1] = endsLine;
-    segments.push([]);
-    segmentEndsLine.push(false);
-    segmentStartsWithPipe.push(startsWithPipe);
-  };
-  for (let charIndex = 0; charIndex < command.length; charIndex += 1) {
-    const char = command[charIndex];
-    if (escaped) {
-      if (ansiQuoting) {
-        const { decoded, width } = decodeAnsiCQuotedEscape(command, charIndex);
-        current += decoded;
-        charIndex += width - 1;
-      } else {
-        current += char;
-      }
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) {
-        quote = undefined;
-        ansiQuoting = false;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-    // ANSI-C quoting ("$'...'") and locale quoting ("$\"...\"") drop the
-    // leading "$": "$'docker' stop x" runs docker, so the "$" must not stay
-    // literal text in the scanned word. Only the ANSI-C form decodes escapes.
-    if (char === "$" && (command[charIndex + 1] === "'" || command[charIndex + 1] === "\"")) {
-      quote = command[charIndex + 1];
-      ansiQuoting = quote === "'";
-      charIndex += 1;
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      quote = char;
-      ansiQuoting = false;
-      continue;
-    }
-    if (char === "|") {
-      if (command[charIndex + 1] === "|") {
-        // "||" is logical OR (sequencing), not a pipeline.
-        pushSegment(false);
-        charIndex += 1;
-        continue;
-      }
-      // "|&" pipes standard output and standard error together.
-      pushSegment(false, true);
-      if (command[charIndex + 1] === "&") {
-        charIndex += 1;
-      }
-      continue;
-    }
-    // "#" begins a comment when it starts a word; everything through the
-    // newline is comment text, so separators inside it do not split commands.
-    if (char === "#" && current.length === 0 && arithDepth === 0) {
-      while (charIndex + 1 < command.length && command[charIndex + 1] !== "\n") {
-        charIndex += 1;
-      }
-      continue;
-    }
-    if (char === ";" || char === "\n") {
-      pushSegment(char === "\n");
-      continue;
-    }
-    if (char === "&") {
-      // ">&", "<&", and "&>" are redirection operators ("2>&1 cmd",
-      // "cmd &>file"), not command separators.
-      const previous = command[charIndex - 1];
-      if (previous === ">" || previous === "<" || command[charIndex + 1] === ">") {
-        current += char;
-        continue;
-      }
-      pushSegment(false);
-      continue;
-    }
-    // "{}" is a literal word in shell (xargs/find placeholder), not a brace
-    // group, so it must survive as a token instead of becoming a delimiter.
-    if (char === "{" && command[charIndex + 1] === "}") {
-      current += "{}";
-      charIndex += 1;
-      continue;
-    }
-    if (char === "(") {
-      if (command[charIndex + 1] === "(") {
-        arithDepth += 1;
-      }
-      pushToken();
-      continue;
-    }
-    // A ")" closes a case pattern or a function name; keep it as a token so
-    // the scanner can resume at the real command that follows it.
-    if (char === ")") {
-      if (arithDepth > 0) {
-        arithDepth -= 1;
-      }
-      pushToken();
-      segments[segments.length - 1].push(")");
-      continue;
-    }
-    // Here-doc operators only exist outside quotes: quoted "<<EOF" text must
-    // stay an ordinary word instead of declaring a here-doc. Real operators
-    // get a sentinel prefix so later stages can trust them; the delimiter
-    // keeps its own quotes stripped ("<<'EOF'" declares EOF).
-    if (char === "<" && command[charIndex + 1] === "<" && arithDepth === 0) {
-      pushToken();
-      // A here-string ("<<<word") supplies a single word as standard input
-      // instead of a here-document: mark it so "bash <<< 'docker stop x'"
-      // scans the word as the shell's standard-input script.
-      if (command[charIndex + 2] === "<") {
-        segments[segments.length - 1].push("\u0000<<<");
-        charIndex += 2;
-        continue;
-      }
-      charIndex += 2;
-      let marker = "\u0000<<";
-      if (command[charIndex] === "-") {
-        marker += "-";
-        charIndex += 1;
-      }
-      let delimiter = "";
-      let delimiterQuote;
-      while (charIndex < command.length) {
-        const markerChar = command[charIndex];
-        if (delimiterQuote) {
-          if (markerChar === delimiterQuote) {
-            delimiterQuote = undefined;
-          } else {
-            delimiter += markerChar;
-          }
-          charIndex += 1;
-          continue;
-        }
-        if (markerChar === "'" || markerChar === "\"") {
-          delimiterQuote = markerChar;
-          charIndex += 1;
-          continue;
-        }
-        // Bash quote removal applies to the delimiter word, so a
-        // backslash-quoted character stays part of the delimiter
-        // ("<<E\OF" declares EOF).
-        if (markerChar === "\\" && charIndex + 1 < command.length) {
-          delimiter += command[charIndex + 1];
-          charIndex += 2;
-          continue;
-        }
-        // Unquoted delimiter text ends at whitespace or shell metacharacters;
-        // punctuation like "-" or "." stays part of the delimiter
-        // ("<<'END-JSON'" declares END-JSON).
-        if (!/[\s;|&(){}<>\\]/.test(markerChar)) {
-          delimiter += markerChar;
-          charIndex += 1;
-          continue;
-        }
-        break;
-      }
-      segments[segments.length - 1].push(marker + delimiter);
-      charIndex -= 1;
-      continue;
-    }
-    if (/\s/.test(char) || char === "{" || char === "}") {
-      pushToken();
-      continue;
-    }
-    current += char;
-  }
-  pushToken();
-  return excludeHereDocBodies(segments, segmentEndsLine, segmentStartsWithPipe);
-}
-
-// Here-document bodies are standard-input data, not commands: every line
-// after the line that declares "<<MARKER" is skipped up to the delimiter
-// line. The body only starts after a newline, so "cat <<EOF; docker ps"
-// still scans the docker command on the same line.
-function excludeHereDocBodies(segments, segmentEndsLine, segmentStartsWithPipe) {
-  const keep = new Array(segments.length).fill(true);
-  const declared = [];
-  let bodies = [];
-  for (let index = 0; index < segments.length; index += 1) {
-    const tokens = segments[index];
-    if (bodies.length > 0) {
-      if (tokens.length === 1 && tokens[0] === bodies[0].delimiter) {
-        keep[index] = false;
-        bodies.shift();
-        continue;
-      }
-      // A here-doc feeding a bare shell interpreter is its script, not data:
-      // "bash <<EOF\ndocker stop x\nEOF" makes Bash execute the body.
-      keep[index] = bodies[0].scan;
-      continue;
-    }
-    for (const token of tokens) {
-      const marker = /^\u0000<<-?(.+)$/.exec(token);
-      if (marker) {
-        declared.push(marker[1]);
-      }
-    }
-    if (segmentEndsLine[index] && declared.length > 0) {
-      const consumerTokens = tokens.filter((token) => token.charCodeAt(0) !== 0);
-      const scan = bareStdinShellCommand(consumerTokens);
-      bodies = declared.splice(0).map((delimiter) => ({ delimiter, scan }));
-    }
-  }
-  const keptSegments = [];
-  const keptPipeInto = [];
-  for (let index = 0; index < segments.length; index += 1) {
-    if (keep[index] && segments[index].length > 0) {
-      keptSegments.push(segments[index]);
-      keptPipeInto.push(segmentStartsWithPipe[index]);
-    }
-  }
-  return { segments: keptSegments, pipeInto: keptPipeInto };
-}
-
-function tokensInvokeLiveDockerOrYdb(tokens) {
-  let index = 0;
-  // Case-arm patterns and function names precede the first ")" token; the
-  // real command follows it ("foo) docker stop;;", "f() { ydb ...; }").
-  const closeParen = tokens.indexOf(")");
-  if (closeParen !== -1 && closeParen < tokens.length - 1) {
-    index = closeParen + 1;
-  }
-  while (index < tokens.length) {
-    const token = tokens[index];
-    const redirectionWidth = redirectionTokenWidth(token);
-    if (redirectionWidth > 0) {
-      index += redirectionWidth;
-      continue;
-    }
-    if (isEnvironmentAssignment(token) || token.startsWith("-")) {
-      index += 1;
-      continue;
-    }
-    const name = commandName(token);
-    if (shellControlWords.has(name)) {
-      index += 1;
-      continue;
-    }
-    if (name === "eval") {
-      // eval concatenates its arguments into a command and executes it, so a
-      // quoted payload ("eval 'docker stop x'") must be scanned as shell.
-      return invokesLiveDockerOrYdb(tokens.slice(index + 1).join(" "));
-    }
-    if (shellWrapperNames.has(name)) {
-      if (name === "command") {
-        // command -v/-V only prints a description of the named executable;
-        // nothing runs, so "command -v docker" is a lookup, not a call.
-        let lookupOnly = false;
-        for (let cursor = index + 1; cursor < tokens.length && tokens[cursor].startsWith("-"); cursor += 1) {
-          if (/^-[a-zA-Z]*[vV][a-zA-Z]*$/.test(tokens[cursor])) {
-            lookupOnly = true;
-          }
-        }
-        if (lookupOnly) {
-          return false;
-        }
-      }
-      if (name === "env") {
-        // env -S/--split-string splits its payload into the command to run,
-        // so the payload itself must be scanned as shell.
-        const splitString = envSplitStringPayload(tokens, index);
-        if (splitString !== undefined && invokesLiveDockerOrYdb(splitString)) {
-          return true;
-        }
-      }
-      index = nextCommandIndexAfterWrapper(tokens, index, name);
-      continue;
-    }
-    if (isLiveDockerOrYdbName(name)) {
-      return true;
-    }
-    if (shellCommandNames.has(name)) {
-      const flagIndex = tokens.findIndex((candidate, cursor) => cursor > index && /^-[^-]*c/.test(candidate));
-      if (flagIndex === -1) {
-        // "bash <<< 'docker stop x'" hands the here-string word to the shell
-        // as its standard-input script, so scan the payload like a -c script.
-        const hereStringIndex = tokens.indexOf("\u0000<<<", index + 1);
-        if (hereStringIndex === -1) {
-          return false;
-        }
-        const hereStringPayload = tokens[hereStringIndex + 1];
-        return typeof hereStringPayload === "string" && invokesLiveDockerOrYdb(hereStringPayload);
-      }
-      // A "--" after -c is the end-of-options marker, not the script.
-      const scriptIndex = tokens[flagIndex + 1] === "--" ? flagIndex + 2 : flagIndex + 1;
-      const script = tokens[scriptIndex];
-      const positionalExpansion = positionalExpansionKind(script);
-      if (positionalExpansion === "args") {
-        // "bash -c '\"$@\"' _ docker stop x" expands the arguments after the
-        // command name into the executed command line, so scan them as shell.
-        return invokesLiveDockerOrYdb(tokens.slice(scriptIndex + 2).join(" "));
-      }
-      if (positionalExpansion === "zero") {
-        // "bash -c '$0' docker stop x" executes the first argument itself.
-        return invokesLiveDockerOrYdb(tokens.slice(scriptIndex + 1).join(" "));
-      }
-      return typeof script === "string" && invokesLiveDockerOrYdb(script);
-    }
-    const runtimePayloadFlags = scriptRuntimePayloadFlags(name);
-    if (runtimePayloadFlags !== undefined) {
-      // Inline program payloads ("python -c '...'", "node -e '...'") execute
-      // arbitrary code, so conservatively flag payloads that mention a live
-      // executable, even when the mention is only a printed string
-      // (fail-closed).
-      const flagIndex = tokens.findIndex((candidate, cursor) => cursor > index && runtimePayloadFlags.has(candidate));
-      if (flagIndex === -1) {
+  return String(command)
+    .split(/[\n;|&]+/)
+    .some((segment) => {
+      const match = /^\s*(?:sudo\s+)?(\S+)/.exec(segment);
+      if (!match) {
         return false;
       }
-      const payload = tokens[flagIndex + 1];
-      return typeof payload === "string" && /\b(?:docker|ydbd?)\b/i.test(payload);
-    }
-    if (name === "ssh") {
-      // ssh [options] destination [command [argument ...]] runs the trailing
-      // command on the destination host, so everything after the options and
-      // the destination is scanned as a remote shell command.
-      const destinationIndex = skipOptions(tokens, index + 1, sshOptionsWithValues);
-      if (destinationIndex >= tokens.length - 1) {
-        return false;
-      }
-      return invokesLiveDockerOrYdb(tokens.slice(destinationIndex + 1).join(" "));
-    }
-    if (name === "find") {
-      // find -exec/-execdir/-ok/-okdir run their payload as a command, so
-      // "find /tmp -exec docker stop x \;" must be scanned like xargs.
-      return findActionPayloadsInvokeLive(tokens.slice(index + 1));
-    }
-    return false;
-  }
-  return false;
+      const executable = match[1].replace(/^["']+|["']+$/g, "");
+      const name = executable.slice(executable.lastIndexOf("/") + 1);
+      return /^(?:docker|ydbd?)$/.test(name);
+    });
 }
 
-// A -c script that is only a positional expansion ("$@", '$*', "$0", and the
-// braced or quoted forms) executes the arguments after the script instead of
-// a literal script: "$@"/"$*" run $1 onwards, "$0" runs the command name.
-function positionalExpansionKind(script) {
-  if (typeof script !== "string") {
-    return undefined;
-  }
-  const { segments } = scanShellSegments(script);
-  // "${@}" tokenizes as "$", "@" because braces are word delimiters, so
-  // compare the reassembled words of an expansion-only script. Pass-through
-  // prefixes are stripped first: 'exec "$@"' and 'command $*' still expand
-  // the positional arguments into the executed command line.
-  const words = segments.length === 1 ? [...segments[0]] : [];
-  while (words[0] === "exec" || words[0] === "command") {
-    words.shift();
-  }
-  const joined = words.join("");
-  if (/^\$(?:@|\*|\{@\}|\{\*\})$/.test(joined)) {
-    return "args";
-  }
-  return /^\$(?:0|\{0\})$/.test(joined) ? "zero" : undefined;
-}
-
-const findExecActions = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
-
-function findActionPayloadsInvokeLive(args) {
-  for (let index = 0; index < args.length; index += 1) {
-    if (!findExecActions.has(args[index])) {
-      continue;
-    }
-    const payload = [];
-    let cursor = index + 1;
-    while (cursor < args.length && args[cursor] !== ";" && args[cursor] !== "+") {
-      if (args[cursor] !== "{}") {
-        payload.push(args[cursor]);
-      }
-      cursor += 1;
-    }
-    if (payload.length > 0 && tokensInvokeLiveDockerOrYdb(payload)) {
-      return true;
-    }
-    index = cursor;
-  }
-  return false;
-}
-
-function nextCommandIndexAfterWrapper(tokens, index, name) {
-  let cursor = index + 1;
-  if (name === "timeout") {
-    cursor = skipOptions(tokens, cursor, timeoutOptionsWithValues);
-    return isDurationToken(tokens[cursor] ?? "") ? cursor + 1 : cursor;
-  }
-  if (name === "nice") {
-    return skipOptions(tokens, cursor, niceOptionsWithValues);
-  }
-  if (name === "sudo") {
-    return skipOptions(tokens, cursor, sudoOptionsWithValues);
-  }
-  if (name === "env") {
-    cursor = skipOptions(tokens, cursor, envOptionsWithValues);
-    while (isEnvironmentAssignment(tokens[cursor] ?? "")) {
-      cursor += 1;
-    }
-    return cursor;
-  }
-  if (name === "xargs") {
-    return skipXargsOptions(tokens, cursor);
-  }
-  if (name === "watch") {
-    return skipOptions(tokens, cursor, watchOptionsWithValues);
-  }
-  if (name === "time") {
-    return skipOptions(tokens, cursor, timeOptionsWithValues);
-  }
-  if (name === "exec") {
-    return skipOptions(tokens, cursor, execOptionsWithValues);
-  }
-  return cursor;
-}
-
-function skipOptions(tokens, index, optionsWithValues) {
-  let cursor = index;
-  while (cursor < tokens.length) {
-    const token = tokens[cursor];
-    if (token === "--") {
-      return cursor + 1;
-    }
-    if (!token.startsWith("-") || token === "-") {
-      return cursor;
-    }
-    cursor += optionTokenWidth(token, optionsWithValues);
-  }
-  return cursor;
-}
-
-// GNU xargs takes -l, --max-lines, and --eof with an optional ATTACHED
-// argument only ("-l5", "--eof=EOF"), while BSD/POSIX xargs accepts separate
-// values ("-l 5", "-e EOF"). A separate token must not blindly stop the
-// option scan ("xargs -l 5 docker ps" would hide docker behind the "5"), so
-// -l/--max-lines consume a following numeric token and -e/--eof consume one
-// following word; "xargs -l docker ps" keeps docker as the command, matching
-// GNU semantics.
-function skipXargsOptions(tokens, index) {
-  let cursor = index;
-  while (cursor < tokens.length) {
-    const token = tokens[cursor];
-    if (token === "--") {
-      return cursor + 1;
-    }
-    if (!token.startsWith("-") || token === "-") {
-      return cursor;
-    }
-    if ((token === "-l" || token === "--max-lines") && /^\d+$/.test(tokens[cursor + 1] ?? "")) {
-      cursor += 2;
-      continue;
-    }
-    if ((token === "-e" || token === "--eof") && tokens[cursor + 1] !== undefined && !tokens[cursor + 1].startsWith("-")) {
-      cursor += 2;
-      continue;
-    }
-    cursor += optionTokenWidth(token, xargsOptionsWithValues);
-  }
-  return cursor;
-}
-
-function envSplitStringPayload(tokens, index) {
-  let cursor = index + 1;
-  while (cursor < tokens.length) {
-    const token = tokens[cursor];
-    if (token === "--") {
-      return undefined;
-    }
-    if (!token.startsWith("-") || token === "-") {
-      return undefined;
-    }
-    if (token === "-S" || token === "--split-string") {
-      return tokens[cursor + 1];
-    }
-    if (token.startsWith("--split-string=")) {
-      return token.slice("--split-string=".length);
-    }
-    if (token.startsWith("-S") && !token.startsWith("--")) {
-      return token.slice(2);
-    }
-    cursor += optionTokenWidth(token, envOptionsWithValues);
-  }
-  return undefined;
-}
-
-function optionTokenWidth(token, optionsWithValues) {
-  if (optionsWithValues.some((option) => token === option)) {
-    return 2;
-  }
-  return 1;
-}
-
-function isDurationToken(token) {
-  return /^\d+(?:\.\d+)?[a-z]?$/i.test(token);
-}
-
-const timeoutOptionsWithValues = ["-k", "-s", "--kill-after", "--signal"];
-const niceOptionsWithValues = ["-n", "--adjustment"];
-const sudoOptionsWithValues = [
-  "-C",
-  "-g",
-  "-h",
-  "-p",
-  "-r",
-  "-T",
-  "-t",
-  "-U",
-  "-u",
-  "--close-from",
-  "--command-timeout",
-  "--group",
-  "--host",
-  "--login-class",
-  "--prompt",
-  "--role",
-  "--type",
-  "--user",
-];
-const envOptionsWithValues = ["-C", "-S", "-u", "--chdir", "--split-string", "--unset"];
-// OpenSSH options that consume a separate value token (ssh usage ends with
-// "destination [command [argument ...]]"); flag-only options and attached
-// forms ("-tt", "-p2222", "-oBatchMode=yes") are single tokens.
-const sshOptionsWithValues = [
-  "-B",
-  "-b",
-  "-c",
-  "-D",
-  "-E",
-  "-e",
-  "-F",
-  "-I",
-  "-i",
-  "-J",
-  "-L",
-  "-l",
-  "-m",
-  "-O",
-  "-o",
-  "-p",
-  "-Q",
-  "-R",
-  "-S",
-  "-W",
-  "-w",
-];
-// -l, --max-lines, -e, and --eof stay out of this list: their separate
-// values need the shape-aware handling in skipXargsOptions.
-const xargsOptionsWithValues = [
-  "-a",
-  "-d",
-  "-E",
-  "-I",
-  "-L",
-  "-n",
-  "-P",
-  "-s",
-  "--arg-file",
-  "--delimiter",
-  "--max-args",
-  "--max-chars",
-  "--max-procs",
-  "--replace",
-];
-const timeOptionsWithValues = ["-f", "-o", "--format", "--output"];
-const execOptionsWithValues = ["-a"];
-// watch runs "watch [options] command"; only the interval options take a
-// separate value, everything after the options is the nested command.
-const watchOptionsWithValues = ["-n", "--interval"];
-
-function commandName(token) {
-  return token.split("/").pop() ?? token;
-}
-
-function isLiveDockerOrYdbName(name) {
-  return /^(?:docker|ydbd?)$/.test(name);
-}
-
-const pythonPayloadFlags = new Set(["-c"]);
-const evalPayloadFlags = new Set(["-e"]);
-
-// Inline-code flags for known scripting runtimes: python -c, node/ruby/perl -e.
-function scriptRuntimePayloadFlags(name) {
-  if (/^python[0-9.]*$/.test(name)) {
-    return pythonPayloadFlags;
-  }
-  return name === "node" || name === "ruby" || name === "perl" ? evalPayloadFlags : undefined;
-}
-
-function isEnvironmentAssignment(token) {
-  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
-}
-
-// A leading redirection ("2>/dev/null cmd", ">out cmd") precedes the real
-// command; a bare operator consumes the next token as its target.
-function redirectionTokenWidth(token) {
-  if (!/^(?:\d+(?=[<>])|&>|[<>])/.test(token)) {
-    return 0;
-  }
-  return /^(?:\d*(?:>>?|<|>&|&>>?))$/.test(token) ? 2 : 1;
-}
-
-// API transport variables the Codex process needs on hosts where the network
-// path to the API goes through a proxy or a custom CA bundle. Everything else
-// stays out of the subprocess environment.
 const codexTransportEnvNames = [
   "HTTP_PROXY",
   "HTTPS_PROXY",

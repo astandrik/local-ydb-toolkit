@@ -156,7 +156,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
   {
     name: "local_ydb_reduce_storage_groups_workflow",
     title: "Reduce local-ydb storage groups",
-    description: "Plan storage group reduction by dump, rebuild, restore, and optional auth reapply.",
+    description: "Plan storage-group reduction by dump, rebuild, restore, and optional auth reapply.",
     arguments: [
       {
         name: "count",
