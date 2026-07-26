@@ -292,7 +292,8 @@ export function scoreCase(testCase, events, options = {}) {
       failures.push(orderFailure);
     }
     const requiredTools = testCase.expected.requiredOrderedTools ?? [];
-    if (expectedSkill && requiredTools.length >= 2 && proseContradictsToolOrder(answerText, requiredTools)) {
+    const proseSequence = proseSequenceWithExtras(requiredTools, testCase.expected.allowedExtraToolsBefore ?? {});
+    if (expectedSkill && proseSequence.length >= 2 && proseContradictsToolOrder(answerText, proseSequence)) {
       failures.push("answer text contradicts the declared tool order");
     }
     for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
@@ -555,6 +556,23 @@ function firstOrderFailure(actual, required) {
   return undefined;
 }
 
+// Constrained extra tools join the declared sequence at their constraint
+// point, so prose ordering covers them too: "run upgrade first, then dump"
+// contradicts a dump-before-upgrade constraint even though the dump is only
+// an allowed extra tool.
+function proseSequenceWithExtras(requiredTools, extraToolsBefore) {
+  const sequence = [];
+  for (const tool of requiredTools) {
+    for (const [extra, beforeTool] of Object.entries(extraToolsBefore)) {
+      if (beforeTool === tool && !sequence.includes(extra)) {
+        sequence.push(extra);
+      }
+    }
+    sequence.push(tool);
+  }
+  return sequence;
+}
+
 // The prose order of required-tool mentions must not invert the declared
 // tool_sequence when the text uses explicit sequencing language: "run
 // upgrade first, then dump" contradicts a dump-before-upgrade sequence even
@@ -571,12 +589,21 @@ function proseContradictsToolOrder(text, requiredTools) {
   if (mentionEvents.length === 0) {
     return false;
   }
+  const semanticEvents = orderMentionsBySubordinateClauses(text, mentionEvents);
+  // An explicit "first" claim attaches to the opening mention of its clause;
+  // when that claim names a tool other than the first required one, the
+  // prose instructs a different starting point than the declared sequence
+  // ("run upgrade first, then status" against status -> upgrade -> status).
+  const firstEvent = semanticEvents[0];
+  if (firstEvent.tool !== requiredTools[0] && /\bfirst\b/i.test(mentionClause(text, firstEvent.index))) {
+    return true;
+  }
   // Greedily assign each mention to the next matching position in the
   // required sequence, so verify-after-mutate patterns ("status, then
   // upgrade, then status") stay consistent. A mention that only matches
   // positions behind the walk inverts the declared order.
   let requiredIndex = 0;
-  for (const event of mentionEvents) {
+  for (const event of semanticEvents) {
     while (requiredIndex < requiredTools.length && requiredTools[requiredIndex] !== event.tool) {
       requiredIndex += 1;
     }
@@ -588,11 +615,71 @@ function proseContradictsToolOrder(text, requiredTools) {
   return false;
 }
 
+// Subordinating conjunctions invert the lexical order of two mentions:
+// "before X" makes X the later operation ("before apply, run generate" and
+// "run generate before apply" both run generate first), while "after X"
+// makes X the earlier one. Swap each directly governed adjacent pair so the
+// greedy sequence walk compares semantic order instead of surface order.
+function orderMentionsBySubordinateClauses(text, mentionEvents) {
+  const governed = mentionEvents.map((event) => {
+    const prefix = text.slice(Math.max(0, event.index - 40), event.index);
+    if (/\bbefore\s+(?:the\s+)?$/i.test(prefix)) {
+      return "before";
+    }
+    return /\bafter\s+(?:the\s+)?$/i.test(prefix) ? "after" : undefined;
+  });
+  const ordered = [...mentionEvents];
+  for (let index = 0; index < ordered.length - 1; index += 1) {
+    const current = governed[index];
+    const next = governed[index + 1];
+    if ((current === "before" && next === undefined) || (current === undefined && next === "after")) {
+      [ordered[index], ordered[index + 1]] = [ordered[index + 1], ordered[index]];
+      [governed[index], governed[index + 1]] = [governed[index + 1], governed[index]];
+      index += 1;
+    }
+  }
+  return ordered;
+}
+
+// The clause around a mention is bounded by sentence punctuation and
+// sequencing conjunctions: in "First, read the docs, then run X" the word
+// "first" sits in an earlier clause and makes no claim about X.
+function mentionClause(text, index) {
+  const breakPattern = /[.!?;,\n]|\b(?:then|after|afterward|afterwards|later|finally|before)\b/gi;
+  let start = 0;
+  for (const match of text.slice(0, index).matchAll(breakPattern)) {
+    start = match.index + match[0].length;
+  }
+  const endMatch = text.slice(index).search(breakPattern);
+  return text.slice(start, endMatch === -1 ? text.length : index + endMatch);
+}
+
 function containsRequiredTerm(text, term) {
   // A required term counts only when affirmed: guidance like "do not dump or
   // restore" must not satisfy a mandatory dump/restore expectation.
-  return requiredTermMatches(text, String(term)).some((match) => !isNegatedWarningAt(text, match.index));
+  return requiredTermMatches(text, String(term)).some(
+    (match) => !isNegatedWarningAt(text, match.index) && !hasPostposedNegationAt(text, match.index + match.length),
+  );
 }
+
+// Negation can also follow the term ("a dump is not required", "restore
+// should not be used", "the backup is unnecessary"), so the clause after the
+// match is checked for postposed negative predicates.
+function hasPostposedNegationAt(text, index) {
+  const rest = text.slice(index, index + 80);
+  const clauseEnd = rest.search(/[.!?;,\n]/);
+  const clause = clauseEnd === -1 ? rest : rest.slice(0, clauseEnd);
+  return postposedNegationPattern.test(clause);
+}
+
+const postposedNegationPattern = new RegExp(
+  [
+    String.raw`\b(?:is|are|was|were)(?:\s+(?:not|never)|n['’]t)\s+(?:required|necessary|needed|mandatory|recommended|used|run|executed|performed|taken)\b`,
+    String.raw`\b(?:is|are|was|were)\s+(?:unnecessary|unneeded)\b`,
+    String.raw`\b(?:should|must|may|can|could|shall|will|would)(?:\s+(?:not|never)|n['’]t)\s+be\s+(?:required|necessary|needed|used|run|executed|performed|taken|recommended)\b`,
+  ].join("|"),
+  "i",
+);
 
 function requiredTermMatches(text, term) {
   if (/^[A-Za-z0-9_]+$/.test(term)) {
@@ -1324,6 +1411,16 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
       const payload = tokens[flagIndex + 1];
       return typeof payload === "string" && /\b(?:docker|ydbd?)\b/i.test(payload);
     }
+    if (name === "ssh") {
+      // ssh [options] destination [command [argument ...]] runs the trailing
+      // command on the destination host, so everything after the options and
+      // the destination is scanned as a remote shell command.
+      const destinationIndex = skipOptions(tokens, index + 1, sshOptionsWithValues);
+      if (destinationIndex >= tokens.length - 1) {
+        return false;
+      }
+      return invokesLiveDockerOrYdb(tokens.slice(destinationIndex + 1).join(" "));
+    }
     if (name === "find") {
       // find -exec/-execdir/-ok/-okdir run their payload as a command, so
       // "find /tmp -exec docker stop x \;" must be scanned like xargs.
@@ -1517,6 +1614,32 @@ const sudoOptionsWithValues = [
   "--user",
 ];
 const envOptionsWithValues = ["-C", "-S", "-u", "--chdir", "--split-string", "--unset"];
+// OpenSSH options that consume a separate value token (ssh usage ends with
+// "destination [command [argument ...]]"); flag-only options and attached
+// forms ("-tt", "-p2222", "-oBatchMode=yes") are single tokens.
+const sshOptionsWithValues = [
+  "-B",
+  "-b",
+  "-c",
+  "-D",
+  "-E",
+  "-e",
+  "-F",
+  "-I",
+  "-i",
+  "-J",
+  "-L",
+  "-l",
+  "-m",
+  "-O",
+  "-o",
+  "-p",
+  "-Q",
+  "-R",
+  "-S",
+  "-W",
+  "-w",
+];
 // -l, --max-lines, -e, and --eof stay out of this list: their separate
 // values need the shape-aware handling in skipXargsOptions.
 const xargsOptionsWithValues = [

@@ -3931,6 +3931,137 @@ describe("local-ydb agent eval runner", () => {
     expect(result.failures.includes("forbidden term present: confirm=true")).toBe(expectForbidden);
   });
 
+  it.each([
+    "ssh host docker stop local-ydb",
+    "ssh -o BatchMode=yes host 'ydb scheme ls'",
+    "ssh -p 2222 user@host docker ps",
+    "ssh -tt host ydb scheme ls",
+  ])("fails live Docker/YDB commands over ssh: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain(`trace contains live Docker/YDB command: ${command}`);
+  });
+
+  it.each([
+    "ssh host",
+    "ssh -N -L 8080:localhost:80 host",
+    "ssh host 'systemctl status docker'",
+  ])("allows ssh invocations without a live remote command: %s", (command) => {
+    const result = scorePlanOnlyCommand(command);
+
+    expect(result.ok).toBe(true);
+  });
+
+  function scoreAnswerProse(answer, expected) {
+    const fullExpected = {
+      shouldUseLocalYdbSkill: true,
+      requiredOrderedTools: [],
+      forbiddenTerms: [],
+      ...expected,
+    };
+    return scoreCase({ id: "answer-prose", expected: fullExpected }, [
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({
+            should_use_local_ydb_skill: true,
+            task_type: "diagnosis",
+            tool_sequence: fullExpected.requiredOrderedTools,
+            safety_gates: ["plan-only"],
+            would_execute_confirmed_mutation: false,
+            answer,
+          }),
+        },
+      },
+    ]);
+  }
+
+  it("fails prose that claims a non-head tool runs first in a duplicated sequence", () => {
+    const result = scoreAnswerProse("Run local_ydb_upgrade_version first, then local_ydb_status_report.", {
+      requiredOrderedTools: ["local_ydb_status_report", "local_ydb_upgrade_version", "local_ydb_status_report"],
+    });
+
+    expect(result.failures).toContain("answer text contradicts the declared tool order");
+  });
+
+  it.each([
+    "Run local_ydb_status_report, then local_ydb_upgrade_version, then local_ydb_status_report.",
+    "First run local_ydb_status_report, then local_ydb_upgrade_version, then local_ydb_status_report.",
+  ])("allows prose consistent with a duplicated sequence: %s", (answer) => {
+    const result = scoreAnswerProse(answer, {
+      requiredOrderedTools: ["local_ydb_status_report", "local_ydb_upgrade_version", "local_ydb_status_report"],
+    });
+
+    expect(result.failures).toEqual([]);
+  });
+
+  it("fails prose that inverts a constrained extra tool order", () => {
+    const result = scoreAnswerProse("Run local_ydb_upgrade_version first, then local_ydb_dump_tenant.", {
+      requiredOrderedTools: ["local_ydb_upgrade_version"],
+      allowedExtraTools: ["local_ydb_dump_tenant"],
+      allowedExtraToolsBefore: { local_ydb_dump_tenant: "local_ydb_upgrade_version" },
+    });
+
+    expect(result.failures).toContain("answer text contradicts the declared tool order");
+  });
+
+  it("allows prose that respects a constrained extra tool order", () => {
+    const result = scoreAnswerProse("Run local_ydb_dump_tenant first, then local_ydb_upgrade_version.", {
+      requiredOrderedTools: ["local_ydb_upgrade_version"],
+      allowedExtraTools: ["local_ydb_dump_tenant"],
+      allowedExtraToolsBefore: { local_ydb_dump_tenant: "local_ydb_upgrade_version" },
+    });
+
+    expect(result.failures).toEqual([]);
+  });
+
+  it.each([
+    "Before local_ydb_apply_schema, run local_ydb_generate_schema.",
+    "Run local_ydb_generate_schema before local_ydb_apply_schema.",
+    "Run local_ydb_apply_schema after local_ydb_generate_schema.",
+    "After local_ydb_generate_schema, run local_ydb_apply_schema.",
+  ])("allows prose whose before/after clause preserves the declared order: %s", (answer) => {
+    const result = scoreAnswerProse(answer, {
+      requiredOrderedTools: ["local_ydb_generate_schema", "local_ydb_apply_schema"],
+    });
+
+    expect(result.failures).toEqual([]);
+  });
+
+  it.each([
+    "Run local_ydb_apply_schema before local_ydb_generate_schema.",
+    "Run local_ydb_apply_schema, then local_ydb_generate_schema.",
+  ])("fails prose whose before clause inverts the declared order: %s", (answer) => {
+    const result = scoreAnswerProse(answer, {
+      requiredOrderedTools: ["local_ydb_generate_schema", "local_ydb_apply_schema"],
+    });
+
+    expect(result.failures).toContain("answer text contradicts the declared tool order");
+  });
+
+  it.each([
+    "A dump is not required.",
+    "The dump is unnecessary here.",
+    "A restore should not be used.",
+  ])("does not count a required term suppressed by postposed negation: %s", (answer) => {
+    const result = scoreAnswerProse(answer, { requiredTerms: ["dump", "restore"] });
+
+    expect(result.failures).toContain("missing required term: dump");
+    expect(result.failures).toContain("missing required term: restore");
+  });
+
+  it.each([
+    "A dump is required before upgrade.",
+    "Take a dump before upgrade.",
+    "A dump is not required by default, but take a dump before upgrade.",
+  ])("counts a required term affirmed after the mention: %s", (answer) => {
+    const result = scoreAnswerProse(answer, { requiredTerms: ["dump"] });
+
+    expect(result.failures).not.toContain("missing required term: dump");
+  });
+
   it("builds read-only codex exec args with schema-constrained final output", () => {
     const args = buildCodexArgs({
       repoRoot: "/repo",
