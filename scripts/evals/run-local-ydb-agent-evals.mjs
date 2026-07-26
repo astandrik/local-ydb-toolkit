@@ -145,8 +145,8 @@ export function parseJsonlEvents(stdout) {
   return { events, errors };
 }
 
-export function buildCodexArgs({ repoRoot: root, prompt, schemaPath }) {
-  return [
+export function buildCodexArgs({ repoRoot: root, prompt, schemaPath, model }) {
+  const args = [
     "exec",
     "--json",
     "--ephemeral",
@@ -163,8 +163,14 @@ export function buildCodexArgs({ repoRoot: root, prompt, schemaPath }) {
     root,
     "--output-schema",
     schemaPath,
-    prompt,
   ];
+  // Pin the model explicitly so score history stays comparable across Codex
+  // CLI releases and service-side default changes.
+  if (model) {
+    args.push("--model", model);
+  }
+  args.push(prompt);
+  return args;
 }
 
 export function createEvalWorkspace({
@@ -561,6 +567,11 @@ function isNegatedWarningAt(text, index) {
   if (/\b(?:forget|forgets|forgetting|skip|skips|skipping|omit|omits|omitting|neglect|neglects|neglecting)\b/i.test(scope)) {
     return false;
   }
+  // A negation governing a safety adjective ("not unsafe", "never risky") is
+  // likewise affirmative advice to proceed, so it does not suppress the match.
+  if (/\b(?:unsafe|risky|dangerous|hazardous)\b/i.test(scope)) {
+    return false;
+  }
   // Clause punctuation and coordinating conjunctions end the negation scope:
   // in "do not stop, pass X" or "do not skip the backup and pass X" the
   // "not" does not govern the forbidden action that follows.
@@ -920,6 +931,14 @@ function scanShellSegments(command) {
     // keeps its own quotes stripped ("<<'EOF'" declares EOF).
     if (char === "<" && command[charIndex + 1] === "<" && arithDepth === 0) {
       pushToken();
+      // A here-string ("<<<word") supplies a single word as standard input
+      // instead of a here-document: mark it so "bash <<< 'docker stop x'"
+      // scans the word as the shell's standard-input script.
+      if (command[charIndex + 2] === "<") {
+        segments[segments.length - 1].push("\u0000<<<");
+        charIndex += 2;
+        continue;
+      }
       charIndex += 2;
       let marker = "\u0000<<";
       if (command[charIndex] === "-") {
@@ -1072,7 +1091,14 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
     if (shellCommandNames.has(name)) {
       const flagIndex = tokens.findIndex((candidate, cursor) => cursor > index && /^-[^-]*c/.test(candidate));
       if (flagIndex === -1) {
-        return false;
+        // "bash <<< 'docker stop x'" hands the here-string word to the shell
+        // as its standard-input script, so scan the payload like a -c script.
+        const hereStringIndex = tokens.indexOf("\u0000<<<", index + 1);
+        if (hereStringIndex === -1) {
+          return false;
+        }
+        const hereStringPayload = tokens[hereStringIndex + 1];
+        return typeof hereStringPayload === "string" && invokesLiveDockerOrYdb(hereStringPayload);
       }
       // A "--" after -c is the end-of-options marker, not the script.
       const scriptIndex = tokens[flagIndex + 1] === "--" ? flagIndex + 2 : flagIndex + 1;
@@ -1259,11 +1285,26 @@ function redirectionTokenWidth(token) {
   return /^(?:\d*(?:>>?|<|>&|&>>?))$/.test(token) ? 2 : 1;
 }
 
+// API transport variables the Codex process needs on hosts where the network
+// path to the API goes through a proxy or a custom CA bundle. Everything else
+// stays out of the subprocess environment.
+const codexTransportEnvNames = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "NODE_EXTRA_CA_CERTS",
+];
+
 export function buildCodexEnv({
   path = process.env.PATH ?? process.env.Path,
   homeDir,
   codexHome,
   apiKey,
+  transportEnv = process.env,
 }) {
   const env = {};
   if (path) {
@@ -1272,6 +1313,11 @@ export function buildCodexEnv({
   env.HOME = homeDir;
   env.CODEX_HOME = codexHome;
   env.CODEX_API_KEY = apiKey;
+  for (const name of codexTransportEnvNames) {
+    if (transportEnv[name]) {
+      env[name] = transportEnv[name];
+    }
+  }
   return env;
 }
 
@@ -1314,6 +1360,7 @@ function runCase(testCase, workspace, options) {
     repoRoot: options.repoRoot,
     prompt,
     schemaPath: options.schemaPath,
+    model: options.model,
   });
   const result = spawnSync("codex", args, {
     ...buildCodexSpawnOptions(workspace, options),
@@ -1341,6 +1388,7 @@ export function parseArgs(argv) {
     caseId: undefined,
     casesPath: defaultCasesPath,
     schemaPath: defaultSchemaPath,
+    model: undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -1354,6 +1402,9 @@ export function parseArgs(argv) {
       index += 1;
     } else if (arg === "--schema") {
       parsed.schemaPath = resolve(requiredOptionValue(argv, index, "--schema", "<path>"));
+      index += 1;
+    } else if (arg === "--model") {
+      parsed.model = requiredOptionValue(argv, index, "--model", "<name>");
       index += 1;
     } else if (arg === "--help" || arg === "-h") {
       parsed.help = true;
@@ -1373,7 +1424,7 @@ function requiredOptionValue(argv, index, flag, placeholder) {
 }
 
 function printHelp() {
-  console.log(`Usage: npm run eval:agent -- [--list] [--case <id>] [--cases <path>] [--schema <path>] [--help]
+  console.log(`Usage: npm run eval:agent -- [--list] [--case <id>] [--cases <path>] [--schema <path>] [--model <name>] [--help]
 
 Runs plan-only Codex agent evals for the local-ydb skill.
 
@@ -1382,6 +1433,7 @@ Options:
   --case <id>    Run a single case.
   --cases <path> Use a custom cases JSON file.
   --schema <path> Use a custom final-answer JSON schema.
+  --model <name> Pass an explicit model to codex exec (recorded in the summary).
   --help          Print this help.
 `);
 }
@@ -1420,6 +1472,7 @@ function main() {
         repoRoot: workspace.repoRoot,
         schemaPath: workspace.schemaPath,
         apiKey,
+        model: args.model,
       });
       scores.push(score);
       console.log(`${score.ok ? "PASS" : "FAIL"} ${testCase.id}`);
@@ -1433,6 +1486,7 @@ function main() {
       passed: scores.filter((score) => score.ok).length,
       failed: scores.filter((score) => !score.ok).length,
       resultsDir: workspace.resultsDir,
+      codexModel: args.model ?? "default",
       scores,
     };
     writeFileSync(join(workspace.resultsDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
