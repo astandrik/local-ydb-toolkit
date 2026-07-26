@@ -594,7 +594,7 @@ const shellWrapperNames = new Set([
   "setsid",
   "xargs",
 ]);
-const shellCommandNames = new Set(["bash", "sh", "zsh"]);
+const shellCommandNames = new Set(["bash", "sh", "zsh", "dash"]);
 // Shell grammar keywords that can precede the real command in compound
 // commands ("if ...; then docker stop x; fi", "for f in ...; do ...; done").
 const shellControlWords = new Set([
@@ -637,7 +637,14 @@ function scanForLiveDockerOrYdb(command, depth) {
     if (!pipeInto[index] || !bareStdinShellCommand(segments[index])) {
       continue;
     }
-    const payloads = echoLikeStdoutPayloads(segments[index - 1]);
+    // Walk back through transparent stages: "cat" with no operands copies its
+    // input to its output, so "printf 'docker stop x' | cat | bash" still
+    // feeds the printf payload to the shell.
+    let producer = index - 1;
+    while (producer > 0 && pipeInto[producer] && isTransparentPassThroughStage(segments[producer])) {
+      producer -= 1;
+    }
+    const payloads = echoLikeStdoutPayloads(segments[producer]);
     if (payloads.some((payload) => scanForLiveDockerOrYdb(payload, depth + 1))) {
       return true;
     }
@@ -685,6 +692,52 @@ function bareStdinShellCommand(tokens) {
       }
       // A non-option word is the script path: the shell no longer reads
       // standard input.
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+// "cat" with no operands copies standard input to standard output, so a
+// pipeline stage running it passes the producer's payload through unchanged.
+// Options (cat -n) keep the stream; an operand (cat file) replaces it.
+function isTransparentPassThroughStage(tokens) {
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    const redirectionWidth = redirectionTokenWidth(token);
+    if (redirectionWidth > 0) {
+      index += redirectionWidth;
+      continue;
+    }
+    if (isEnvironmentAssignment(token)) {
+      index += 1;
+      continue;
+    }
+    const name = commandName(token);
+    if (shellControlWords.has(name)) {
+      index += 1;
+      continue;
+    }
+    if (shellWrapperNames.has(name)) {
+      index = nextCommandIndexAfterWrapper(tokens, index, name);
+      continue;
+    }
+    if (name !== "cat") {
+      return false;
+    }
+    for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+      const argument = tokens[cursor];
+      const argumentRedirectionWidth = redirectionTokenWidth(argument);
+      if (argumentRedirectionWidth > 0) {
+        cursor += argumentRedirectionWidth - 1;
+        continue;
+      }
+      if (argument.startsWith("-")) {
+        continue;
+      }
+      // An operand replaces standard input as the copied source.
       return false;
     }
     return true;
@@ -1103,6 +1156,16 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
       // A "--" after -c is the end-of-options marker, not the script.
       const scriptIndex = tokens[flagIndex + 1] === "--" ? flagIndex + 2 : flagIndex + 1;
       const script = tokens[scriptIndex];
+      const positionalExpansion = positionalExpansionKind(script);
+      if (positionalExpansion === "args") {
+        // "bash -c '\"$@\"' _ docker stop x" expands the arguments after the
+        // command name into the executed command line, so scan them as shell.
+        return invokesLiveDockerOrYdb(tokens.slice(scriptIndex + 2).join(" "));
+      }
+      if (positionalExpansion === "zero") {
+        // "bash -c '$0' docker stop x" executes the first argument itself.
+        return invokesLiveDockerOrYdb(tokens.slice(scriptIndex + 1).join(" "));
+      }
       return typeof script === "string" && invokesLiveDockerOrYdb(script);
     }
     if (name === "find") {
@@ -1113,6 +1176,23 @@ function tokensInvokeLiveDockerOrYdb(tokens) {
     return false;
   }
   return false;
+}
+
+// A -c script that is only a positional expansion ("$@", '$*', "$0", and the
+// braced or quoted forms) executes the arguments after the script instead of
+// a literal script: "$@"/"$*" run $1 onwards, "$0" runs the command name.
+function positionalExpansionKind(script) {
+  if (typeof script !== "string") {
+    return undefined;
+  }
+  const { segments } = scanShellSegments(script);
+  // "${@}" tokenizes as "$", "@" because braces are word delimiters, so
+  // compare the reassembled words of an expansion-only script.
+  const joined = segments.length === 1 ? segments[0].join("") : "";
+  if (/^\$(?:@|\*|\{@\}|\{\*\})$/.test(joined)) {
+    return "args";
+  }
+  return /^\$(?:0|\{0\})$/.test(joined) ? "zero" : undefined;
 }
 
 const findExecActions = new Set(["-exec", "-execdir", "-ok", "-okdir"]);

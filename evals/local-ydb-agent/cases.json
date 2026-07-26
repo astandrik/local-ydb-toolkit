@@ -211,6 +211,32 @@
     }
   },
   {
+    "id": "auth-hardening-copied-volume-rehearsal",
+    "name": "Auth hardening rehearsed on a copied volume",
+    "prompt": "We want to rehearse production-like auth/config hardening on a copied volume of our live local-ydb stack before touching the real one, instead of taking a tenant dump. What should the agent plan?",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_prepare_auth_config",
+        "local_ydb_write_dynamic_auth_config",
+        "local_ydb_apply_auth_hardening",
+        "local_ydb_auth_check"
+      ],
+      "requiredTerms": [
+        "rehears",
+        "copied volume",
+        "anonymous",
+        "authenticated"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
     "id": "cleanup-storage-plan-only",
     "name": "Cleanup storage remains destructive and plan-first",
     "prompt": "There are old local-ydb dump directories and volumes after a migration. Plan how to inspect and clean them safely using MCP tools.",
