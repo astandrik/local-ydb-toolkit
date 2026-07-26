@@ -291,6 +291,10 @@ export function scoreCase(testCase, events, options = {}) {
     if (orderFailure) {
       failures.push(orderFailure);
     }
+    const requiredTools = testCase.expected.requiredOrderedTools ?? [];
+    if (expectedSkill && requiredTools.length >= 2 && proseContradictsToolOrder(answerText, requiredTools)) {
+      failures.push("answer text contradicts the declared tool order");
+    }
     for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
       const beforeIndex = orderedTools.indexOf(beforeTool);
       const lateToolIndex = orderedTools.findIndex((candidate, index) => candidate === tool && index > beforeIndex);
@@ -334,6 +338,11 @@ export function scoreCase(testCase, events, options = {}) {
       if (containsForbiddenTerm(text, term)) {
         failures.push(`forbidden term present in earlier agent message: ${term}`);
       }
+    }
+    // Negative controls reject any local-ydb mention, negated or not, in
+    // every agent message — not only in the final answer.
+    if (!testCase.expected.shouldUseLocalYdbSkill && toolPrefixMatches(text, "local_ydb_").length > 0) {
+      failures.push("local-ydb tool mentioned in earlier agent message");
     }
     if (testCase.expected.shouldUseLocalYdbSkill) {
       const allowedTools = new Set([
@@ -546,6 +555,39 @@ function firstOrderFailure(actual, required) {
   return undefined;
 }
 
+// The prose order of required-tool mentions must not invert the declared
+// tool_sequence when the text uses explicit sequencing language: "run
+// upgrade first, then dump" contradicts a dump-before-upgrade sequence even
+// though each name is individually allowed. Mentions without sequencing
+// words carry no order claim, and paraphrases that do not name the tools
+// stay out of scope for a deterministic scan.
+function proseContradictsToolOrder(text, requiredTools) {
+  if (!/\b(?:first|then|after|afterward|afterwards|later|before|last|finally)\b/i.test(text)) {
+    return false;
+  }
+  const mentionEvents = [...new Set(requiredTools)]
+    .flatMap((tool) => exactToolMatches(text, tool).map((match) => ({ index: match.index, tool })))
+    .sort((left, right) => left.index - right.index);
+  if (mentionEvents.length === 0) {
+    return false;
+  }
+  // Greedily assign each mention to the next matching position in the
+  // required sequence, so verify-after-mutate patterns ("status, then
+  // upgrade, then status") stay consistent. A mention that only matches
+  // positions behind the walk inverts the declared order.
+  let requiredIndex = 0;
+  for (const event of mentionEvents) {
+    while (requiredIndex < requiredTools.length && requiredTools[requiredIndex] !== event.tool) {
+      requiredIndex += 1;
+    }
+    if (requiredIndex === requiredTools.length) {
+      return true;
+    }
+    requiredIndex += 1;
+  }
+  return false;
+}
+
 function containsRequiredTerm(text, term) {
   // A required term counts only when affirmed: guidance like "do not dump or
   // restore" must not satisfy a mandatory dump/restore expectation.
@@ -576,7 +618,11 @@ function containsForbiddenTerm(text, term) {
 }
 
 function forbiddenTermPattern(term) {
-  const flexible = escapeRegExp(String(term)).replace(/[\s`"':=]+/g, "[\\s`\"':=]*");
+  // Separators also tolerate common prose connectors, so guidance like "set
+  // confirm to true" or "pass the confirm flag as true" cannot bypass a
+  // "confirm=true" forbidden term by spelling the gate out in words.
+  const separator = "[\\s`\"':=]*(?:(?:to|as|of|with|a|an|the|value|flag|set)\\b[\\s`\"':=]*){0,4}";
+  const flexible = escapeRegExp(String(term)).replace(/[\s`"':=]+/g, separator);
   return new RegExp(flexible, "gi");
 }
 
@@ -619,6 +665,7 @@ const shellWrapperNames = new Set([
   "exec",
   "nohup",
   "setsid",
+  "watch",
   "xargs",
 ]);
 const shellCommandNames = new Set(["bash", "sh", "zsh", "dash"]);
@@ -906,6 +953,34 @@ function matchingParenIndex(command, openIndex) {
   return -1;
 }
 
+// Bash decodes escape sequences inside ANSI-C quoting ("$'...'"): octal,
+// hex, and 4/8-digit unicode code points (e.g. "\144" decodes to "d"), plus
+// the simple one-letter escapes. Unknown escapes keep the character itself.
+function decodeAnsiCQuotedEscape(command, index) {
+  const char = command[index] ?? "";
+  const simpleCodes = { a: 7, b: 8, e: 27, E: 27, f: 12, n: 10, r: 13, t: 9, v: 11 };
+  if (Object.hasOwn(simpleCodes, char)) {
+    return { decoded: String.fromCharCode(simpleCodes[char]), width: 1 };
+  }
+  if (char === "\\" || char === "'" || char === "\"" || char === "?") {
+    return { decoded: char, width: 1 };
+  }
+  const octal = command.slice(index).match(/^[0-7]{1,3}/);
+  if (octal) {
+    return { decoded: String.fromCharCode(parseInt(octal[0], 8) % 256), width: octal[0].length };
+  }
+  if (char === "x" || char === "u" || char === "U") {
+    const hexLength = char === "x" ? 2 : char === "u" ? 4 : 8;
+    const hex = command.slice(index + 1).match(new RegExp(`^[0-9A-Fa-f]{1,${hexLength}}`));
+    if (hex) {
+      return { decoded: String.fromCharCode(parseInt(hex[0], 16)), width: 1 + hex[0].length };
+    }
+  }
+  // Unknown escapes keep the backslash, matching Bash ("$'doc\\ker'" stays
+  // "doc\ker", which is not docker).
+  return { decoded: `\\${char}`, width: 1 };
+}
+
 function scanShellSegments(command) {
   const segments = [[]];
   const segmentEndsLine = [false];
@@ -916,6 +991,10 @@ function scanShellSegments(command) {
   // Paren depth inside arithmetic expansion/commands, where "<<" is a bit
   // shift, not a here-doc ("$((1<<2))", "((a<<b))").
   let arithDepth = 0;
+  // True while inside ANSI-C quoting ("$'...'"), where Bash decodes escape
+  // sequences: "$'\144ocker'" executes docker, so the scanned word must
+  // decode them too.
+  let ansiQuoting = false;
   const pushToken = () => {
     if (current.length > 0) {
       segments[segments.length - 1].push(current);
@@ -932,7 +1011,13 @@ function scanShellSegments(command) {
   for (let charIndex = 0; charIndex < command.length; charIndex += 1) {
     const char = command[charIndex];
     if (escaped) {
-      current += char;
+      if (ansiQuoting) {
+        const { decoded, width } = decodeAnsiCQuotedEscape(command, charIndex);
+        current += decoded;
+        charIndex += width - 1;
+      } else {
+        current += char;
+      }
       escaped = false;
       continue;
     }
@@ -943,6 +1028,7 @@ function scanShellSegments(command) {
     if (quote) {
       if (char === quote) {
         quote = undefined;
+        ansiQuoting = false;
       } else {
         current += char;
       }
@@ -950,14 +1036,16 @@ function scanShellSegments(command) {
     }
     // ANSI-C quoting ("$'...'") and locale quoting ("$\"...\"") drop the
     // leading "$": "$'docker' stop x" runs docker, so the "$" must not stay
-    // literal text in the scanned word.
+    // literal text in the scanned word. Only the ANSI-C form decodes escapes.
     if (char === "$" && (command[charIndex + 1] === "'" || command[charIndex + 1] === "\"")) {
       quote = command[charIndex + 1];
+      ansiQuoting = quote === "'";
       charIndex += 1;
       continue;
     }
     if (char === "'" || char === "\"") {
       quote = char;
+      ansiQuoting = false;
       continue;
     }
     if (char === "|") {
@@ -1281,7 +1369,10 @@ function nextCommandIndexAfterWrapper(tokens, index, name) {
     return cursor;
   }
   if (name === "xargs") {
-    return skipOptions(tokens, cursor, xargsOptionsWithValues);
+    return skipXargsOptions(tokens, cursor);
+  }
+  if (name === "watch") {
+    return skipOptions(tokens, cursor, watchOptionsWithValues);
   }
   if (name === "time") {
     return skipOptions(tokens, cursor, timeOptionsWithValues);
@@ -1303,6 +1394,36 @@ function skipOptions(tokens, index, optionsWithValues) {
       return cursor;
     }
     cursor += optionTokenWidth(token, optionsWithValues);
+  }
+  return cursor;
+}
+
+// GNU xargs takes -l, --max-lines, and --eof with an optional ATTACHED
+// argument only ("-l5", "--eof=EOF"), while BSD/POSIX xargs accepts separate
+// values ("-l 5", "-e EOF"). A separate token must not blindly stop the
+// option scan ("xargs -l 5 docker ps" would hide docker behind the "5"), so
+// -l/--max-lines consume a following numeric token and -e/--eof consume one
+// following word; "xargs -l docker ps" keeps docker as the command, matching
+// GNU semantics.
+function skipXargsOptions(tokens, index) {
+  let cursor = index;
+  while (cursor < tokens.length) {
+    const token = tokens[cursor];
+    if (token === "--") {
+      return cursor + 1;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      return cursor;
+    }
+    if ((token === "-l" || token === "--max-lines") && /^\d+$/.test(tokens[cursor + 1] ?? "")) {
+      cursor += 2;
+      continue;
+    }
+    if ((token === "-e" || token === "--eof") && tokens[cursor + 1] !== undefined && !tokens[cursor + 1].startsWith("-")) {
+      cursor += 2;
+      continue;
+    }
+    cursor += optionTokenWidth(token, xargsOptionsWithValues);
   }
   return cursor;
 }
@@ -1365,9 +1486,8 @@ const sudoOptionsWithValues = [
   "--user",
 ];
 const envOptionsWithValues = ["-C", "-S", "-u", "--chdir", "--split-string", "--unset"];
-// GNU xargs takes -l, --max-lines, and --eof with an optional ATTACHED
-// argument only ("-l5", "--eof=EOF"); a separate token after them is the
-// command to run, so they must not consume the next token here.
+// -l, --max-lines, -e, and --eof stay out of this list: their separate
+// values need the shape-aware handling in skipXargsOptions.
 const xargsOptionsWithValues = [
   "-a",
   "-d",
@@ -1386,6 +1506,9 @@ const xargsOptionsWithValues = [
 ];
 const timeOptionsWithValues = ["-f", "-o", "--format", "--output"];
 const execOptionsWithValues = ["-a"];
+// watch runs "watch [options] command"; only the interval options take a
+// separate value, everything after the options is the nested command.
+const watchOptionsWithValues = ["-n", "--interval"];
 
 function commandName(token) {
   return token.split("/").pop() ?? token;
