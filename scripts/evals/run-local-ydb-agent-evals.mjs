@@ -187,7 +187,6 @@ export function createEvalWorkspace({
   const codexHome = join(rootTemp, "codex-home");
   const homeDir = join(rootTemp, "home");
   const codexSkillDir = join(codexHome, "skills", "local-ydb");
-  const userSkillDir = join(homeDir, ".agents", "skills", "local-ydb");
   const checkoutSkillDir = join(checkoutRoot, "skills", "local-ydb");
   const checkoutEvalDir = join(checkoutRoot, "evals", "local-ydb-agent");
   const sourceSkillDir = join(root, "skills", "local-ydb");
@@ -204,13 +203,16 @@ export function createEvalWorkspace({
 
     mkdirSync(codexHome, { recursive: true });
     mkdirSync(homeDir, { recursive: true });
+    // Install the skill into exactly one discovery root: current Codex CLI
+    // versions read both $CODEX_HOME/skills and $HOME/.agents/skills, so a
+    // dual install advertises the skill twice and skews selection. The
+    // checkout copy is not a discovery root; it keeps the skill readable as
+    // a file from cwd.
     mkdirSync(dirname(codexSkillDir), { recursive: true });
-    mkdirSync(dirname(userSkillDir), { recursive: true });
     mkdirSync(dirname(checkoutSkillDir), { recursive: true });
     mkdirSync(checkoutEvalDir, { recursive: true });
     mkdirSync(resultsDir, { recursive: true });
     cpSync(sourceSkillDir, codexSkillDir, { recursive: true });
-    cpSync(sourceSkillDir, userSkillDir, { recursive: true });
     cpSync(sourceSkillDir, checkoutSkillDir, { recursive: true });
     cpSync(resolvedSchemaPath, workspaceSchemaPath);
 
@@ -748,7 +750,7 @@ Options:
   --list          Print available cases and exit.
   --case <id>    Run a single case.
   --cases <path> Use a custom cases JSON file.
-  --schema <path> Use a custom final-answer JSON schema.
+  --schema <path> Use a custom final-answer JSON schema (must keep the scorer's fixed answer shape).
   --model <name> Pass an explicit model to codex exec (recorded in the summary).
   --help          Print this help.
 `);
