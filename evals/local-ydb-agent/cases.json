@@ -224,7 +224,6 @@
         "local_ydb_auth_check"
       ],
       "requiredTerms": [
-        "rehears",
         "copied volume",
         "anonymous",
         "authenticated"
