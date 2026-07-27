@@ -562,6 +562,7 @@ describe("buildCodexEnv", () => {
       apiKey: "secret",
       transportEnv: {
         HTTP_PROXY: "http://proxy",
+        ALL_PROXY: "socks5://proxy",
         UNRELATED: "nope",
       },
     });
@@ -572,6 +573,7 @@ describe("buildCodexEnv", () => {
       CODEX_HOME: "/tmp/codex-home",
       CODEX_API_KEY: "secret",
       HTTP_PROXY: "http://proxy",
+      ALL_PROXY: "socks5://proxy",
     });
   });
 
@@ -952,6 +954,46 @@ describe("scoreCase", () => {
     );
   });
 
+  it("fails a negative control that reads the installed skill", () => {
+    const failures = scoreWith(
+      [
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "cat $CODEX_HOME/skills/local-ydb/SKILL.md",
+          },
+        },
+        finalAnswerEvent({
+          should_use_local_ydb_skill: false,
+          task_type: "other",
+          answer: "Here is a small unit test.",
+        }),
+      ],
+      { shouldUseLocalYdbSkill: false },
+    );
+
+    expect(failures).toContain(
+      "trace reads the local-ydb skill in a negative control: cat $CODEX_HOME/skills/local-ydb/SKILL.md",
+    );
+
+    // Reading the skill is expected in positive cases: not flagged there.
+    const positive = scoreWith(
+      [
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "cat $CODEX_HOME/skills/local-ydb/SKILL.md",
+          },
+        },
+        finalAnswerEvent(),
+      ],
+      { shouldUseLocalYdbSkill: true },
+    );
+    expect(positive).toEqual([]);
+  });
+
   it("validates the structured answer shape", () => {
     const run = (text) =>
       scoreWith([agentMessageEvent(text)], { shouldUseLocalYdbSkill: true });
@@ -1077,6 +1119,10 @@ describe("invokesLiveDockerOrYdb", () => {
     "sudo -E docker ps",
     "sudo --user=root docker ps",
     "sudo -- docker ps",
+    "DOCKER_HOST=ssh://host docker ps",
+    "YDB_TOKEN_CREDENTIALS=token ydb scheme ls",
+    "sudo DOCKER_HOST=ssh://host docker ps",
+    "FOO=1 sudo -n docker ps",
     "ydb scheme ls",
     "ydbd --help",
     "/usr/bin/docker ps",
@@ -1094,6 +1140,8 @@ describe("invokesLiveDockerOrYdb", () => {
     "sudo systemctl status docker",
     "sudo",
     "sudo -n",
+    "echo A=1",
+    "A=1",
     "cat docker-compose.yml",
     "bash -c 'docker ps'",
     "ssh host docker ps",
