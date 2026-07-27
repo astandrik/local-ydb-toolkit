@@ -385,6 +385,19 @@ export function scoreCase(testCase, events, options = {}) {
     failures.push(`trace contains live MCP tool call: ${name}`);
   }
 
+  // Reading the installed skill is activation even when the final answer
+  // self-reports non-use, so negative controls fail on any trace command
+  // that touches the skill path.
+  if (!testCase.expected.shouldUseLocalYdbSkill) {
+    const skillReads = events.flatMap((event) => {
+      const command = event?.item?.command;
+      return typeof command === "string" && command.includes("skills/local-ydb") ? [command] : [];
+    });
+    for (const command of skillReads) {
+      failures.push(`trace reads the local-ydb skill in a negative control: ${command}`);
+    }
+  }
+
   if (options.exitCode && options.exitCode !== 0) {
     failures.push(`codex exited with ${options.exitCode}`);
   }
@@ -536,11 +549,12 @@ function firstOrderFailure(actual, required) {
 
 // Plan-only tripwire, deliberately not a shell parser: a docker/ydb/ydbd
 // executable in command position (start of the command or right after a
-// command separator, optionally behind sudo or an absolute path) fails the
-// eval. Wrapper chains, quoting, substitutions, pipelines into shells, ssh,
-// and other indirection are out of scope — the threat model is an agent
-// that accidentally runs a direct command, and structured MCP tool calls in
-// the trace remain the authoritative gate for local-ydb mutations.
+// command separator, optionally behind environment assignments, sudo, or an
+// absolute path) fails the eval. Wrapper chains, quoting, substitutions,
+// pipelines into shells, ssh, and other indirection are out of scope — the
+// threat model is an agent that accidentally runs a direct command, and
+// structured MCP tool calls in the trace remain the authoritative gate for
+// local-ydb mutations.
 
 // sudo options that consume the following token as their value (sudo(8)).
 // Attached forms (-uroot, --user=root) are single tokens and need no skip.
@@ -565,29 +579,42 @@ const sudoValueOptions = new Set([
   "--user",
 ]);
 
-// Returns the command tokens after an optional sudo prefix, consuming sudo's
-// option tokens and the `--` separator. Unknown options are skipped without
-// a value, so an exotic value-taking option can still hide a command — that
-// residual miss is accepted by the tripwire contract.
-function tokensAfterSudo(segment) {
-  const tokens = segment.trim().split(/\s+/);
-  if (tokens[0] !== "sudo") {
-    return tokens;
+// Standard prefixes of a direct command: environment assignments and sudo.
+const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+function skipEnvAssignments(tokens, index) {
+  let cursor = index;
+  while (cursor < tokens.length && envAssignmentPattern.test(tokens[cursor])) {
+    cursor += 1;
   }
-  let index = 1;
-  while (index < tokens.length) {
-    const token = tokens[index];
-    if (token === "--") {
-      index += 1;
-      break;
-    }
-    if (!token.startsWith("-") || token === "-") {
-      break;
-    }
+  return cursor;
+}
+
+// Returns the tokens forming the actual command after the standard
+// direct-command prefixes: environment assignments (VAR=value) and sudo
+// with its option tokens and the `--` separator. Unknown sudo options are
+// skipped valueless, and assignments whose quoted values contain whitespace
+// can still hide the executable — residual misses accepted by the contract.
+function commandTokens(segment) {
+  const tokens = segment.trim().split(/\s+/);
+  let index = skipEnvAssignments(tokens, 0);
+  if (tokens[index] === "sudo") {
     index += 1;
-    if (sudoValueOptions.has(token) && index < tokens.length) {
+    while (index < tokens.length) {
+      const token = tokens[index];
+      if (token === "--") {
+        index += 1;
+        break;
+      }
+      if (!token.startsWith("-") || token === "-") {
+        break;
+      }
       index += 1;
+      if (sudoValueOptions.has(token) && index < tokens.length) {
+        index += 1;
+      }
     }
+    index = skipEnvAssignments(tokens, index);
   }
   return tokens.slice(index);
 }
@@ -596,7 +623,7 @@ export function invokesLiveDockerOrYdb(command) {
   return String(command)
     .split(/[\n;|&]+/)
     .some((segment) => {
-      const executableToken = tokensAfterSudo(segment)[0];
+      const executableToken = commandTokens(segment)[0];
       if (!executableToken) {
         return false;
       }
@@ -609,9 +636,11 @@ export function invokesLiveDockerOrYdb(command) {
 const codexTransportEnvNames = [
   "HTTP_PROXY",
   "HTTPS_PROXY",
+  "ALL_PROXY",
   "NO_PROXY",
   "http_proxy",
   "https_proxy",
+  "all_proxy",
   "no_proxy",
   "SSL_CERT_FILE",
   "NODE_EXTRA_CA_CERTS",
