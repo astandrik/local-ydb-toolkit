@@ -68,6 +68,20 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Do not mix static and dynamic image tags inside one profile.
 - For stable GHCR tests, use the exact patch tag `ghcr.io/ydb-platform/local-ydb:26.1.1.6`.
 
+## When To Use Dumps
+
+Use `local_ydb_dump_tenant` before destructive or hard-to-rollback live changes that must preserve tenant data:
+
+- version upgrades that rebuild a volume-backed profile;
+- storage-pool reduction, single-disk rebuilds, bind-mount migration, or manual storage surgery;
+- destroy/rebuild operations where the tenant data is still needed afterwards;
+- production-like auth or config hardening when the running data matters;
+- disposable restore rehearsals before touching a live stack.
+
+Use a tenant-wide dump (`path: "."`, the default) for full rebuild, upgrade, storage migration, or rollback coverage. Use a path-level dump only when the goal is one table or one directory, such as a targeted table restore test or a narrow data move.
+
+Before restore, use `local_ydb_list_dumps` to choose a valid `dumpName`. Restore only after the target tenant is bootstrapped and `local_ydb_tenant_check` succeeds. Add `describePaths` and bounded `countQueries` for restored objects before cleaning old storage or dumps.
+
 ## Scenario 0: Prerequisites
 
 Goal: verify the target host has the required base tools before any Docker or YDB checks.
