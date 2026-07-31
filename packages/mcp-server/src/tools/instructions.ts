@@ -107,10 +107,10 @@ export function buildLocalYdbInstructions(
   const sentences = instructionEntries
     .filter((entry) => entry.tools.every((name) => enabled.has(name)))
     .map((entry) => entry.text);
-  return [
-    `Available local-ydb tools by category: ${toolIndex}.`,
-    ...sentences,
-  ].join(" ");
+  const heading = toolIndex
+    ? `Available local-ydb tools by category: ${toolIndex}.`
+    : "No local-ydb tools are enabled.";
+  return [heading, ...sentences].join(" ");
 }
 
 export const localYdbInstructions = buildLocalYdbInstructions(toolDefinitions);

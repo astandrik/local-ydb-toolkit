@@ -51,13 +51,6 @@
           "name": "LOCAL_YDB_MCP_TOOLSETS",
           "description": "Optional comma-separated union of tool presets (diagnostics, developer, operator, security, all) exposed at startup; prompts and instructions are filtered together with the tools. Omit to expose every tool.",
           "isRequired": false,
-          "choices": [
-            "diagnostics",
-            "developer",
-            "operator",
-            "security",
-            "all"
-          ],
           "default": "all",
           "placeholder": "diagnostics,developer"
         },

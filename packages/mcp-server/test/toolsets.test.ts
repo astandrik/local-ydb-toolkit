@@ -271,6 +271,26 @@ describe("toolset-filtered server", () => {
       "local_ydb_auth_hardening_workflow",
     ]);
   });
+
+  it("derives the enabled surface from registered definitions, not raw selection names", async () => {
+    const server = createLocalYdbMcpServer({}, ["local_ydb_bogus_tool"]);
+    const toolsHandler = requestHandler(server, "tools/list");
+    const toolsResult = await toolsHandler({ method: "tools/list", params: {} }, {}) as {
+      tools: Array<{ name: string }>;
+    };
+    expect(toolsResult.tools).toEqual([]);
+    const promptsHandler = requestHandler(server, "prompts/list");
+    const promptsResult = await promptsHandler({ method: "prompts/list", params: {} }, {}) as {
+      prompts: Array<{ name: string }>;
+    };
+    expect(promptsResult.prompts).toEqual([]);
+  });
+
+  it("produces coherent instructions when every tool is disabled", () => {
+    const server = createLocalYdbMcpServer({}, []) as unknown as ServerForTest;
+    expect(server._instructions).toContain("No local-ydb tools are enabled.");
+    expect(server._instructions).not.toContain("by category: .");
+  });
 });
 
 describe("getLocalYdbPrompt with enabled tools", () => {

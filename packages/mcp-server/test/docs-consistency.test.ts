@@ -86,9 +86,11 @@ describe("MCP Registry metadata", () => {
     );
     expect(toolsets).toEqual(expect.objectContaining({
       isRequired: false,
-      choices: ["diagnostics", "developer", "operator", "security", "all"],
       default: "all",
     }));
+    // choices must stay unset: the variable accepts comma-separated unions
+    // such as "diagnostics,security" that single-value choices would forbid.
+    expect(toolsets?.choices).toBeUndefined();
     for (const name of ["LOCAL_YDB_MCP_ENABLE_TOOLS", "LOCAL_YDB_MCP_DISABLE_TOOLS"]) {
       expect(npmPackage.environmentVariables).toContainEqual(expect.objectContaining({
         name,

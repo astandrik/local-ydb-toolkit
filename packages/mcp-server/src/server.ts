@@ -18,8 +18,8 @@ export function createLocalYdbMcpServer(
   options: HandlerOptions = {},
   selection: readonly string[] = resolveToolSelection(),
 ): Server {
-  const enabledToolNames = new Set(selection);
   const enabledDefinitions = filterToolDefinitions(selection);
+  const enabledToolNames = new Set(enabledDefinitions.map((definition) => definition.name));
   const tools = enabledDefinitions.map(
     ({ name, description, inputSchema, annotations }) => ({
       name,
