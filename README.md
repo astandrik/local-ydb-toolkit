@@ -181,6 +181,21 @@ The server exposes 38 tools. This index is generated from the runtime tool regis
 
 <!-- END GENERATED MCP TOOLS -->
 
+<!-- BEGIN GENERATED MCP TOOLSETS -->
+## Toolsets
+
+`LOCAL_YDB_MCP_TOOLSETS` selects a comma-separated union of tool presets to expose at startup; `LOCAL_YDB_MCP_ENABLE_TOOLS` adds individual tools and `LOCAL_YDB_MCP_DISABLE_TOOLS` removes them afterwards. Unknown preset or tool names fail server startup with a validation error. When all three variables are unset, the server exposes the default `all` toolset. Prompts and server instructions are filtered together with the tools. This index is generated from the runtime toolset presets; edit `toolsetPresets` and run `npm run docs:generate` to update it.
+
+| Toolset | Tools | Included tools |
+| --- | --- | --- |
+| `diagnostics` | 14 | `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_healthcheck`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_auth_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`, `local_ydb_list_versions`, `local_ydb_pull_status` |
+| `developer` | 26 | `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_healthcheck`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_auth_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`, `local_ydb_list_versions`, `local_ydb_pull_status`, `local_ydb_generate_schema`, `local_ydb_apply_schema`, `local_ydb_check_prerequisites`, `local_ydb_bootstrap_root_database`, `local_ydb_bootstrap`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_restart_stack`, `local_ydb_pull_image`, `local_ydb_list_dumps`, `local_ydb_dump_tenant`, `local_ydb_restore_tenant` |
+| `operator` | 33 | `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_healthcheck`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_auth_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`, `local_ydb_list_versions`, `local_ydb_pull_status`, `local_ydb_generate_schema`, `local_ydb_apply_schema`, `local_ydb_check_prerequisites`, `local_ydb_bootstrap_root_database`, `local_ydb_bootstrap`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_restart_stack`, `local_ydb_pull_image`, `local_ydb_list_dumps`, `local_ydb_dump_tenant`, `local_ydb_restore_tenant`, `local_ydb_destroy_stack`, `local_ydb_upgrade_version`, `local_ydb_add_dynamic_nodes`, `local_ydb_remove_dynamic_nodes`, `local_ydb_add_storage_groups`, `local_ydb_reduce_storage_groups`, `local_ydb_cleanup_storage` |
+| `security` | 7 | `local_ydb_status_report`, `local_ydb_auth_check`, `local_ydb_permissions`, `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password` |
+| `all` | 38 | `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_healthcheck`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_generate_schema`, `local_ydb_apply_schema`, `local_ydb_permissions`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_auth_check`, `local_ydb_storage_placement`, `local_ydb_add_storage_groups`, `local_ydb_reduce_storage_groups`, `local_ydb_storage_leftovers`, `local_ydb_list_versions`, `local_ydb_pull_image`, `local_ydb_pull_status`, `local_ydb_destroy_stack`, `local_ydb_bootstrap_root_database`, `local_ydb_bootstrap`, `local_ydb_check_prerequisites`, `local_ydb_create_tenant`, `local_ydb_start_dynamic_node`, `local_ydb_add_dynamic_nodes`, `local_ydb_remove_dynamic_nodes`, `local_ydb_restart_stack`, `local_ydb_upgrade_version`, `local_ydb_list_dumps`, `local_ydb_dump_tenant`, `local_ydb_restore_tenant`, `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_cleanup_storage` |
+
+<!-- END GENERATED MCP TOOLSETS -->
+
 The npm package requires Node.js 20.19 or newer.
 
 Use the npm package directly from an MCP client:
@@ -248,6 +263,8 @@ Example MCP client config for a local checkout:
 
 `LOCAL_YDB_MCP_CONTENT_FORMAT` is optional. Use `toon` to prefer TOON for the LLM-facing text content block while keeping MCP JSON-RPC and `structuredContent` as JSON; omit it or set `json` for the default pretty JSON text. If a payload cannot be represented as lossless, decodable TOON, the server falls back to pretty JSON for that text block.
 
+Toolsets trim the exposed tool surface at startup. Set `"LOCAL_YDB_MCP_TOOLSETS": "developer"` in the same `env` block to expose 26 tools instead of 38 — a good daily-driver default that keeps bootstrap, schema, dump/restore, and diagnostics while hiding auth-hardening, storage-reduction, and destructive cleanup tools. Use `diagnostics` for read-only troubleshooting, `operator` for lifecycle work, `security` for auth tasks, and `LOCAL_YDB_MCP_ENABLE_TOOLS` / `LOCAL_YDB_MCP_DISABLE_TOOLS` for per-tool overrides. See the [Toolsets](#toolsets) table for the exact membership.
+
 Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH keys, password files, and backup paths outside committed config.
 
 ### MCP Features
@@ -257,7 +274,8 @@ workflows. Prompt templates cover stack diagnosis, root database bootstrap,
 database diagnostics, tenant topology bootstrap, schema generation/apply,
 version upgrades, auth hardening, and storage group reduction. Prompts do not execute commands; they
 return workflow instructions that guide the MCP client toward the existing
-`local_ydb_*` tools.
+`local_ydb_*` tools. When a toolset is configured, prompts and server
+instructions are filtered to only reference the enabled tools.
 
 Mutating tools remain plan-only unless called with `confirm: true`. Static MCP
 resources are intentionally left for a separate follow-up so the server does not

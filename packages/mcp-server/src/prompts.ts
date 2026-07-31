@@ -3,6 +3,7 @@ import { ErrorCode, McpError, type GetPromptResult, type Prompt } from "@modelco
 type PromptArguments = Record<string, string>;
 
 type LocalYdbPromptDefinition = Prompt & {
+  requiredTools: readonly string[];
   render: (args: PromptArguments) => string;
 };
 
@@ -40,6 +41,18 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     name: "local_ydb_diagnose_stack",
     title: "Diagnose local-ydb stack",
     description: "Inspect current local-ydb stack health before attempting repair.",
+    requiredTools: [
+      "local_ydb_status_report",
+      "local_ydb_healthcheck",
+      "local_ydb_inventory",
+      "local_ydb_database_status",
+      "local_ydb_tenant_check",
+      "local_ydb_nodes_check",
+      "local_ydb_graphshard_check",
+      "local_ydb_auth_check",
+      "local_ydb_storage_placement",
+      "local_ydb_container_logs",
+    ],
     arguments: commonOptionalArguments,
     render: (args) => [
       "Diagnose the selected local-ydb stack.",
@@ -53,6 +66,17 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     name: "local_ydb_diagnose_database",
     title: "Diagnose local-ydb database",
     description: "Run database diagnostics with YDB healthcheck as the primary signal.",
+    requiredTools: [
+      "local_ydb_status_report",
+      "local_ydb_healthcheck",
+      "local_ydb_storage_placement",
+      "local_ydb_container_logs",
+      "local_ydb_nodes_check",
+      "local_ydb_tenant_check",
+      "local_ydb_database_status",
+      "local_ydb_scheme",
+      "local_ydb_auth_check",
+    ],
     arguments: databaseOptionalArguments,
     render: (args) => [
       "Diagnose the selected local-ydb database.",
@@ -67,6 +91,10 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     name: "local_ydb_bootstrap_root_workflow",
     title: "Bootstrap root local-ydb database",
     description: "Plan a plain /local database bootstrap for generic local YDB use.",
+    requiredTools: [
+      "local_ydb_check_prerequisites",
+      "local_ydb_bootstrap_root_database",
+    ],
     arguments: commonOptionalArguments,
     render: (args) => [
       "Plan a plain /local local-ydb bootstrap.",
@@ -80,6 +108,14 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     name: "local_ydb_bootstrap_tenant_workflow",
     title: "Bootstrap tenant local-ydb topology",
     description: "Plan a CMS tenant and dynamic-node topology bootstrap.",
+    requiredTools: [
+      "local_ydb_check_prerequisites",
+      "local_ydb_bootstrap",
+      "local_ydb_database_status",
+      "local_ydb_tenant_check",
+      "local_ydb_nodes_check",
+      "local_ydb_graphshard_check",
+    ],
     arguments: commonOptionalArguments,
     render: (args) => [
       "Plan a tenant-oriented local-ydb bootstrap using the configured profile values.",
@@ -94,6 +130,14 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     name: "local_ydb_upgrade_version_workflow",
     title: "Upgrade local-ydb version",
     description: "Plan a file-backed profile version upgrade by image preflight, dump, rebuild, restore, and verification.",
+    requiredTools: [
+      "local_ydb_status_report",
+      "local_ydb_inventory",
+      "local_ydb_list_versions",
+      "local_ydb_pull_image",
+      "local_ydb_pull_status",
+      "local_ydb_upgrade_version",
+    ],
     arguments: [
       {
         name: "version",
@@ -124,6 +168,13 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     name: "local_ydb_auth_hardening_workflow",
     title: "Apply local-ydb auth hardening",
     description: "Guide native auth hardening with config preparation, dynamic-node auth config, application, and verification.",
+    requiredTools: [
+      "local_ydb_status_report",
+      "local_ydb_prepare_auth_config",
+      "local_ydb_write_dynamic_auth_config",
+      "local_ydb_apply_auth_hardening",
+      "local_ydb_auth_check",
+    ],
     arguments: [
       ...commonOptionalArguments,
       {
@@ -155,6 +206,11 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     name: "local_ydb_reduce_storage_groups_workflow",
     title: "Reduce local-ydb storage groups",
     description: "Plan storage group reduction by dump, rebuild, restore, and optional auth reapply.",
+    requiredTools: [
+      "local_ydb_status_report",
+      "local_ydb_storage_placement",
+      "local_ydb_reduce_storage_groups",
+    ],
     arguments: [
       {
         name: "count",
@@ -190,6 +246,12 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     name: "local_ydb_schema_generate_apply_workflow",
     title: "Generate and apply YDB table schema",
     description: "Guide structured table DDL generation, validation, plan-only apply, approved apply, inspection, and cleanup.",
+    requiredTools: [
+      "local_ydb_status_report",
+      "local_ydb_scheme",
+      "local_ydb_generate_schema",
+      "local_ydb_apply_schema",
+    ],
     arguments: [
       ...commonOptionalArguments,
       {
@@ -216,21 +278,38 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
   },
 ] as const;
 
-export const localYdbPrompts: Prompt[] = localYdbPromptDefinitions.map(
-  ({ name, title, description, arguments: promptArguments }) => ({
+function toPrompt(definition: LocalYdbPromptDefinition): Prompt {
+  const { name, title, description, arguments: promptArguments } = definition;
+  return {
     name,
     title,
     description,
     arguments: promptArguments,
-  }),
-);
+  };
+}
+
+function isPromptEnabled(
+  definition: LocalYdbPromptDefinition,
+  enabledTools: ReadonlySet<string>,
+): boolean {
+  return definition.requiredTools.every((tool) => enabledTools.has(tool));
+}
+
+export const localYdbPrompts: Prompt[] = localYdbPromptDefinitions.map(toPrompt);
+
+export function filterLocalYdbPrompts(enabledTools: ReadonlySet<string>): Prompt[] {
+  return localYdbPromptDefinitions
+    .filter((definition) => isPromptEnabled(definition, enabledTools))
+    .map(toPrompt);
+}
 
 export function getLocalYdbPrompt(
   name: string,
   args: PromptArguments = {},
+  enabledTools?: ReadonlySet<string>,
 ): GetPromptResult {
   const definition = localYdbPromptDefinitions.find((prompt) => prompt.name === name);
-  if (!definition) {
+  if (!definition || (enabledTools !== undefined && !isPromptEnabled(definition, enabledTools))) {
     throw new McpError(ErrorCode.InvalidParams, `Prompt ${name} not found`);
   }
   const validatedArgs = validatePromptArguments(definition, args);
