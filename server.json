@@ -46,6 +46,25 @@
           ],
           "default": "json",
           "placeholder": "toon"
+        },
+        {
+          "name": "LOCAL_YDB_MCP_TOOLSETS",
+          "description": "Optional comma-separated union of tool presets (diagnostics, developer, operator, security, all) exposed at startup; prompts and instructions are filtered together with the tools. Omit to expose every tool.",
+          "isRequired": false,
+          "default": "all",
+          "placeholder": "diagnostics,developer"
+        },
+        {
+          "name": "LOCAL_YDB_MCP_ENABLE_TOOLS",
+          "description": "Optional comma-separated tool names to add on top of the selected toolsets, for example local_ydb_permissions.",
+          "isRequired": false,
+          "placeholder": "local_ydb_permissions"
+        },
+        {
+          "name": "LOCAL_YDB_MCP_DISABLE_TOOLS",
+          "description": "Optional comma-separated tool names to remove after toolsets and enable overrides are applied, for example local_ydb_destroy_stack.",
+          "isRequired": false,
+          "placeholder": "local_ydb_destroy_stack"
         }
       ],
       "transport": {

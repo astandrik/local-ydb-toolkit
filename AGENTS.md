@@ -27,6 +27,7 @@ The live MCP integration workflow also builds the server, starts YDB through `as
 - `packages/core/` - TypeScript library for config validation, command execution, local-ydb checks, and mutating operation plans.
 - `packages/mcp-server/` - Stdio MCP server that registers public `local_ydb_*` tools and delegates to `@local-ydb-toolkit/core`.
 - `packages/mcp-server/src/tools/` - MCP tool registry, argument schemas, input schemas, instructions, and handler context.
+- `packages/mcp-server/src/tools/toolsets.ts` - `LOCAL_YDB_MCP_TOOLSETS`/`LOCAL_YDB_MCP_ENABLE_TOOLS`/`LOCAL_YDB_MCP_DISABLE_TOOLS` presets and startup filtering of tools, prompts, and instructions.
 - `packages/mcp-server/src/prompts.ts` - Guided MCP prompt templates for diagnosis, bootstrap, upgrades, auth hardening, and storage reduction.
 - `packages/mcp-server/src/response-format.ts` and `packages/mcp-server/src/responses.ts` - MCP response shaping, including optional TOON text content while keeping `structuredContent` JSON.
 - `skills/local-ydb/` - Codex skill content, references, agent metadata, scripts, and assets.

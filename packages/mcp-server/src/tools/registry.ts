@@ -597,18 +597,26 @@ export const handlers: Record<string, ToolHandler> = Object.fromEntries(
   toolDefinitions.map((definition) => [definition.name, definition.handler]),
 );
 
-export const localYdbToolIndex = localYdbToolGroups.map(
-  (group) =>
-    [
-      group,
-      toolDefinitions
-        .map((definition, index) => ({ definition, index }))
-        .filter(({ definition }) => definition.group === group)
-        .sort(
-          (left, right) =>
-            (left.definition.instructionOrder ?? left.index) -
-            (right.definition.instructionOrder ?? right.index),
-        )
-        .map(({ definition }) => definition.name),
-    ] as const,
-);
+export function buildLocalYdbToolIndex(
+  definitions: readonly ToolDefinition[],
+) {
+  return localYdbToolGroups
+    .map(
+      (group) =>
+        [
+          group,
+          definitions
+            .map((definition, index) => ({ definition, index }))
+            .filter(({ definition }) => definition.group === group)
+            .sort(
+              (left, right) =>
+                (left.definition.instructionOrder ?? left.index) -
+                (right.definition.instructionOrder ?? right.index),
+            )
+            .map(({ definition }) => definition.name),
+        ] as const,
+    )
+    .filter(([, names]) => names.length > 0);
+}
+
+export const localYdbToolIndex = buildLocalYdbToolIndex(toolDefinitions);

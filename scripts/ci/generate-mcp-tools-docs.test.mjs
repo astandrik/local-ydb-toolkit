@@ -5,7 +5,10 @@ import test from "node:test";
 import {
   END_MARKER,
   START_MARKER,
+  TOOLSETS_END_MARKER,
+  TOOLSETS_START_MARKER,
   renderToolsBlock,
+  renderToolsetsBlock,
   replaceGeneratedBlock,
 } from "./generate-mcp-tools-docs.mjs";
 
@@ -67,6 +70,47 @@ test("rejects an end marker that appears before the start marker", () => {
   assert.throws(
     () => replaceGeneratedBlock(reversed, block),
     /end marker after the start marker/,
+  );
+});
+
+test("renders the toolsets block with preset sizes and tool lists", () => {
+  const block = renderToolsetsBlock({
+    diagnostics: ["local_ydb_status_report", "local_ydb_healthcheck"],
+    all: ["local_ydb_status_report", "local_ydb_healthcheck", "local_ydb_bootstrap"],
+  });
+
+  assert.match(block, /^<!-- BEGIN GENERATED MCP TOOLSETS -->/);
+  assert.match(block, /## Toolsets/);
+  assert.match(block, /LOCAL_YDB_MCP_TOOLSETS/);
+  assert.match(block, /LOCAL_YDB_MCP_ENABLE_TOOLS/);
+  assert.match(block, /LOCAL_YDB_MCP_DISABLE_TOOLS/);
+  assert.match(block, /`diagnostics` \| 2 \| `local_ydb_status_report`, `local_ydb_healthcheck`/);
+  assert.match(block, /`all` \| 3 \|/);
+  assert.match(block, /<!-- END GENERATED MCP TOOLSETS -->$/);
+});
+
+test("replaces the toolsets block with its own markers", () => {
+  const toolsetsBlock = renderToolsetsBlock({ all: ["local_ydb_status_report"] });
+  const toolsBlock = renderToolsBlock(definitions);
+  const source = `${toolsBlock}\n\n${TOOLSETS_START_MARKER}\nold\n${TOOLSETS_END_MARKER}\n`;
+
+  const replaced = replaceGeneratedBlock(
+    source,
+    toolsetsBlock,
+    TOOLSETS_START_MARKER,
+    TOOLSETS_END_MARKER,
+  );
+  assert.equal(replaced.changed, true);
+  assert.ok(replaced.content.includes(toolsBlock));
+  assert.ok(replaced.content.includes(toolsetsBlock));
+  assert.equal(
+    replaceGeneratedBlock(
+      replaced.content,
+      toolsetsBlock,
+      TOOLSETS_START_MARKER,
+      TOOLSETS_END_MARKER,
+    ).changed,
+    false,
   );
 });
 

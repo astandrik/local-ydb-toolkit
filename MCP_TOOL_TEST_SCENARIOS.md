@@ -822,6 +822,53 @@ Avoid:
 
 - using `cleanup_storage(confirm=true)` against any active profile volume or the current auth stack
 
+## Scenario 17: Toolset Selection
+
+Goal: verify startup tool filtering via `LOCAL_YDB_MCP_TOOLSETS`, `LOCAL_YDB_MCP_ENABLE_TOOLS`, and `LOCAL_YDB_MCP_DISABLE_TOOLS`.
+
+These checks exercise the stdio server directly and do not need a Docker profile:
+
+```bash
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node packages/mcp-server/dist/index.js
+```
+
+Calls:
+
+```bash
+# default: all 38 tools
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node packages/mcp-server/dist/index.js
+
+# diagnostics preset: 14 read-only tools
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | LOCAL_YDB_MCP_TOOLSETS=diagnostics node packages/mcp-server/dist/index.js
+
+# a disabled tool is rejected at call time
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"local_ydb_bootstrap","arguments":{}}}\n' | LOCAL_YDB_MCP_TOOLSETS=diagnostics node packages/mcp-server/dist/index.js
+
+# enable/disable overrides compose on top of the preset union
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | LOCAL_YDB_MCP_TOOLSETS=diagnostics LOCAL_YDB_MCP_ENABLE_TOOLS=local_ydb_bootstrap LOCAL_YDB_MCP_DISABLE_TOOLS=local_ydb_container_logs node packages/mcp-server/dist/index.js
+
+# unknown preset fails startup with a validation error
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | LOCAL_YDB_MCP_TOOLSETS=bogus node packages/mcp-server/dist/index.js
+
+# prompts follow the enabled tools
+printf '{"jsonrpc":"2.0","id":1,"method":"prompts/list","params":{}}\n' | LOCAL_YDB_MCP_TOOLSETS=diagnostics node packages/mcp-server/dist/index.js
+```
+
+Expected:
+
+- with no toolset env vars, `tools/list` returns all 38 tools and `prompts/list` returns all 8 prompts
+- `LOCAL_YDB_MCP_TOOLSETS=diagnostics` returns exactly 14 tools, all read-only
+- calling a disabled tool returns an error result starting with `Unknown tool:`
+- `LOCAL_YDB_MCP_ENABLE_TOOLS` adds individual tools on top of the preset union; `LOCAL_YDB_MCP_DISABLE_TOOLS` removes them afterwards and wins over both
+- an unknown preset or tool name aborts startup with a validation error listing valid values
+- `prompts/list` under `diagnostics` only returns the diagnosis prompts; server instructions only reference enabled tools
+- comma-separated values are supported, e.g. `LOCAL_YDB_MCP_TOOLSETS=diagnostics,security`
+
+Avoid:
+
+- assuming env changes apply to a running server; toolsets are resolved once at startup, restart the MCP client after editing `env`
+- using `LOCAL_YDB_ENABLE_TOOLS` / `LOCAL_YDB_DISABLE_TOOLS` without the `MCP` infix; those names are not read
+
 ## Coverage Matrix
 
 - Bootstrap and lifecycle:

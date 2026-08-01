@@ -27,6 +27,16 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - For exact-GHCR `26.1.1.6` local runs, combine `topology.md`, `auth-hardening.md`, and `verification.md`; they contain field-proven steps for fresh bootstrap, restore, auth rollout, and the nightly-vs-stable pitfalls we hit in practice.
 - Prefer the MCP read-only tools `local_ydb_status_report`, `local_ydb_healthcheck`, `local_ydb_database_status`, `local_ydb_container_logs`, and `local_ydb_storage_placement` over ad hoc shell diagnostics when they are available.
 
+## MCP Toolsets
+
+The MCP server can expose a reduced tool surface, selected at server start via env:
+
+- `LOCAL_YDB_MCP_TOOLSETS` — comma-separated presets: `diagnostics` (14 read-only tools), `developer` (26, adds DDL/YQL), `operator` (33, adds lifecycle/dump-restore), `security` (7 auth-focused), `all` (38, default).
+- `LOCAL_YDB_MCP_ENABLE_TOOLS` / `LOCAL_YDB_MCP_DISABLE_TOOLS` — comma-separated tool names (or `*`) applied after presets.
+- Recommend `diagnostics` when the agent should be read-only, `developer` for day-to-day schema work; leave the default when nothing is requested.
+- Toolsets apply at startup: changing them requires an MCP server restart.
+- `Unknown tool` on a documented tool usually means it is disabled by the current toolset — the error hints at the env vars; ask the operator to adjust them and restart instead of reporting a broken server.
+
 ## Core Rules
 
 - Do not assume `/local` has GraphShard. `YDB_FEATURE_FLAGS=enable_graph_shard` is necessary but not sufficient; use a CMS-created tenant such as `/local/<tenant>`.

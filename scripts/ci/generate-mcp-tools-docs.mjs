@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const START_MARKER = "<!-- BEGIN GENERATED MCP TOOLS -->";
 export const END_MARKER = "<!-- END GENERATED MCP TOOLS -->";
+export const TOOLSETS_START_MARKER = "<!-- BEGIN GENERATED MCP TOOLSETS -->";
+export const TOOLSETS_END_MARKER = "<!-- END GENERATED MCP TOOLSETS -->";
 
 function formatGroup(group) {
   return group
@@ -57,23 +59,48 @@ export function renderToolsBlock(toolDefinitions) {
   return lines.join("\n");
 }
 
-export function replaceGeneratedBlock(source, expectedBlock) {
-  const startCount = source.split(START_MARKER).length - 1;
-  const endCount = source.split(END_MARKER).length - 1;
+export function renderToolsetsBlock(toolsetPresets) {
+  const lines = [
+    TOOLSETS_START_MARKER,
+    "## Toolsets",
+    "",
+    "`LOCAL_YDB_MCP_TOOLSETS` selects a comma-separated union of tool presets to expose at startup; `LOCAL_YDB_MCP_ENABLE_TOOLS` adds individual tools and `LOCAL_YDB_MCP_DISABLE_TOOLS` removes them afterwards. Unknown preset or tool names fail server startup with a validation error. When all three variables are unset, the server exposes the default `all` toolset. Prompts and server instructions are filtered together with the tools. This index is generated from the runtime toolset presets; edit `toolsetPresets` and run `npm run docs:generate` to update it.",
+    "",
+    "| Toolset | Tools | Included tools |",
+    "| --- | --- | --- |",
+  ];
+
+  for (const [name, tools] of Object.entries(toolsetPresets)) {
+    const toolList = tools.map((tool) => `\`${tool}\``).join(", ");
+    lines.push(`| \`${name}\` | ${tools.length} | ${toolList} |`);
+  }
+
+  lines.push("", TOOLSETS_END_MARKER);
+  return lines.join("\n");
+}
+
+export function replaceGeneratedBlock(
+  source,
+  expectedBlock,
+  startMarker = START_MARKER,
+  endMarker = END_MARKER,
+) {
+  const startCount = source.split(startMarker).length - 1;
+  const endCount = source.split(endMarker).length - 1;
   if (startCount !== 1 || endCount !== 1) {
     throw new Error(
-      `Expected exactly one generated tools marker block; found ${startCount} start and ${endCount} end markers.`,
+      `Expected exactly one generated marker block for ${startMarker}; found ${startCount} start and ${endCount} end markers.`,
     );
   }
 
-  const start = source.indexOf(START_MARKER);
-  const endIndex = source.indexOf(END_MARKER, start + START_MARKER.length);
+  const start = source.indexOf(startMarker);
+  const endIndex = source.indexOf(endMarker, start + startMarker.length);
   if (endIndex === -1) {
     throw new Error(
-      "Expected the generated tools end marker after the start marker.",
+      "Expected the generated end marker after the start marker.",
     );
   }
-  const end = endIndex + END_MARKER.length;
+  const end = endIndex + endMarker.length;
   const content = `${source.slice(0, start)}${expectedBlock}${source.slice(end)}`;
   return { content, changed: content !== source };
 }
@@ -89,8 +116,24 @@ async function main() {
     repoRoot,
     "packages/mcp-server/dist/tools/registry.js",
   );
+  const toolsetsPath = resolve(
+    repoRoot,
+    "packages/mcp-server/dist/tools/toolsets.js",
+  );
   const { toolDefinitions } = await import(pathToFileURL(registryPath).href);
-  const expectedBlock = renderToolsBlock(toolDefinitions);
+  const { toolsetPresets } = await import(pathToFileURL(toolsetsPath).href);
+  const blocks = [
+    {
+      expected: renderToolsBlock(toolDefinitions),
+      startMarker: START_MARKER,
+      endMarker: END_MARKER,
+    },
+    {
+      expected: renderToolsetsBlock(toolsetPresets),
+      startMarker: TOOLSETS_START_MARKER,
+      endMarker: TOOLSETS_END_MARKER,
+    },
+  ];
   const readmes = [
     resolve(repoRoot, "README.md"),
     resolve(repoRoot, "packages/mcp-server/README.md"),
@@ -98,13 +141,23 @@ async function main() {
   const stale = [];
 
   for (const readme of readmes) {
-    const source = readFileSync(readme, "utf8");
-    const result = replaceGeneratedBlock(source, expectedBlock);
-    if (!result.changed) {
+    let source = readFileSync(readme, "utf8");
+    let changed = false;
+    for (const block of blocks) {
+      const result = replaceGeneratedBlock(
+        source,
+        block.expected,
+        block.startMarker,
+        block.endMarker,
+      );
+      source = result.content;
+      changed = changed || result.changed;
+    }
+    if (!changed) {
       continue;
     }
     if (mode === "--write") {
-      writeFileSync(readme, result.content);
+      writeFileSync(readme, source);
     } else {
       stale.push(readme);
     }

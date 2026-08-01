@@ -81,6 +81,22 @@ describe("MCP Registry metadata", () => {
       default: "json",
       placeholder: "toon",
     }));
+    const toolsets = npmPackage.environmentVariables?.find(
+      ({ name }) => name === "LOCAL_YDB_MCP_TOOLSETS",
+    );
+    expect(toolsets).toEqual(expect.objectContaining({
+      isRequired: false,
+      default: "all",
+    }));
+    // choices must stay unset: the variable accepts comma-separated unions
+    // such as "diagnostics,security" that single-value choices would forbid.
+    expect(toolsets?.choices).toBeUndefined();
+    for (const name of ["LOCAL_YDB_MCP_ENABLE_TOOLS", "LOCAL_YDB_MCP_DISABLE_TOOLS"]) {
+      expect(npmPackage.environmentVariables).toContainEqual(expect.objectContaining({
+        name,
+        isRequired: false,
+      }));
+    }
   });
 
   it("keeps release-please paths rooted inside the configured package", () => {

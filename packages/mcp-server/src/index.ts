@@ -10,6 +10,14 @@ export { getLocalYdbPrompt, localYdbPrompts } from "./prompts.js";
 export { createLocalYdbMcpServer, callLocalYdbToolForTest } from "./server.js";
 export { localYdbInstructions } from "./tools/instructions.js";
 export { localYdbTools } from "./tools/registry.js";
+export {
+  DISABLE_TOOLS_ENV,
+  ENABLE_TOOLS_ENV,
+  TOOLSETS_ENV,
+  resolveToolSelection,
+  resolveToolSelectionFromEnv,
+  toolsetPresets,
+} from "./tools/toolsets.js";
 
 async function main(): Promise<void> {
   const server = createLocalYdbMcpServer();
