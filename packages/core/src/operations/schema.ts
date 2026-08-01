@@ -1,7 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { createConnection, createServer } from "node:net";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { Driver } from "@ydbjs/core";
 import { ExplainYqlRequest_Mode, ScriptingServiceDefinition } from "@ydbjs/api/scripting";
@@ -14,9 +11,8 @@ import {
 import { AnonymousCredentialsProvider } from "@ydbjs/auth/anonymous";
 import { StaticCredentialsProvider } from "@ydbjs/auth/static";
 import { YDBError } from "@ydbjs/error";
-import { bash, shellQuote } from "../api-client.js";
-import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { capText, normalizeMaxOutputBytes } from "./output.js";
+import { normalizeSdkDatabasePath, normalizeSdkTimeoutMs, withSdkConnection } from "./sdk-connection.js";
 import type {
   ApplySchemaOptions,
   ApplySchemaResponse,
@@ -28,12 +24,7 @@ import type {
   ToolkitContext,
 } from "./types.js";
 
-const DEFAULT_SCHEMA_TIMEOUT_MS = 120_000;
-const MAX_SCHEMA_TIMEOUT_MS = 600_000;
 export const MAX_SCHEMA_SCRIPT_CHARS = 1_048_576;
-const SSH_TUNNEL_READY_TIMEOUT_MS = 12_000;
-const SSH_TUNNEL_READY_POLL_MS = 100;
-const SSH_TUNNEL_CONNECT_TIMEOUT_MS = 250;
 const ALLOWED_STATEMENT_MESSAGE = "Only PRAGMA, CREATE TABLE, ALTER TABLE, and DROP TABLE schema statements are supported by local_ydb_apply_schema v1.";
 
 export async function applySchema(
@@ -45,8 +36,8 @@ export async function applySchema(
     throw new Error(`Unsupported schema action: ${String(action)}`);
   }
   const script = validateScript(options.script);
-  const databasePath = normalizeDatabasePath(ctx, options.databasePath);
-  const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
+  const databasePath = normalizeSdkDatabasePath(ctx, options.databasePath);
+  const timeoutMs = normalizeSdkTimeoutMs(options.timeoutMs);
   const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes);
   const schemaAnalysis = analyzeSchemaScript(script);
   const statements = {
@@ -60,7 +51,12 @@ export async function applySchema(
   const verification = schemaVerification(databasePath);
   const sdkExecutor = options.sdkExecutor ?? executeSchemaWithSdk;
 
-  return withSchemaConnection(ctx, databasePath, timeoutMs, sdkExecutor, async (baseRequest) => {
+  return withSdkConnection(ctx, {
+    databasePath,
+    timeoutMs,
+    useSshTunnel: sdkExecutor === executeSchemaWithSdk,
+    operationLabel: "YDB schema operation",
+  }, async (baseRequest) => {
     const validation = normalizeSchemaResult(
       await sdkExecutor({ ...baseRequest, mode: "validate", script }),
       maxOutputBytes,
@@ -135,31 +131,6 @@ function validateScript(script: string | undefined): string {
     throw new Error(`script must be at most ${MAX_SCHEMA_SCRIPT_CHARS} characters`);
   }
   return script;
-}
-
-function normalizeDatabasePath(ctx: ToolkitContext, databasePath: string | undefined): string {
-  const path = databasePath === undefined ? ctx.profile.tenantPath : databasePath.trim();
-  if (!path) {
-    throw new Error("databasePath must be non-empty");
-  }
-  if (!path.startsWith("/")) {
-    throw new Error("databasePath must be an absolute YDB database path");
-  }
-  const { rootDatabase } = ctx.profile;
-  if (path !== rootDatabase && !path.startsWith(`${rootDatabase}/`)) {
-    throw new Error(`databasePath must be ${rootDatabase} or a child path under ${rootDatabase}`);
-  }
-  return path;
-}
-
-function normalizeTimeoutMs(timeoutMs: number | undefined): number {
-  if (timeoutMs === undefined) {
-    return DEFAULT_SCHEMA_TIMEOUT_MS;
-  }
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_SCHEMA_TIMEOUT_MS) {
-    throw new Error(`timeoutMs must be a positive integer no greater than ${MAX_SCHEMA_TIMEOUT_MS}`);
-  }
-  return timeoutMs;
 }
 
 function analyzeSchemaScript(script: string): { count: number; kinds: SchemaStatementKind[]; hasDestructiveAlterDrop: boolean } {
@@ -360,183 +331,6 @@ function normalizeSchemaResult(result: SchemaSdkExecuteResult, maxOutputBytes: n
     issuesBytes: issues.bytes,
     issuesTruncated: issues.truncated,
   };
-}
-
-async function withSchemaConnection<T>(
-  ctx: ToolkitContext,
-  databasePath: string,
-  timeoutMs: number,
-  sdkExecutor: (request: SchemaSdkExecuteRequest) => Promise<SchemaSdkExecuteResult>,
-  run: (request: Omit<SchemaSdkExecuteRequest, "mode" | "script">) => Promise<T>,
-): Promise<T> {
-  const password = await readRootPassword(ctx);
-  const remotePort = schemaGrpcPort(ctx, databasePath);
-  const endpointPath = databasePath;
-
-  if (ctx.profile.mode !== "ssh" || sdkExecutor !== executeSchemaWithSdk) {
-    const endpoint = `grpc://127.0.0.1:${remotePort}`;
-    return run({
-      connectionString: `${endpoint}${endpointPath}`,
-      databasePath,
-      endpoint,
-      timeoutMs,
-      rootUser: password ? ctx.profile.rootUser : undefined,
-      rootPassword: password,
-    });
-  }
-
-  const localPort = await allocateLocalPort();
-  const tunnel = await startSshTunnel(ctx.profile, localPort, remotePort);
-  try {
-    const endpoint = `grpc://127.0.0.1:${localPort}`;
-    return await run({
-      connectionString: `${endpoint}${endpointPath}`,
-      databasePath,
-      endpoint,
-      timeoutMs,
-      rootUser: password ? ctx.profile.rootUser : undefined,
-      rootPassword: password,
-    });
-  } finally {
-    tunnel.kill("SIGTERM");
-  }
-}
-
-function schemaGrpcPort(ctx: ToolkitContext, databasePath: string): number {
-  const { rootDatabase, tenantPath, ports } = ctx.profile;
-  if (databasePath === tenantPath || databasePath.startsWith(`${tenantPath}/`)) {
-    return ports.dynamicGrpc;
-  }
-  if (databasePath === rootDatabase || databasePath.startsWith(`${rootDatabase}/`)) {
-    return ports.staticGrpc;
-  }
-  return ports.dynamicGrpc;
-}
-
-async function readRootPassword(ctx: ToolkitContext): Promise<string | undefined> {
-  const file = ctx.profile.rootPasswordFile;
-  if (!file) {
-    return undefined;
-  }
-  if (ctx.profile.mode === "ssh") {
-    const result = await ctx.client.run(bash(`cat ${shellQuote(file)}`, {
-      description: "Read YDB root password file",
-      redactions: [file],
-    }));
-    if (!result.ok) {
-      throw new Error("Failed to read configured YDB root password file from the target profile");
-    }
-    return result.stdout.trimEnd();
-  }
-  try {
-    return readFileSync(file, "utf8").trimEnd();
-  } catch {
-    throw new Error("Failed to read configured YDB root password file from the target profile");
-  }
-}
-
-async function allocateLocalPort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate a local SSH tunnel port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(port);
-        }
-      });
-    });
-  });
-}
-
-async function startSshTunnel(
-  profile: ResolvedLocalYdbProfile,
-  localPort: number,
-  remotePort: number,
-): Promise<ChildProcessWithoutNullStreams> {
-  const ssh = profile.ssh;
-  if (!ssh) {
-    throw new Error("ssh profile settings are required");
-  }
-  const args = [
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=10",
-    "-o", "ExitOnForwardFailure=yes",
-    "-N",
-    "-L", `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
-  ];
-  if (ssh.port) {
-    args.push("-p", String(ssh.port));
-  }
-  if (ssh.identityFile) {
-    args.push("-i", ssh.identityFile);
-  }
-  args.push(ssh.user ? `${ssh.user}@${ssh.host}` : ssh.host);
-
-  const child = spawn("ssh", args);
-  child.stdout.resume();
-  child.stderr.resume();
-  try {
-    await waitForSshTunnelReady(child, localPort);
-  } catch (error) {
-    child.kill("SIGTERM");
-    throw error;
-  }
-  return child;
-}
-
-async function waitForSshTunnelReady(child: ChildProcessWithoutNullStreams, localPort: number): Promise<void> {
-  let childFailure: Error | undefined;
-  const onError = () => {
-    childFailure = new Error("Failed to start SSH tunnel for YDB schema operation");
-  };
-  const onExit = () => {
-    childFailure = new Error("Failed to establish SSH tunnel for YDB schema operation");
-  };
-  child.once("error", onError);
-  child.once("exit", onExit);
-  try {
-    const deadline = Date.now() + SSH_TUNNEL_READY_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (childFailure) {
-        throw childFailure;
-      }
-      if (child.exitCode !== null) {
-        throw new Error("Failed to establish SSH tunnel for YDB schema operation");
-      }
-      if (await canConnectToLocalPort(localPort)) {
-        return;
-      }
-      await delay(SSH_TUNNEL_READY_POLL_MS);
-    }
-    throw new Error("Timed out establishing SSH tunnel for YDB schema operation");
-  } finally {
-    child.off("error", onError);
-    child.off("exit", onExit);
-  }
-}
-
-function canConnectToLocalPort(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = createConnection({ host: "127.0.0.1", port });
-    const finish = (ok: boolean) => {
-      socket.removeAllListeners();
-      socket.destroy();
-      resolve(ok);
-    };
-    socket.setTimeout(SSH_TUNNEL_CONNECT_TIMEOUT_MS);
-    socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
-    socket.once("timeout", () => finish(false));
-  });
 }
 
 export async function executeSchemaWithSdk(request: SchemaSdkExecuteRequest): Promise<SchemaSdkExecuteResult> {

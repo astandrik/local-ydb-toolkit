@@ -45,7 +45,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@toon-format/toon": "^2.3.0",
-    "@ydbjs/api": "^6.0.0",
+    "@ydbjs/api": "^6.0.7",
     "@ydbjs/auth": "^6.3.0",
     "@ydbjs/core": "^6.3.0",
     "@ydbjs/error": "^6.0.5",

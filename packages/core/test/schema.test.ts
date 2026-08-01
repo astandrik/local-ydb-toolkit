@@ -7,6 +7,7 @@ import {
   createContext,
   type SchemaSdkExecuteRequest,
   type SchemaSdkExecuteResult,
+  withSdkConnection,
 } from "../src/index.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -22,6 +23,46 @@ function successfulSdkRecorder(calls: SchemaSdkExecuteRequest[] = []): (request:
 }
 
 describe("schema application", () => {
+  it("provides normalized root and tenant SDK connections with local credentials", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "local-ydb-sdk-connection-test-"));
+    const passwordFile = join(tempDir, "root.password");
+    writeFileSync(passwordFile, "S3cr3t!\n", "utf8");
+    try {
+      const ctx = createContext(undefined, undefined, ConfigSchema.parse({
+        profiles: {
+          default: {
+            rootPasswordFile: passwordFile,
+          },
+        },
+      }));
+
+      const tenant = await withSdkConnection(ctx, {
+        databasePath: "/local/example",
+        timeoutMs: 1_500,
+      }, async (connection) => connection);
+      const root = await withSdkConnection(ctx, {
+        databasePath: "/local",
+        timeoutMs: 1_500,
+      }, async (connection) => connection);
+
+      expect(tenant).toMatchObject({
+        databasePath: "/local/example",
+        endpoint: "grpc://127.0.0.1:2137",
+        connectionString: "grpc://127.0.0.1:2137/local/example",
+        timeoutMs: 1_500,
+        rootUser: "root",
+        rootPassword: "S3cr3t!",
+      });
+      expect(root).toMatchObject({
+        databasePath: "/local",
+        endpoint: "grpc://127.0.0.1:2136",
+        connectionString: "grpc://127.0.0.1:2136/local",
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("validates table DDL without applying it by default", async () => {
     const calls: SchemaSdkExecuteRequest[] = [];
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
