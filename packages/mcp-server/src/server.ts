@@ -52,7 +52,7 @@ export function createLocalYdbMcpServer(
     const name = request.params.name;
     const handler = enabledHandlers.get(name);
     if (!handler) {
-      return errorResult(`Unknown tool: ${name}`);
+      return errorResult(`Unknown tool: ${name}. If this tool exists, it may be disabled by the current toolset selection; check LOCAL_YDB_MCP_TOOLSETS, LOCAL_YDB_MCP_ENABLE_TOOLS, and LOCAL_YDB_MCP_DISABLE_TOOLS and restart the MCP server.`);
     }
     try {
       const responseContentFormat = resolveResponseContentFormat(options.responseContentFormat);

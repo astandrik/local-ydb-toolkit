@@ -207,6 +207,7 @@ describe("toolset-filtered server", () => {
     }, {}) as ToolResultForTest;
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("Unknown tool: local_ydb_bootstrap");
+    expect(result.content[0]?.text).toContain("LOCAL_YDB_MCP_TOOLSETS");
   });
 
   it("rebuilds instructions without references to disabled tools", () => {
@@ -224,6 +225,7 @@ describe("toolset-filtered server", () => {
     expect(server._instructions).toContain("local_ydb_check_prerequisites");
     expect(server._instructions).toContain("local_ydb_upgrade_version");
     expect(server._instructions).toContain("PENDING_RESOURCES");
+    expect(server._instructions).toContain("LOCAL_YDB_MCP_TOOLSETS");
   });
 
   it("lists only prompts covered by the enabled tools", async () => {
@@ -290,6 +292,7 @@ describe("toolset-filtered server", () => {
     const server = createLocalYdbMcpServer({}, []) as unknown as ServerForTest;
     expect(server._instructions).toContain("No local-ydb tools are enabled.");
     expect(server._instructions).not.toContain("by category: .");
+    expect(server._instructions).toContain("LOCAL_YDB_MCP_TOOLSETS");
   });
 });
 

@@ -60,6 +60,10 @@ const instructionEntries: readonly InstructionEntry[] = [
     text: "Prefer exact image tags for local-ydb stacks and avoid mixing static and dynamic image versions in one stack.",
   },
   {
+    tools: [],
+    text: "The exposed tool set is selected at server startup via LOCAL_YDB_MCP_TOOLSETS, LOCAL_YDB_MCP_ENABLE_TOOLS, and LOCAL_YDB_MCP_DISABLE_TOOLS; if a documented local_ydb_* tool is missing or returns Unknown tool, ask the operator to adjust those variables and restart the MCP server instead of assuming the server is broken.",
+  },
+  {
     tools: ["local_ydb_upgrade_version"],
     text: "For volume-backed version upgrades, prefer local_ydb_upgrade_version, which requires a file-backed config path, verifies source and target images are present, then uses dump, rebuild, restore, auth reapply, extra-node recreation, image verification, and profile image persistence instead of reusing an old volume in place; bindMountPath profiles are not supported.",
   },

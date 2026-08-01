@@ -1,6 +1,6 @@
-# MCP Tool Scenarios
+# MCP Tool Test Scenarios
 
-Concrete scenarios for testing every `local-ydb` MCP tool in this repository.
+Concrete scenarios for testing every `local_ydb_*` MCP tool in this repository.
 
 These scenarios are intentionally opinionated and reflect what actually worked in this repo during local runs.
 
@@ -114,6 +114,8 @@ Calls:
 { "tool": "local_ydb_status_report", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_healthcheck", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "list", "recursive": true, "onePerLine": true } }
+{ "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "action": "describe", "path": "/local/example", "stats": true } }
 { "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
@@ -123,15 +125,21 @@ Expected:
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
 - `status_report` returns a structured snapshot, including healthcheck output, even when the stack is not yet healthy.
 - `healthcheck` returns the YDB `selfCheckResult`, issue counts, issue types, capped raw output, and truncated `issue_log` entries when present.
-- `scheme` and `permissions` default to the tenant root for read-only schema and ACL inspection.
+- `scheme` defaults to the tenant root, returns `command`, capped `stdout`/`stderr`, original uncapped byte counts, and truncation flags.
+- `permissions` defaults to the tenant root for read-only ACL inspection and returns the owner, direct permissions, and effective permissions from the YDB CLI output.
+- recursive scheme listings should use `maxOutputBytes` when the tenant has many objects.
 
 Avoid:
 
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
+- Passing list-only flags such as `recursive` to `action=describe`, or `stats` to `action=list`.
 
 ## Scenario 1A: Schema Generate and Apply
 
 Goal: verify structured YDB table DDL generation, SDK validation, confirm-gating, application, inspection, and cleanup.
+
+Profile:
+`ghcr261-auth`
 
 Calls:
 
@@ -146,30 +154,34 @@ Calls:
 
 Expected:
 
-- schema generation returns generated DDL, script SHA-256, statement kinds, official YDB references, risk, warnings, verification steps, and SDK validation when `validate=true`
-- bare table `WITH` tokens such as `AUTO_PARTITIONING_BY_SIZE = ENABLED` are represented as `{ "token": "ENABLED" }` in the structured spec
-- validation runs through the YDB JS SDK and does not apply DDL
-- apply without `confirm=true` is plan-only after validation
-- confirmed apply reports script SHA-256, statement kinds, validation/execution status, risk, rollback, and verification without echoing raw DDL or credential paths
-- `DROP TABLE` and destructive `ALTER TABLE ... DROP ...` actions are high risk
-- `CREATE TABLE` `notNull` is used only for columns that are part of `primaryKey`; non-key required business fields should be enforced by application validation or a later YDB feature path
-- `partitionByHash` is used only with `store: "column"` and primary key columns; row tables use row partitioning `WITH` settings instead
-- column names with the reserved `__ydb_` prefix, unsupported column-oriented table types, `ALTER TABLE ADD COLUMN` `notNull`/`default`, duplicate add/drop column actions, and generated scripts over 1 MiB are rejected before validation/application
-- If an index needs a newly added column, generate/apply the `addColumn` first, then run a separate generate/apply call for `addIndex`; do not add an index on a column dropped in the same `alterTable` spec
-- `vector_kmeans_tree` indexes include `global: true`, `sync: "sync"`, no `unique`, and complete `with` settings: `vector_dimension`, `vector_type`, either `distance` or `similarity`, `clusters`, and `levels`
-- normal secondary indexes are global-only, do not accept creation-time `with` settings, unique indexes are synchronous, and creating a table with a vector index returns a warning that adding the vector index after loading representative data is preferred
+- `local_ydb_generate_schema` returns generated DDL text, script SHA-256, statement kinds, official YDB references, warnings, risk, verification steps, and SDK validation status when `validate=true`.
+- bare table `WITH` tokens such as `AUTO_PARTITIONING_BY_SIZE = ENABLED` are represented as `{ "token": "ENABLED" }` in the structured spec.
+- `action=validate` returns SDK validation status and never applies DDL.
+- `action=apply` without `confirm=true` validates and returns planned SDK validation/application steps only.
+- confirmed apply returns a script SHA-256, statement count/kinds, validation result, execution result, risk, rollback notes, and verification steps.
+- the response does not echo the raw DDL script or configured credential paths.
+- `DROP TABLE` and destructive `ALTER TABLE ... DROP ...` actions are reported as high risk.
+- `CREATE TABLE` `notNull` is used only for columns that are part of `primaryKey`; non-key required business fields should be enforced by application validation or a later YDB feature path.
+- `partitionByHash` is used only with `store: "column"` and primary key columns; row tables use row partitioning `WITH` settings instead.
+- column names with the reserved `__ydb_` prefix, unsupported column-oriented table types, `ALTER TABLE ADD COLUMN` `notNull`/`default`, duplicate add/drop column actions, and generated scripts over 1 MiB are rejected before validation/application.
+- If an index needs a newly added column, generate/apply the `addColumn` first, then run a separate generate/apply call for `addIndex`; do not add an index on a column dropped in the same `alterTable` spec.
+- `vector_kmeans_tree` indexes include `global: true`, `sync: "sync"`, no `unique`, and complete `with` settings: `vector_dimension`, `vector_type`, either `distance` or `similarity`, `clusters`, and `levels`.
+- normal secondary indexes are global-only, do not accept creation-time `with` settings, unique indexes are synchronous, and creating a table with a vector index returns a warning that adding the vector index after loading representative data is preferred.
 
 Avoid:
 
-- assuming generated DDL was applied; apply still goes through `local_ydb_apply_schema` and requires `confirm=true`
-- using schema apply for DML, user/auth DDL, ACLs, topics, transfers, or views
-- assuming rollback is automatic
+- assuming generated DDL was applied. Apply still goes through `local_ydb_apply_schema` and requires `confirm=true`.
+- using this tool for DML, user/auth DDL, ACLs, topics, transfers, or views; v1 supports only `PRAGMA`, `CREATE TABLE`, `ALTER TABLE`, and `DROP TABLE`.
+- treating rollback notes as automatic rollback. Schema DDL needs explicit inverse DDL or restore from dump.
 
 ## Scenario 1A.1: Diverse Schema Generate Probes
 
 Goal: exercise the structured generator against common schema shapes before relying on it for a larger migration.
 
-Calls:
+Profile:
+`ghcr261-auth`
+
+Probe specs:
 
 ```json
 { "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "createTable", "tableName": "schema_probe_column_partition", "store": "column", "partitionByHash": ["tenant_id"], "columns": [{ "name": "tenant_id", "type": "Utf8", "notNull": true }, { "name": "ts", "type": "Timestamp", "notNull": true }, { "name": "value", "type": "Double" }], "primaryKey": ["tenant_id", "ts"], "with": { "AUTO_PARTITIONING_MIN_PARTITIONS_COUNT": 2 } }] } }
@@ -181,11 +193,43 @@ Calls:
 
 Expected:
 
-- each positive generated script validates, then goes through `local_ydb_apply_schema action=apply confirm=false` before any confirmed apply
-- created probe tables are described with `local_ydb_scheme action=describe` and then cleaned up with validated/confirmed `DROP TABLE`
-- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, unsupported column-store key/non-key types, local secondary indexes, secondary index `with` settings, async unique indexes, unique vector indexes, same-spec add/drop column references from indexes, duplicate add/drop column/index actions, `ALTER TABLE ADD COLUMN` `notNull`/`default`, `with.STORE`, reserved `__ydb_` column names, missing primary/index columns, invalid types, invalid setting names/tokens, and scripts over 1 MiB before rendering or validation
+- each positive generated script validates, then goes through `local_ydb_apply_schema action=apply confirm=false` before any confirmed apply.
+- created probe tables are described with `local_ydb_scheme action=describe` and then cleaned up with validated/confirmed `DROP TABLE`.
+- generator-only negative probes reject row-table `partitionByHash`, non-primary-key `partitionByHash`, empty `partitionByHash`/`cover`, column-store secondary indexes, unsupported column-store key/non-key types, local secondary indexes, secondary index `with` settings, async unique indexes, unique vector indexes, same-spec add/drop column references from indexes, duplicate add/drop column/index actions, `ALTER TABLE ADD COLUMN` `notNull`/`default`, `with.STORE`, reserved `__ydb_` column names, missing primary/index columns, invalid types, invalid setting names/tokens, and scripts over 1 MiB before rendering or validation.
 
-## Scenario 1B: Published Image Tags
+## Scenario 1B: Schema Permissions
+
+Goal: verify ACL command construction and confirm-gating without accidentally changing an active stack.
+
+Profile:
+`ghcr261-auth`
+
+Calls:
+
+```json
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "list", "path": "/local/example" } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "grant", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "revoke", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "set", "path": "/local/example", "subject": "testuser", "permissions": ["ydb.generic.read", "ydb.generic.list"], "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "clear", "path": "/local/example", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "chown", "path": "/local/example", "owner": "root", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "clear-inheritance", "path": "/local/example", "confirm": false } }
+{ "tool": "local_ydb_permissions", "arguments": { "profile": "ghcr261-auth", "action": "set-inheritance", "path": "/local/example", "confirm": false } }
+```
+
+Expected:
+
+- `action=list` executes without `confirm` and returns capped stdout/stderr plus byte counts.
+- mutating actions return `executed=false`, planned command text, rollback notes, and verification steps when `confirm` is omitted or false.
+- `grant`, `revoke`, and `set` render each permission as a separate `-p` argument.
+- authenticated profiles redact configured password-file paths in planned command text.
+
+Avoid:
+
+- using `confirm: true` for `clear`, `chown`, or inheritance changes unless the target path and rollback are already captured by `action=list`.
+- passing a comma-separated permission string; use the structured `permissions` array.
+
+## Scenario 1C: Published Image Tags
 
 Goal: verify that the registry tag listing tool can discover concrete `local-ydb` image versions before an upgrade.
 
@@ -209,7 +253,7 @@ Avoid:
 - assuming `latest` is the only safe upgrade target
 - using a short major/minor tag in production-like checks when an exact patch tag is available
 
-## Scenario 1C: Background Image Pull
+## Scenario 1D: Background Image Pull
 
 Goal: start slow registry downloads outside synchronous bootstrap or upgrade calls.
 
@@ -260,7 +304,7 @@ Avoid:
 - using the tenant bootstrap tool when the task only needs `/local`
 - treating a missing configured tenant as a root database failure
 
-## Scenario 3: Fresh Bootstrap on an Isolated GHCR Stack
+## Scenario 3: Fresh Tenant Bootstrap on an Isolated GHCR Stack
 
 Goal: validate network/volume/static/dynamic bring-up on a clean profile.
 
@@ -616,11 +660,13 @@ Optional explicit targeting:
 
 ```json
 { "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "containers": ["ydb-dyn-example-ghcr261-2"] } }
+{ "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "nodeIds": [50001] } }
 ```
 
 Avoid:
 
 - treating the profile's main `dynamicContainer` as removable through this tool
+- using `nodeIds` for the base dynamic node; only IDs that resolve to extra dynamic-node containers are removable
 - removing multiple extra nodes at once on a live stack without checking `nodelist` after each removal
 
 ## Scenario 13: Add Storage Groups
@@ -775,6 +821,53 @@ Expected:
 Avoid:
 
 - using `cleanup_storage(confirm=true)` against any active profile volume or the current auth stack
+
+## Scenario 17: Toolset Selection
+
+Goal: verify startup tool filtering via `LOCAL_YDB_MCP_TOOLSETS`, `LOCAL_YDB_MCP_ENABLE_TOOLS`, and `LOCAL_YDB_MCP_DISABLE_TOOLS`.
+
+These checks exercise the stdio server directly and do not need a Docker profile:
+
+```bash
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node packages/mcp-server/dist/index.js
+```
+
+Calls:
+
+```bash
+# default: all 38 tools
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node packages/mcp-server/dist/index.js
+
+# diagnostics preset: 14 read-only tools
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | LOCAL_YDB_MCP_TOOLSETS=diagnostics node packages/mcp-server/dist/index.js
+
+# a disabled tool is rejected at call time
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"local_ydb_bootstrap","arguments":{}}}\n' | LOCAL_YDB_MCP_TOOLSETS=diagnostics node packages/mcp-server/dist/index.js
+
+# enable/disable overrides compose on top of the preset union
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | LOCAL_YDB_MCP_TOOLSETS=diagnostics LOCAL_YDB_MCP_ENABLE_TOOLS=local_ydb_bootstrap LOCAL_YDB_MCP_DISABLE_TOOLS=local_ydb_container_logs node packages/mcp-server/dist/index.js
+
+# unknown preset fails startup with a validation error
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | LOCAL_YDB_MCP_TOOLSETS=bogus node packages/mcp-server/dist/index.js
+
+# prompts follow the enabled tools
+printf '{"jsonrpc":"2.0","id":1,"method":"prompts/list","params":{}}\n' | LOCAL_YDB_MCP_TOOLSETS=diagnostics node packages/mcp-server/dist/index.js
+```
+
+Expected:
+
+- with no toolset env vars, `tools/list` returns all 38 tools and `prompts/list` returns all 8 prompts
+- `LOCAL_YDB_MCP_TOOLSETS=diagnostics` returns exactly 14 tools, all read-only
+- calling a disabled tool returns an error result starting with `Unknown tool:`
+- `LOCAL_YDB_MCP_ENABLE_TOOLS` adds individual tools on top of the preset union; `LOCAL_YDB_MCP_DISABLE_TOOLS` removes them afterwards and wins over both
+- an unknown preset or tool name aborts startup with a validation error listing valid values
+- `prompts/list` under `diagnostics` only returns the diagnosis prompts; server instructions only reference enabled tools
+- comma-separated values are supported, e.g. `LOCAL_YDB_MCP_TOOLSETS=diagnostics,security`
+
+Avoid:
+
+- assuming env changes apply to a running server; toolsets are resolved once at startup, restart the MCP client after editing `env`
+- using `LOCAL_YDB_ENABLE_TOOLS` / `LOCAL_YDB_DISABLE_TOOLS` without the `MCP` infix; those names are not read
 
 ## Coverage Matrix
 
