@@ -161,7 +161,7 @@ export async function verifyManagedSqlLive({
       action: "explain",
       script: `ALTER TABLE ${quotedTableName} ADD COLUMN note Utf8;`,
     });
-    assertExplainSucceeded(ddlExplain, "ordinary DDL explain");
+    assertSucceeded(ddlExplain, "ordinary DDL explain");
 
     const ctasExplain = await sql({
       action: "explain",

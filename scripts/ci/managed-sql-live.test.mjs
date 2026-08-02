@@ -105,6 +105,16 @@ test("runs the bounded managed SQL safety sequence and cleans up its table", asy
   assert.equal(fixture.calls.at(-1).args.script, `DROP TABLE \`${tableName}\`;`);
 });
 
+test("accepts successful ordinary DDL explain without a plan or AST", async () => {
+  const fixture = managedSqlFixture({ omitDdlExplainPayload: true });
+
+  await verifyManagedSqlLive({
+    callTool: fixture.callTool,
+    profile: "ci-action",
+    tableName: "managed_sql_empty_ddl_explain_fixture",
+  });
+});
+
 test("attempts schema cleanup when a managed SQL assertion fails after setup", async () => {
   const fixture = managedSqlFixture({ failStandaloneExplain: true });
 
@@ -211,7 +221,10 @@ test("rejects an unsafe injected table name before calling MCP", async () => {
   assert.equal(calls, 0);
 });
 
-function managedSqlFixture({ failStandaloneExplain = false } = {}) {
+function managedSqlFixture({
+  failStandaloneExplain = false,
+  omitDdlExplainPayload = false,
+} = {}) {
   const calls = [];
   const state = {
     tableExists: false,
@@ -303,7 +316,9 @@ function managedSqlFixture({ failStandaloneExplain = false } = {}) {
     if (args.action === "explain" && args.script.startsWith("ALTER TABLE ")) {
       return sqlResponse({
         action: "explain",
-        execution: executionResult({ queryPlan: "{\"plan\":\"ddl\"}" }),
+        execution: executionResult(omitDdlExplainPayload
+          ? {}
+          : { queryPlan: "{\"plan\":\"ddl\"}" }),
       });
     }
     if (args.action === "explain" && args.script.startsWith("CREATE TABLE ")) {
