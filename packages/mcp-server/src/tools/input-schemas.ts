@@ -199,6 +199,218 @@ export function applySchemaSchema(): Tool["inputSchema"] {
   };
 }
 
+const sqlPrimitiveNames = [
+  "Bool",
+  "Int8",
+  "Int16",
+  "Int32",
+  "Int64",
+  "Uint8",
+  "Uint16",
+  "Uint32",
+  "Uint64",
+  "Float",
+  "Double",
+  "String",
+  "Utf8",
+  "Json",
+  "JsonDocument",
+  "Yson",
+  "Uuid",
+  "Date",
+  "Datetime",
+  "Timestamp",
+  "Interval",
+  "TzDate",
+  "TzDatetime",
+  "TzTimestamp",
+  "Date32",
+  "Datetime64",
+  "Timestamp64",
+  "Interval64",
+  "DyNumber",
+] as const;
+
+export function sqlSchema(): Tool["inputSchema"] {
+  const typeRef = { $ref: "#/$defs/sqlParameterType" };
+  return {
+    type: "object",
+    required: ["script"],
+    properties: {
+      profile: profileProperty(),
+      configPath: configPathProperty(),
+      action: {
+        type: "string",
+        enum: ["query", "explain", "execute"],
+        default: "query",
+        description:
+          "Managed YQL action. query uses SnapshotRO, explain returns plan/AST without execution, and execute always EXPLAIN-preflights before optional confirmed NoTx execution.",
+      },
+      script: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1_048_576,
+        description:
+          "YQL v1 script. Parameter DECLARE statements are generated from parameters and prepended before execution.",
+      },
+      databasePath: {
+        type: "string",
+        minLength: 1,
+        description:
+          "Configured tenant or root database path. Defaults to the selected profile tenant path; root paths use the static gRPC port.",
+      },
+      timeoutMs: {
+        type: "integer",
+        minimum: 1,
+        maximum: 600_000,
+        default: 120_000,
+        description:
+          "Single deadline in milliseconds shared by connection, session, preflight, execution, and cancellation.",
+      },
+      maxRows: {
+        type: "integer",
+        minimum: 1,
+        maximum: 10_000,
+        default: 100,
+        description:
+          "Maximum retained rows per result set.",
+      },
+      maxOutputBytes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 1_048_576,
+        default: 65_536,
+        description:
+          "Shared retained-output budget for issues, plan/AST, columns, and rows.",
+      },
+      parameters: {
+        type: "object",
+        maxProperties: 100,
+        propertyNames: {
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+        },
+        additionalProperties: {
+          $ref: "#/$defs/sqlParameter",
+        },
+        description:
+          "Typed YQL parameters keyed by bare name. Values use the documented JSON representation and are never echoed in response metadata.",
+      },
+      confirm: {
+        type: "boolean",
+        description:
+          "Considered only for action=execute. Must be true to send one NoTx execution after successful EXPLAIN; query remains SnapshotRO even when true.",
+      },
+    },
+    $defs: {
+      sqlParameter: {
+        oneOf: [{
+          type: "object",
+          required: ["type", "value"],
+          properties: {
+            type: typeRef,
+            value: {
+              description:
+                "JSON value matching the declared YDB type; 64-bit integers, Decimal, and DyNumber use strings, while String/Yson use canonical base64.",
+            },
+          },
+          additionalProperties: false,
+        }],
+      },
+      sqlParameterType: {
+        oneOf: [
+          {
+            type: "object",
+            required: ["kind", "name"],
+            properties: {
+              kind: { const: "primitive" },
+              name: { type: "string", enum: sqlPrimitiveNames },
+            },
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            required: ["kind", "precision", "scale"],
+            properties: {
+              kind: { const: "decimal" },
+              precision: { type: "integer", minimum: 1, maximum: 35 },
+              scale: {
+                type: "integer",
+                minimum: 0,
+                maximum: 35,
+                description: "Must not exceed precision.",
+              },
+            },
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            required: ["kind", "item"],
+            properties: {
+              kind: { const: "optional" },
+              item: typeRef,
+            },
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            required: ["kind", "item"],
+            properties: {
+              kind: { const: "list" },
+              item: typeRef,
+            },
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            required: ["kind", "items"],
+            properties: {
+              kind: { const: "tuple" },
+              items: {
+                type: "array",
+                items: typeRef,
+                maxItems: 1_000,
+              },
+            },
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            required: ["kind", "fields"],
+            properties: {
+              kind: { const: "struct" },
+              fields: {
+                type: "array",
+                maxItems: 1_000,
+                items: {
+                  type: "object",
+                  required: ["name", "type"],
+                  properties: {
+                    name: { type: "string", minLength: 1 },
+                    type: typeRef,
+                  },
+                  additionalProperties: false,
+                },
+              },
+            },
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            required: ["kind", "key", "value"],
+            properties: {
+              kind: { const: "dict" },
+              key: typeRef,
+              value: typeRef,
+            },
+            additionalProperties: false,
+          },
+        ],
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
 const scalarSchema = {
   oneOf: [
     { type: "string" },

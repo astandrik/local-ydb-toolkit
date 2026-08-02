@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { decode } from "@toon-format/toon";
+import { StatusIds_StatusCode } from "@ydbjs/api/operation";
 import { describe, expect, it } from "vitest";
 import {
   commandToShell,
@@ -10,7 +11,8 @@ import {
   type CommandExecutor,
   type CommandResult,
   type CommandSpec,
-  type ResolvedLocalYdbProfile
+  type ResolvedLocalYdbProfile,
+  type SqlBackendExecutor,
 } from "@local-ydb-toolkit/core";
 import {
   callLocalYdbToolForTest,
@@ -23,7 +25,7 @@ import {
 } from "../src/index.js";
 import { normalizeResponseContentFormat } from "../src/response-format.js";
 import { successResult } from "../src/responses.js";
-import { toolDefinitions } from "../src/tools/registry.js";
+import { localYdbToolGroups, toolDefinitions } from "../src/tools/registry.js";
 
 const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string;
@@ -39,6 +41,8 @@ type ToolResultForTest = {
   content: TextContentForTest[];
   structuredContent?: unknown;
 };
+
+type SqlExecutionFixture = Awaited<ReturnType<SqlBackendExecutor>>;
 
 const responseFixture = {
   summary: "Example local-ydb response.",
@@ -65,6 +69,21 @@ const responseFixtureLogText = {
   stdout: "2026 INFO [actor]\tmessage: value\nnext",
   stderr: "",
 };
+
+function successfulSqlExecution(): SqlExecutionFixture {
+  return {
+    completion: "success",
+    resultSets: [{
+      index: 0,
+      columns: [{ name: "value", type: "Int32" }],
+      rows: [[1]],
+      truncationReasons: [],
+    }],
+    capturedBytes: 36,
+    truncationReasons: [],
+    status: StatusIds_StatusCode.SUCCESS,
+  };
+}
 
 class RecordingExecutor implements CommandExecutor {
   readonly commands: string[] = [];
@@ -140,6 +159,7 @@ describe("mcp tools", () => {
       "local_ydb_restore_tenant",
       "local_ydb_scheme",
       "local_ydb_set_root_password",
+      "local_ydb_sql",
       "local_ydb_start_dynamic_node",
       "local_ydb_status_report",
       "local_ydb_storage_leftovers",
@@ -148,6 +168,305 @@ describe("mcp tools", () => {
       "local_ydb_upgrade_version",
       "local_ydb_write_dynamic_auth_config"
     ]);
+  });
+
+  it("registers managed SQL in its own group with the conservative mixed-action contract", () => {
+    // Production break caught: managed SQL is absent from MCP discovery, is
+    // grouped with unrelated operations, or advertises a read-only/idempotent
+    // contract even though confirmed execute can mutate a database.
+    const definition = toolDefinitions.find((tool) => tool.name === "local_ydb_sql");
+    const publicTool = localYdbTools.find((tool) => tool.name === "local_ydb_sql");
+
+    expect(localYdbToolGroups).toContain("sql");
+    expect(definition?.group).toBe("sql");
+    expect(publicTool?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+  });
+
+  it("advertises the bounded recursive managed SQL input contract", () => {
+    // Production break caught: callers cannot discover required scripts,
+    // public defaults and bounds, or a valid nested parameter type descriptor.
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_sql");
+    const schema = tool?.inputSchema as {
+      required?: string[];
+      properties?: Record<string, Record<string, unknown>>;
+      additionalProperties?: boolean;
+      $defs?: Record<string, {
+        oneOf?: Array<{
+          required?: string[];
+          properties?: Record<string, { const?: string; enum?: string[]; $ref?: string }>;
+          additionalProperties?: boolean;
+        }>;
+      }>;
+    } | undefined;
+    const parameter = schema?.properties?.parameters as {
+      type?: string;
+      maxProperties?: number;
+      propertyNames?: { pattern?: string };
+      additionalProperties?: { $ref?: string };
+    } | undefined;
+    const variants = schema?.$defs?.sqlParameterType?.oneOf ?? [];
+
+    expect(schema).toMatchObject({
+      type: "object",
+      required: ["script"],
+      additionalProperties: false,
+    });
+    expect(schema?.properties?.script).toMatchObject({
+      type: "string", minLength: 1, maxLength: 1_048_576,
+    });
+    expect(schema?.properties?.action).toMatchObject({
+      type: "string", enum: ["query", "explain", "execute"], default: "query",
+    });
+    expect(schema?.properties?.timeoutMs).toMatchObject({
+      type: "integer", minimum: 1, maximum: 600_000, default: 120_000,
+    });
+    expect(schema?.properties?.maxRows).toMatchObject({
+      type: "integer", minimum: 1, maximum: 10_000, default: 100,
+    });
+    expect(schema?.properties?.maxOutputBytes).toMatchObject({
+      type: "integer", minimum: 1, maximum: 1_048_576, default: 65_536,
+    });
+    expect(parameter).toMatchObject({
+      type: "object",
+      maxProperties: 100,
+      propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_]*$" },
+      additionalProperties: { $ref: "#/$defs/sqlParameter" },
+    });
+    expect(schema?.$defs?.sqlParameter?.oneOf).toHaveLength(1);
+    expect(schema?.$defs?.sqlParameter?.oneOf?.[0]).toMatchObject({
+      required: ["type", "value"],
+      additionalProperties: false,
+      properties: { type: { $ref: "#/$defs/sqlParameterType" } },
+    });
+    expect(variants.map((variant) => variant.properties?.kind?.const)).toEqual([
+      "primitive", "decimal", "optional", "list", "tuple", "struct", "dict",
+    ]);
+    expect(variants.every((variant) => variant.additionalProperties === false)).toBe(true);
+    expect(variants[0]?.properties?.name?.enum).toEqual([
+      "Bool", "Int8", "Int16", "Int32", "Int64", "Uint8", "Uint16", "Uint32",
+      "Uint64", "Float", "Double", "String", "Utf8", "Json", "JsonDocument",
+      "Yson", "Uuid", "Date", "Datetime", "Timestamp", "Interval", "TzDate",
+      "TzDatetime", "TzTimestamp", "Date32", "Datetime64", "Timestamp64",
+      "Interval64", "DyNumber",
+    ]);
+    expect(variants.slice(2).flatMap((variant) => Object.values(variant.properties ?? {}))
+      .some((property) => property.$ref === "#/$defs/sqlParameterType")).toBe(true);
+  });
+
+  it("wires managed query defaults and typed parameters without echoing request values", async () => {
+    // Production break caught: the MCP handler fails to delegate to the reviewed
+    // SQL state machine, chooses a write-capable default, or leaks raw inputs.
+    let observedRequest: Parameters<SqlBackendExecutor>[1] | undefined;
+    const secret = "parameter-secret-that-must-not-be-echoed";
+    const response = await callLocalYdbToolForTest("local_ydb_sql", {
+      script: "SELECT $value;",
+      parameters: {
+        value: {
+          type: { kind: "primitive", name: "Utf8" },
+          value: secret,
+        },
+      },
+    }, {
+      config: ConfigSchema.parse({}),
+      sqlExecutor: async (_context, request) => {
+        observedRequest = request;
+        return successfulSqlExecution();
+      },
+    }) as {
+      action: string;
+      parameterTypes: Record<string, string>;
+      execution?: SqlExecutionFixture;
+    };
+
+    expect(observedRequest).toMatchObject({
+      mode: "snapshotReadOnly",
+      maxRows: 100,
+      maxOutputBytes: 65_536,
+    });
+    expect(observedRequest?.script).toBe(
+      "DECLARE $value AS Utf8;\nSELECT $value;",
+    );
+    expect(response).toMatchObject({
+      action: "query",
+      parameterTypes: { value: "Utf8" },
+      execution: { completion: "success" },
+    });
+    expect(JSON.stringify(response)).not.toContain("SELECT $value");
+    expect(JSON.stringify(response)).not.toContain(secret);
+  });
+
+  it("keeps execute plan-only through the MCP handler until confirm is true", async () => {
+    // Production break caught: MCP wiring consumes confirmation or dispatches
+    // NoTx even though the caller requested only the mandatory EXPLAIN plan.
+    const modes: string[] = [];
+    const response = await callLocalYdbToolForTest("local_ydb_sql", {
+      action: "execute",
+      script: "UPSERT INTO t (id) VALUES (1);",
+    }, {
+      config: ConfigSchema.parse({}),
+      sqlExecutor: async (_context, request) => {
+        modes.push(request.mode);
+        return {
+          completion: "success",
+          resultSets: [],
+          capturedBytes: 4,
+          truncationReasons: [],
+          queryPlan: "{}",
+          status: StatusIds_StatusCode.SUCCESS,
+        };
+      },
+    }) as {
+      executed: boolean;
+      outcome: string;
+      confirmationRequired: boolean;
+      confirmationConsumed: boolean;
+    };
+
+    expect(modes).toEqual(["explain"]);
+    expect(response).toMatchObject({
+      executed: false,
+      outcome: "planned",
+      confirmationRequired: true,
+      confirmationConsumed: false,
+    });
+  });
+
+  it("rejects invalid managed SQL bounds before invoking the backend", async () => {
+    // Production break caught: the public runtime accepts values outside the
+    // advertised hard limits and reaches the Query Service executor.
+    let calls = 0;
+
+    await expect(callLocalYdbToolForTest("local_ydb_sql", {
+      script: "SELECT 1;",
+      maxRows: 10_001,
+    }, {
+      config: ConfigSchema.parse({}),
+      sqlExecutor: async () => {
+        calls += 1;
+        return successfulSqlExecution();
+      },
+    })).rejects.toThrow(/maxRows|less than or equal/i);
+    expect(calls).toBe(0);
+  });
+
+  it("propagates the MCP request abort signal into managed SQL execution", async () => {
+    // Production break caught: cancelling tools/call leaves the Query Service
+    // request running because RequestHandlerExtra.signal is dropped.
+    const controller = new AbortController();
+    let startedResolve: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    let observedSignal: AbortSignal | undefined;
+    const server = createLocalYdbMcpServer({
+      config: ConfigSchema.parse({}),
+      sqlExecutor: async (_context, request) => {
+        observedSignal = request.signal;
+        startedResolve?.();
+        return new Promise<SqlExecutionFixture>((resolve) => {
+          const cancelled = () => resolve({
+            completion: "cancelled",
+            resultSets: [],
+            capturedBytes: 0,
+            truncationReasons: [],
+          });
+          if (request.signal?.aborted) {
+            cancelled();
+          } else {
+            request.signal?.addEventListener("abort", cancelled, { once: true });
+          }
+        });
+      },
+    }) as unknown as {
+      _requestHandlers: Map<string, (
+        request: unknown,
+        extra: { signal: AbortSignal },
+      ) => Promise<ToolResultForTest>>;
+    };
+    const handler = server._requestHandlers.get("tools/call");
+    if (!handler) {
+      throw new Error("Expected tools/call handler to be registered");
+    }
+
+    const pending = handler({
+      method: "tools/call",
+      params: {
+        name: "local_ydb_sql",
+        arguments: { script: "SELECT 1;" },
+      },
+    }, { signal: controller.signal });
+    const firstEvent = await Promise.race([
+      started.then(() => "started" as const),
+      pending.then(() => "completed" as const),
+    ]);
+    expect(firstEvent).toBe("started");
+    controller.abort();
+    const result = await pending;
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      action: "query",
+      outcome: "failed",
+      execution: { completion: "cancelled" },
+    });
+  });
+
+  it("round-trips managed SQL structured output losslessly in JSON and TOON", async () => {
+    // Production break caught: response formatting drops nested result metadata
+    // or changes the machine-readable structuredContent JSON model.
+    for (const responseContentFormat of ["json", "toon"] as const) {
+      const server = createLocalYdbMcpServer({
+        config: ConfigSchema.parse({}),
+        responseContentFormat,
+        sqlExecutor: async () => successfulSqlExecution(),
+      }) as unknown as {
+        _requestHandlers: Map<string, (
+          request: unknown,
+          extra: { signal: AbortSignal },
+        ) => Promise<ToolResultForTest>>;
+      };
+      const handler = server._requestHandlers.get("tools/call");
+      if (!handler) {
+        throw new Error("Expected tools/call handler to be registered");
+      }
+      const result = await handler({
+        method: "tools/call",
+        params: {
+          name: "local_ydb_sql",
+          arguments: { script: "SELECT 1;" },
+        },
+      }, { signal: new AbortController().signal });
+      const jsonModel = JSON.parse(JSON.stringify(result.structuredContent)) as unknown;
+      const formatted = result.content[1]?.text ?? "";
+
+      expect(result.structuredContent).toMatchObject({
+        action: "query",
+        resultSets: [{ rows: [[1]] }],
+      });
+      expect(
+        responseContentFormat === "json"
+          ? JSON.parse(formatted)
+          : decode(formatted),
+      ).toEqual(jsonModel);
+    }
+  });
+
+  it("teaches agents the managed SQL safety and untrusted-data contract", () => {
+    // Production break caught: discovery exposes the mixed-action tool without
+    // explaining SnapshotRO, EXPLAIN/confirm, bounds, or prompt-injection safety.
+    expect(localYdbInstructions).toContain("local_ydb_sql");
+    expect(localYdbInstructions).toContain("SnapshotRO");
+    expect(localYdbInstructions).toContain("EXPLAIN");
+    expect(localYdbInstructions).toContain("confirm=true");
+    expect(localYdbInstructions).toContain("no retries");
+    expect(localYdbInstructions).toContain("maxRows");
+    expect(localYdbInstructions).toContain("maxOutputBytes");
+    expect(localYdbInstructions).toContain("untrusted data");
   });
 
   it("defaults response text content formatting to JSON", () => {
@@ -283,6 +602,7 @@ describe("mcp tools", () => {
       "local_ydb_reduce_storage_groups",
       "local_ydb_remove_dynamic_nodes",
       "local_ydb_restore_tenant",
+      "local_ydb_sql",
       "local_ydb_upgrade_version"
     ]);
 

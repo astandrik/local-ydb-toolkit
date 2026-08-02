@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SqlParameter } from "@local-ydb-toolkit/core";
 
 export const ProfileArgs = z.object({
   profile: z.string().optional(),
@@ -36,6 +37,39 @@ export const ApplySchemaArgs = ProfileArgs.extend({
   confirm: z.boolean().optional(),
   timeoutMs: z.number().int().positive().max(600_000).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+});
+
+const SqlParameterArgs = z.object({
+  type: z.custom<SqlParameter["type"]>(
+    (value) => value !== undefined,
+    "SQL parameter type is required",
+  ),
+  value: z.custom<SqlParameter["value"]>(
+    (value) => value !== undefined,
+    "SQL parameter value is required",
+  ),
+}).strict();
+
+export const SqlArgs = ProfileArgs.extend({
+  action: z.enum(["query", "explain", "execute"]).optional(),
+  script: z.string().min(1).max(1_048_576),
+  databasePath: z.string().min(1).optional(),
+  timeoutMs: z.number().int().positive().max(600_000).optional(),
+  maxRows: z.number().int().positive().max(10_000).optional(),
+  maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+  parameters: z.record(
+    z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    SqlParameterArgs,
+  ).optional(),
+  confirm: z.boolean().optional(),
+}).superRefine((args, ctx) => {
+  if (args.parameters && Object.keys(args.parameters).length > 100) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["parameters"],
+      message: "parameters must contain at most 100 entries",
+    });
+  }
 });
 
 const SchemaScalarValue = z.union([z.string(), z.number(), z.boolean()]);

@@ -30,6 +30,7 @@ import {
   restartStack,
   restoreTenant,
   setRootPassword,
+  sql as managedSql,
   startDynamicNode,
   statusReport,
   storageLeftovers,
@@ -65,6 +66,7 @@ import {
   RestoreArgs,
   SchemeArgs,
   SetRootPasswordArgs,
+  SqlArgs,
   UpgradeVersionArgs,
 } from "./args.js";
 import {
@@ -92,6 +94,7 @@ import {
   restoreSchema,
   schemeSchema,
   setRootPasswordSchema,
+  sqlSchema,
   upgradeVersionSchema,
 } from "./input-schemas.js";
 import {
@@ -104,6 +107,7 @@ import {
 export const localYdbToolGroups = [
   "checks",
   "schema",
+  "sql",
   "lifecycle",
   "dynamic nodes",
   "storage",
@@ -265,6 +269,32 @@ export const toolDefinitions = [
         ...parsed,
         sdkExecutor: options.sdkExecutor,
       });
+    },
+  }),
+  defineTool({
+    group: "sql",
+    name: "local_ydb_sql",
+    description:
+      "Run managed YQL v1 against the configured local-ydb target through Query Service. query uses SnapshotRO, explain returns plan/AST, and execute always runs EXPLAIN first and sends one NoTx execution only with confirm=true.",
+    inputSchema: sqlSchema(),
+    annotations: mutatingAnnotations({ destructive: true }),
+    handler: async (args, options) => {
+      const parsed = SqlArgs.parse(args ?? {});
+      return managedSql(
+        createToolContext(parsed, options),
+        {
+          action: parsed.action,
+          script: parsed.script,
+          databasePath: parsed.databasePath,
+          timeoutMs: parsed.timeoutMs,
+          maxRows: parsed.maxRows,
+          maxOutputBytes: parsed.maxOutputBytes,
+          parameters: parsed.parameters,
+          confirm: parsed.confirm,
+          signal: options.signal,
+        },
+        options.sqlExecutor,
+      );
     },
   }),
   defineTool({
