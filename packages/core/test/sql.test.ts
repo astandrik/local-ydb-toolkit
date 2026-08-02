@@ -1,0 +1,644 @@
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
+import type {
+  QueryServiceExecutionResult,
+  QueryServiceRequest,
+} from "../src/query-service.js";
+import type { ToolkitContext } from "../src/operations/types.js";
+import type { SqlResponse } from "../src/operations/sql.js";
+import { createContext } from "../src/operations/context.js";
+import { ConfigSchema } from "../src/validation.js";
+
+type SqlBackendExecutor = (
+  ctx: ToolkitContext,
+  request: QueryServiceRequest,
+) => Promise<QueryServiceExecutionResult>;
+
+type SqlFunction = (
+  ctx: ToolkitContext,
+  options: Record<string, unknown>,
+  executor?: SqlBackendExecutor,
+) => Promise<SqlResponse>;
+
+async function loadSql(): Promise<SqlFunction> {
+  const core = await import("../src/index.js") as Record<string, unknown>;
+  expect(typeof core.sql).toBe("function");
+  return core.sql as SqlFunction;
+}
+
+function successfulResult(
+  overrides: Partial<QueryServiceExecutionResult> = {},
+): QueryServiceExecutionResult {
+  return {
+    completion: "success",
+    resultSets: [],
+    capturedBytes: 0,
+    truncationReasons: [],
+    ...overrides,
+  };
+}
+
+function testContext(): ToolkitContext {
+  return createContext(undefined, undefined, ConfigSchema.parse({}));
+}
+
+describe("managed SQL operation", () => {
+  it("rejects invalid public options before calling the backend", async () => {
+    // Production break caught: invalid actions, empty/oversized scripts, or
+    // out-of-range resource limits can reach Query Service.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const backend: SqlBackendExecutor = async () => {
+      throw new Error("backend must not be called");
+    };
+    const invalidOptions: Array<[Record<string, unknown>, RegExp]> = [
+      [{ script: "", action: "query" }, /script must contain/],
+      [{ script: " \n\t", action: "query" }, /script must contain/],
+      [{ script: "x".repeat(1_048_577), action: "query" }, /1048576/],
+      [{ script: "SELECT 1;", action: "select" }, /action/],
+      [{ script: "SELECT 1;", timeoutMs: 0 }, /timeoutMs/],
+      [{ script: "SELECT 1;", timeoutMs: 600_001 }, /timeoutMs/],
+      [{ script: "SELECT 1;", maxRows: 0 }, /maxRows/],
+      [{ script: "SELECT 1;", maxRows: 10_001 }, /maxRows/],
+      [{ script: "SELECT 1;", maxOutputBytes: 0 }, /maxOutputBytes/],
+      [{ script: "SELECT 1;", maxOutputBytes: 1_048_577 }, /maxOutputBytes/],
+    ];
+
+    for (const [options, message] of invalidOptions) {
+      await expect(sql(ctx, options, backend)).rejects.toThrow(message);
+    }
+  });
+
+  it("defaults to one bounded SnapshotRO query and returns the full public envelope", async () => {
+    // Production break caught: the default action can drift to an unsafe mode,
+    // omit a public response field, or use limits other than the public defaults.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const execution = successfulResult({
+      resultSets: [{
+        index: 0,
+        columns: [{ name: "value", type: "Int32" }],
+        rows: [[1]],
+        truncationReasons: [],
+      }],
+      capturedBytes: 64,
+    });
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      return execution;
+    };
+
+    const response = await sql(ctx, { script: "SELECT 1;" }, backend);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      databasePath: "/local/example",
+      script: "SELECT 1;",
+      parameters: {},
+      mode: "snapshotReadOnly",
+      maxRows: 100,
+      maxOutputBytes: 65_536,
+    });
+    expect(calls[0]?.timeoutMs).toBeGreaterThan(0);
+    expect(calls[0]?.timeoutMs).toBeLessThanOrEqual(120_000);
+    expect(calls[0]?.signal).toBeInstanceOf(AbortSignal);
+    expect(response).toMatchObject({
+      action: "query",
+      databasePath: "/local/example",
+      scriptSha256: createHash("sha256").update("SELECT 1;").digest("hex"),
+      parameterTypes: {},
+      risk: "low",
+      executed: true,
+      outcome: "succeeded",
+      confirmationRequired: false,
+      confirmationConsumed: false,
+      execution,
+      resultSets: execution.resultSets,
+      limits: {
+        timeoutMs: 120_000,
+        maxRows: 100,
+        maxOutputBytes: 65_536,
+      },
+      outputBytes: 64,
+      truncated: false,
+      truncationReasons: [],
+      plannedCommands: expect.any(Array),
+      rollback: expect.any(Array),
+      verification: expect.any(Array),
+      summary: expect.any(String),
+    });
+    expect(JSON.stringify(response)).not.toContain("SELECT 1;");
+  });
+
+  it("never lets confirm upgrade query or explain beyond their fixed safe modes", async () => {
+    // Production break caught: confirm=true can accidentally turn a query into
+    // NoTx execution or make EXPLAIN consume the mutation confirmation.
+    const sql = await loadSql();
+    const ctx = testContext();
+
+    for (const [action, expectedMode] of [
+      ["query", "snapshotReadOnly"],
+      ["explain", "explain"],
+    ] as const) {
+      const calls: QueryServiceRequest[] = [];
+      const backend: SqlBackendExecutor = async (_ctx, request) => {
+        calls.push(request);
+        return successfulResult();
+      };
+
+      const response = await sql(ctx, {
+        action,
+        confirm: true,
+        script: "SELECT 1;",
+      }, backend);
+
+      expect(calls.map((call) => call.mode)).toEqual([expectedMode]);
+      expect(response).toMatchObject({
+        action,
+        risk: "low",
+        executed: true,
+        outcome: "succeeded",
+        confirmationRequired: false,
+        confirmationConsumed: false,
+        execution: successfulResult(),
+      });
+      expect(response).not.toHaveProperty("preflight");
+    }
+  });
+
+  it("submits DML-shaped query text only through SnapshotRO without lexical upgrading", async () => {
+    // Production break caught: recognizing mutation keywords can bypass the
+    // fixed query mode or turn confirm=true into NoTx authorization.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      return successfulResult({ completion: "failed" });
+    };
+
+    const response = await sql(ctx, {
+      action: "query",
+      confirm: true,
+      script: "UPSERT INTO items (id) VALUES (1);",
+    }, backend);
+
+    expect(calls.map((call) => call.mode)).toEqual(["snapshotReadOnly"]);
+    expect(response).toMatchObject({
+      executed: true,
+      outcome: "failed",
+      confirmationConsumed: false,
+    });
+  });
+
+  it("preflights execute once and returns a plan without confirm=true", async () => {
+    // Production break caught: an unconfirmed execute can skip EXPLAIN, send a
+    // mutation, or report that confirmation was consumed.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const preflight = successfulResult({
+      queryPlan: "{\"Plan\":\"ok\"}",
+      capturedBytes: 13,
+    });
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      return preflight;
+    };
+
+    const response = await sql(ctx, {
+      action: "execute",
+      script: "UPSERT INTO items (id) VALUES (1);",
+    }, backend);
+
+    expect(calls.map((call) => call.mode)).toEqual(["explain"]);
+    expect(response).toMatchObject({
+      action: "execute",
+      risk: "high",
+      executed: false,
+      outcome: "planned",
+      confirmationRequired: true,
+      confirmationConsumed: false,
+      preflight,
+      resultSets: preflight.resultSets,
+      outputBytes: 13,
+    });
+    expect(response).not.toHaveProperty("execution");
+  });
+
+  it("executes exactly one NoTx call after a successful confirmed preflight", async () => {
+    // Production break caught: confirmed execute can omit preflight, run NoTx
+    // more than once, or expose preflight rows instead of execution rows.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const preflight = successfulResult({ capturedBytes: 7 });
+    const execution = successfulResult({
+      resultSets: [{
+        index: 0,
+        columns: [{ name: "affected", type: "Uint64" }],
+        rows: [["1"]],
+        truncationReasons: [],
+      }],
+      capturedBytes: 31,
+    });
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      return request.mode === "explain" ? preflight : execution;
+    };
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "UPSERT INTO items (id) VALUES (1);",
+    }, backend);
+
+    expect(calls.map((call) => call.mode)).toEqual(["explain", "noTx"]);
+    expect(response).toMatchObject({
+      action: "execute",
+      risk: "high",
+      executed: true,
+      outcome: "succeeded",
+      confirmationRequired: false,
+      confirmationConsumed: true,
+      preflight,
+      execution,
+      resultSets: execution.resultSets,
+      outputBytes: 38,
+    });
+  });
+
+  it("blocks confirmed execution for every non-successful preflight completion", async () => {
+    // Production break caught: partial, cancelled, failed, or mutation-status
+    // loss from EXPLAIN can be mistaken for permission to send NoTx.
+    const sql = await loadSql();
+    const ctx = testContext();
+
+    for (const [completion, expectedOutcome] of [
+      ["partial", "partial"],
+      ["cancelled", "failed"],
+      ["failed", "failed"],
+      ["mutationStatusUnknown", "failed"],
+    ] as const) {
+      const calls: QueryServiceRequest[] = [];
+      const preflight = successfulResult({
+        completion,
+        truncationReasons: completion === "partial" ? ["byteLimit"] : [],
+      });
+      const backend: SqlBackendExecutor = async (_ctx, request) => {
+        calls.push(request);
+        return preflight;
+      };
+
+      const response = await sql(ctx, {
+        action: "execute",
+        confirm: true,
+        script: "DELETE FROM items;",
+      }, backend);
+
+      expect(calls.map((call) => call.mode)).toEqual(["explain"]);
+      expect(response).toMatchObject({
+        executed: false,
+        outcome: expectedOutcome,
+        confirmationRequired: false,
+        confirmationConsumed: false,
+        preflight,
+      });
+      expect(response).not.toHaveProperty("execution");
+    }
+  });
+
+  it("blocks execution and hides error text when preflight throws", async () => {
+    // Production break caught: a thrown EXPLAIN can escape as raw diagnostics
+    // or fall through to a mutation attempt.
+    const sql = await loadSql();
+    const ctx = testContext();
+    let calls = 0;
+    const backend: SqlBackendExecutor = async () => {
+      calls += 1;
+      throw new Error("backend leaked /tmp/root.password and parameter-value");
+    };
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+    }, backend);
+
+    expect(calls).toBe(1);
+    expect(response).toMatchObject({
+      executed: false,
+      outcome: "failed",
+      confirmationConsumed: false,
+      preflight: {
+        completion: "failed",
+        resultSets: [],
+        capturedBytes: 0,
+        truncationReasons: [],
+        diagnostics: expect.any(String),
+      },
+    });
+    expect(response).not.toHaveProperty("execution");
+    expect(JSON.stringify(response)).not.toContain("backend leaked");
+    expect(JSON.stringify(response)).not.toContain("parameter-value");
+  });
+
+  it("shares one signal and passes only remaining deadline time to execution", async () => {
+    // Production break caught: preflight and execution can receive independent
+    // deadlines, effectively doubling the public timeout.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const calls: QueryServiceRequest[] = [];
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      if (request.mode === "explain") {
+        now.mockReturnValue(10_250);
+      }
+      return successfulResult();
+    };
+
+    try {
+      await sql(ctx, {
+        action: "execute",
+        confirm: true,
+        script: "DELETE FROM items;",
+        timeoutMs: 1_000,
+      }, backend);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.timeoutMs)).toEqual([1_000, 750]);
+    expect(calls[0]?.signal).toBe(calls[1]?.signal);
+  });
+
+  it("blocks NoTx when the shared signal is cancelled after preflight", async () => {
+    // Production break caught: a confirmed mutation can be sent after caller
+    // cancellation just because EXPLAIN had already succeeded.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const caller = new AbortController();
+    const calls: QueryServiceRequest[] = [];
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      caller.abort();
+      return successfulResult();
+    };
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+      signal: caller.signal,
+    }, backend);
+
+    expect(calls.map((call) => call.mode)).toEqual(["explain"]);
+    expect(response).toMatchObject({
+      executed: false,
+      outcome: "failed",
+      confirmationConsumed: false,
+      preflight: successfulResult(),
+    });
+    expect(response).not.toHaveProperty("execution");
+  });
+
+  it("gives confirmed execution only the bytes left after preflight, including zero", async () => {
+    // Production break caught: preflight and execution can each consume the
+    // full public byte cap, or a zero capture budget can suppress the mutation.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const preflight = successfulResult({
+      capturedBytes: 7,
+      truncationReasons: ["server"],
+    });
+    const execution = successfulResult({
+      capturedBytes: 0,
+      truncationReasons: ["server"],
+    });
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      return request.mode === "explain" ? preflight : execution;
+    };
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+      maxOutputBytes: 7,
+    }, backend);
+
+    expect(calls.map((call) => call.maxOutputBytes)).toEqual([7, 0]);
+    expect(calls.map((call) => call.mode)).toEqual(["explain", "noTx"]);
+    expect(response).toMatchObject({
+      executed: true,
+      outputBytes: 7,
+      truncated: true,
+      truncationReasons: ["server"],
+    });
+  });
+
+  it("reuses deterministic declarations, encoded parameters, and the effective hash without echoing values", async () => {
+    // Production break caught: preflight and execution can receive different
+    // declaration order/values, or response metadata can echo sensitive input.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      return successfulResult();
+    };
+    const inputScript = "  SELECT $a, $b;\n";
+    const effectiveScript = [
+      "DECLARE $a AS Utf8;",
+      "DECLARE $b AS Uint64;",
+      inputScript,
+    ].join("\n");
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      databasePath: " /local ",
+      script: inputScript,
+      parameters: {
+        b: {
+          type: { kind: "primitive", name: "Uint64" },
+          value: "18446744073709551615",
+        },
+        a: {
+          type: { kind: "primitive", name: "Utf8" },
+          value: "sensitive-parameter-value",
+        },
+      },
+    }, backend);
+
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.script)).toEqual([
+      effectiveScript,
+      effectiveScript,
+    ]);
+    expect(calls[0]?.parameters).toBe(calls[1]?.parameters);
+    expect(Object.keys(calls[0]?.parameters ?? {})).toEqual(["$a", "$b"]);
+    expect(response).toMatchObject({
+      databasePath: "/local",
+      scriptSha256: "d4bf145579602c28af1fcf1e7960c8087c3108011ed8d4e10e454a9b878855da",
+      parameterTypes: {
+        a: "Utf8",
+        b: "Uint64",
+      },
+    });
+    const serialized = JSON.stringify(response);
+    expect(serialized).not.toContain("sensitive-parameter-value");
+    expect(serialized).not.toContain("18446744073709551615");
+    expect(serialized).not.toContain("DECLARE $a");
+    expect(serialized).not.toContain(inputScript.trim());
+    expect(serialized).not.toContain("serializedBytes");
+  });
+
+  it("redacts configured credential paths from returned diagnostics", async () => {
+    // Production break caught: backend diagnostics can reveal configured auth,
+    // password, token, or SSH identity file paths.
+    const sql = await loadSql();
+    const credentialPaths = [
+      "/private/auth.yaml",
+      "/private/dynamic.token",
+      "/private/root.password",
+      "/private/id_ed25519",
+    ];
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: credentialPaths[0],
+          dynamicNodeAuthTokenFile: credentialPaths[1],
+          rootPasswordFile: credentialPaths[2],
+          ssh: {
+            host: "example.invalid",
+            identityFile: credentialPaths[3],
+          },
+        },
+      },
+    }));
+    const backend: SqlBackendExecutor = async () => successfulResult({
+      diagnostics: credentialPaths.join(" "),
+    });
+
+    const response = await sql(ctx, {
+      script: "SELECT 1;",
+    }, backend);
+
+    expect(response.execution?.diagnostics).toBe(
+      "<redacted> <redacted> <redacted> <redacted>",
+    );
+    for (const path of credentialPaths) {
+      expect(JSON.stringify(response)).not.toContain(path);
+    }
+  });
+
+  it("maps every query and explain completion without allowing unknown", async () => {
+    // Production break caught: low-risk actions can report success after a
+    // partial/failing call, or expose mutation-only unknown outcome.
+    const sql = await loadSql();
+    const ctx = testContext();
+
+    for (const action of ["query", "explain"] as const) {
+      for (const [completion, expectedOutcome] of [
+        ["success", "succeeded"],
+        ["partial", "partial"],
+        ["cancelled", "failed"],
+        ["failed", "failed"],
+        ["mutationStatusUnknown", "failed"],
+      ] as const) {
+        const result = successfulResult({
+          completion,
+          truncationReasons: completion === "partial" ? ["rowLimit"] : [],
+        });
+        const response = await sql(ctx, {
+          action,
+          script: "SELECT 1;",
+        }, async () => result);
+
+        expect(response).toMatchObject({
+          action,
+          risk: "low",
+          executed: true,
+          outcome: expectedOutcome,
+          confirmationRequired: false,
+          confirmationConsumed: false,
+        });
+      }
+    }
+  });
+
+  it("maps confirmed NoTx completion and reserves unknown for mutation status loss", async () => {
+    // Production break caught: a sent mutation can be retried/misreported after
+    // status loss, or ordinary failures can be elevated to unknown.
+    const sql = await loadSql();
+    const ctx = testContext();
+
+    for (const [completion, expectedOutcome] of [
+      ["success", "succeeded"],
+      ["partial", "partial"],
+      ["cancelled", "failed"],
+      ["failed", "failed"],
+      ["mutationStatusUnknown", "unknown"],
+    ] as const) {
+      let call = 0;
+      const response = await sql(ctx, {
+        action: "execute",
+        confirm: true,
+        script: "DELETE FROM items;",
+      }, async () => {
+        call += 1;
+        return call === 1
+          ? successfulResult()
+          : successfulResult({
+              completion,
+              truncationReasons: completion === "partial" ? ["byteLimit"] : [],
+            });
+      });
+
+      expect(call).toBe(2);
+      expect(response).toMatchObject({
+        risk: "high",
+        executed: true,
+        outcome: expectedOutcome,
+        confirmationRequired: false,
+        confirmationConsumed: true,
+      });
+    }
+  });
+
+  it("does not retry a confirmed NoTx call that throws", async () => {
+    // Production break caught: an execution exception can trigger an automatic
+    // retry and duplicate a mutation whose send status is not known here.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+    }, async (_ctx, request) => {
+      calls.push(request);
+      if (request.mode === "noTx") {
+        throw new Error("transport detail must stay private");
+      }
+      return successfulResult();
+    });
+
+    expect(calls.map((call) => call.mode)).toEqual(["explain", "noTx"]);
+    expect(response).toMatchObject({
+      executed: true,
+      outcome: "failed",
+      confirmationConsumed: true,
+      execution: {
+        completion: "failed",
+        diagnostics: "Managed SQL backend request failed.",
+      },
+    });
+    expect(JSON.stringify(response)).not.toContain("transport detail");
+  });
+});
