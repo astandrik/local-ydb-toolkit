@@ -1,3 +1,4 @@
+import { types as utilTypes } from "node:util";
 import { StatusIds_StatusCode } from "@ydbjs/api/operation";
 import { redactText } from "../auth.js";
 import type { JsonValue } from "../sql-parameter-types.js";
@@ -123,20 +124,6 @@ function normalizeSqlBackendResultUnsafe(
     return undefined;
   }
 
-  const topReasons = normalizeTruncationReasons(record.get("truncationReasons"));
-  const rawResultSets = inspectDenseArray(
-    record.get("resultSets"),
-    MAX_RESULT_SETS,
-  );
-  if (!topReasons || !rawResultSets) {
-    return undefined;
-  }
-  if (
-    (completion === "success" && topReasons.length > 0)
-    || (completion === "partial" && topReasons.length === 0)
-  ) {
-    return undefined;
-  }
   let status: StatusIds_StatusCode | undefined;
   if (record.has("status")) {
     const rawStatus = record.get("status");
@@ -153,6 +140,21 @@ function normalizeSqlBackendResultUnsafe(
     completion as QueryServiceExecutionResult["completion"],
     status,
   )) {
+    return undefined;
+  }
+
+  const topReasons = normalizeTruncationReasons(record.get("truncationReasons"));
+  const rawResultSets = inspectDenseArray(
+    record.get("resultSets"),
+    MAX_RESULT_SETS,
+  );
+  if (!topReasons || !rawResultSets) {
+    return undefined;
+  }
+  if (
+    (completion === "success" && topReasons.length > 0)
+    || (completion === "partial" && topReasons.length === 0)
+  ) {
     return undefined;
   }
 
@@ -173,18 +175,18 @@ function normalizeSqlBackendResultUnsafe(
   const consumeColumnPayload = (
     payload: unknown,
     maxLength: number,
-  ): boolean => {
+  ): QueryServiceResultSet["columns"] | undefined => {
     const remainingReportedBytes = capturedBytes - measuredPayloadBytes;
-    const measured = measureColumnArrayIncrementally(
+    const snapshot = snapshotColumnArray(
       payload,
       remainingReportedBytes,
       maxLength,
     );
-    if (measured === undefined) {
-      return false;
+    if (!snapshot) {
+      return undefined;
     }
-    measuredPayloadBytes += measured;
-    return true;
+    measuredPayloadBytes += snapshot.bytes;
+    return snapshot.columns;
   };
 
   const normalizedResultSets: QueryServiceResultSet[] = [];
@@ -312,7 +314,10 @@ function normalizeResultSet(
   maxRows: number,
   captureBudget: number,
   consumePayload: (payload: unknown, depth?: number) => boolean,
-  consumeColumnPayload: (payload: unknown, maxLength: number) => boolean,
+  consumeColumnPayload: (
+    payload: unknown,
+    maxLength: number,
+  ) => QueryServiceResultSet["columns"] | undefined,
   state: ResultSetNormalizationState,
 ): QueryServiceResultSet | undefined {
   const record = inspectExactRecord(
@@ -333,41 +338,22 @@ function normalizeResultSet(
   }
   const reasons = normalizeTruncationReasons(record.get("truncationReasons"));
   const nodeLimit = jsonNodeLimit(captureBudget);
-  const rawColumnValue = record.get("columns");
-  if (!consumeColumnPayload(rawColumnValue, nodeLimit)) {
-    return undefined;
-  }
-  const rawColumns = inspectDenseArray(rawColumnValue, nodeLimit);
+  const columns = consumeColumnPayload(record.get("columns"), nodeLimit);
   const rawRows = inspectDenseArray(record.get("rows"), maxRows);
-  if (!reasons || !rawColumns || !rawRows) {
+  if (!reasons || !columns || !rawRows) {
     return undefined;
-  }
-
-  const columns: Array<{ name: string; type: string }> = [];
-  for (const rawColumn of rawColumns) {
-    const column = inspectExactRecord(
-      rawColumn,
-      COLUMN_FIELDS,
-      ["name", "type"],
-    );
-    const name = column?.get("name");
-    const type = column?.get("type");
-    if (typeof name !== "string" || typeof type !== "string") {
-      return undefined;
-    }
-    columns.push({ name, type });
   }
 
   const rows: JsonValue[][] = [];
   for (const rawRow of rawRows) {
-    const row = inspectDenseArray(rawRow, rawColumns.length);
-    if (!row || row.length !== rawColumns.length || !consumePayload(rawRow)) {
+    const row = inspectDenseArray(rawRow, columns.length);
+    if (!row || row.length !== columns.length || !consumePayload(rawRow)) {
       return undefined;
     }
     rows.push(structuredClone(rawRow) as JsonValue[]);
   }
 
-  if (rawColumns.length === 0 && rawRows.length > 0) {
+  if (columns.length === 0 && rawRows.length > 0) {
     return undefined;
   }
 
@@ -542,7 +528,12 @@ function inspectRecord(
   value: unknown,
   maxProperties: number,
 ): Map<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (
+    !value
+    || typeof value !== "object"
+    || utilTypes.isProxy(value)
+    || Array.isArray(value)
+  ) {
     return undefined;
   }
   const prototype = Object.getPrototypeOf(value);
@@ -575,7 +566,12 @@ function inspectDenseArray(
   value: unknown,
   maxLength: number,
 ): unknown[] | undefined {
-  if (!Array.isArray(value)) {
+  if (
+    !value
+    || typeof value !== "object"
+    || utilTypes.isProxy(value)
+    || !Array.isArray(value)
+  ) {
     return undefined;
   }
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
@@ -607,13 +603,21 @@ function inspectDenseArray(
   return items;
 }
 
-function measureColumnArrayIncrementally(
+interface ColumnArraySnapshot {
+  columns: QueryServiceResultSet["columns"];
+  bytes: number;
+}
+
+function snapshotColumnArray(
   value: unknown,
   maxBytes: number,
   maxLength: number,
-): number | undefined {
+): ColumnArraySnapshot | undefined {
   if (
-    !Array.isArray(value)
+    !value
+    || typeof value !== "object"
+    || utilTypes.isProxy(value)
+    || !Array.isArray(value)
     || !Number.isSafeInteger(maxBytes)
     || maxBytes < 0
   ) {
@@ -622,21 +626,20 @@ function measureColumnArrayIncrementally(
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
   const length = lengthDescriptor?.value;
   if (
-    typeof length !== "number"
+    !lengthDescriptor
+    || !("value" in lengthDescriptor)
+    || typeof length !== "number"
     || !Number.isSafeInteger(length)
     || length < 0
     || length > maxLength
   ) {
     return undefined;
   }
-  if (length === 0) {
-    return 0;
-  }
-
-  let bytes = addBytes(0, length + 1, maxBytes);
+  let bytes = length === 0 ? 0 : addBytes(0, length + 1, maxBytes);
   if (bytes > maxBytes) {
     return undefined;
   }
+  const columns: QueryServiceResultSet["columns"] = [];
   const seenColumns = new Set<object>();
   for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
@@ -647,38 +650,117 @@ function measureColumnArrayIncrementally(
     ) {
       return undefined;
     }
+    const rawColumn = descriptor.value;
     if (
-      descriptor.value
-      && typeof descriptor.value === "object"
-    ) {
-      if (seenColumns.has(descriptor.value)) {
-        return undefined;
-      }
-      seenColumns.add(descriptor.value);
-    }
-    const column = inspectExactRecord(
-      descriptor.value,
-      COLUMN_FIELDS,
-      ["name", "type"],
-    );
-    if (
-      !column
-      || typeof column.get("name") !== "string"
-      || typeof column.get("type") !== "string"
+      !rawColumn
+      || typeof rawColumn !== "object"
+      || utilTypes.isProxy(rawColumn)
+      || Array.isArray(rawColumn)
+      || seenColumns.has(rawColumn)
     ) {
       return undefined;
     }
-    const measured = measureJsonValue(
-      descriptor.value,
-      maxBytes - bytes,
-      MAX_JSON_DEPTH - 1,
-    );
-    if (measured === undefined) {
+    seenColumns.add(rawColumn);
+    const column = snapshotColumnRecord(rawColumn, maxBytes - bytes);
+    if (!column) {
       return undefined;
     }
-    bytes = addBytes(bytes, measured, maxBytes);
+    bytes = addBytes(bytes, column.bytes, maxBytes);
+    columns.push(column.value);
   }
-  return bytes <= maxBytes ? bytes : undefined;
+  if (!hasExactDenseArrayKeys(value, length)) {
+    return undefined;
+  }
+  return bytes <= maxBytes ? { columns, bytes } : undefined;
+}
+
+function snapshotColumnRecord(
+  value: object,
+  maxBytes: number,
+): {
+  value: QueryServiceResultSet["columns"][number];
+  bytes: number;
+} | undefined {
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return undefined;
+  }
+  const nameDescriptor = Object.getOwnPropertyDescriptor(value, "name");
+  const typeDescriptor = Object.getOwnPropertyDescriptor(value, "type");
+  if (
+    !nameDescriptor
+    || !nameDescriptor.enumerable
+    || !("value" in nameDescriptor)
+    || typeof nameDescriptor.value !== "string"
+    || !typeDescriptor
+    || !typeDescriptor.enumerable
+    || !("value" in typeDescriptor)
+    || typeof typeDescriptor.value !== "string"
+  ) {
+    return undefined;
+  }
+
+  let bytes = addBytes(0, 17, maxBytes);
+  const nameBytes = jsonStringBytes(
+    nameDescriptor.value,
+    maxBytes - bytes,
+  );
+  if (nameBytes === undefined) {
+    return undefined;
+  }
+  bytes = addBytes(bytes, nameBytes, maxBytes);
+  const typeBytes = jsonStringBytes(
+    typeDescriptor.value,
+    maxBytes - bytes,
+  );
+  if (typeBytes === undefined) {
+    return undefined;
+  }
+  bytes = addBytes(bytes, typeBytes, maxBytes);
+  const keys = Reflect.ownKeys(value);
+  if (
+    keys.length !== COLUMN_FIELDS.size
+    || !keys.includes("name")
+    || !keys.includes("type")
+  ) {
+    return undefined;
+  }
+  return bytes <= maxBytes
+    ? {
+        value: {
+          name: nameDescriptor.value,
+          type: typeDescriptor.value,
+        },
+        bytes,
+      }
+    : undefined;
+}
+
+function hasExactDenseArrayKeys(value: unknown[], length: number): boolean {
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== length + 1) {
+    return false;
+  }
+  let lengthSeen = false;
+  for (const key of keys) {
+    if (key === "length") {
+      lengthSeen = true;
+      continue;
+    }
+    if (typeof key !== "string") {
+      return false;
+    }
+    const index = Number(key);
+    if (
+      !Number.isSafeInteger(index)
+      || index < 0
+      || index >= length
+      || String(index) !== key
+    ) {
+      return false;
+    }
+  }
+  return lengthSeen;
 }
 
 function measureJsonValue(

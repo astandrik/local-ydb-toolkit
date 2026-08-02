@@ -760,6 +760,132 @@ describe("managed SQL operation", () => {
     expect(response).not.toHaveProperty("execution");
   });
 
+  it("rejects status-invalid preflights before traversing payload arrays", async () => {
+    // Production break caught: missing or contradictory success/partial status
+    // can force traversal of a large backend-owned payload before NoTx is
+    // eventually blocked.
+    const sql = await loadSql();
+    const ctx = testContext();
+
+    for (const [completion, status] of [
+      ["success", undefined],
+      ["success", StatusIds_StatusCode.BAD_REQUEST],
+      ["partial", undefined],
+      ["partial", StatusIds_StatusCode.BAD_REQUEST],
+    ] as const) {
+      let resultSetOwnKeysCalls = 0;
+      let resultSetDescriptorReads = 0;
+      let reasonOwnKeysCalls = 0;
+      let reasonDescriptorReads = 0;
+      const resultSets = new Proxy(
+        Array.from({ length: 10_000 }, () => null),
+        {
+          ownKeys(target) {
+            resultSetOwnKeysCalls += 1;
+            return Reflect.ownKeys(target);
+          },
+          getOwnPropertyDescriptor(target, property) {
+            resultSetDescriptorReads += 1;
+            return Reflect.getOwnPropertyDescriptor(target, property);
+          },
+        },
+      );
+      const truncationReasons = new Proxy(
+        completion === "partial" ? ["byteLimit"] : [],
+        {
+          ownKeys(target) {
+            reasonOwnKeysCalls += 1;
+            return Reflect.ownKeys(target);
+          },
+          getOwnPropertyDescriptor(target, property) {
+            reasonDescriptorReads += 1;
+            return Reflect.getOwnPropertyDescriptor(target, property);
+          },
+        },
+      );
+      const calls: QueryServiceRequest[] = [];
+
+      const response = await sql(ctx, {
+        action: "execute",
+        confirm: true,
+        script: "DELETE FROM items;",
+      }, async (_ctx, request) => {
+        calls.push(request);
+        return {
+          completion,
+          resultSets,
+          capturedBytes: 0,
+          truncationReasons,
+          ...(status !== undefined ? { status } : {}),
+        } as unknown as QueryServiceExecutionResult;
+      });
+
+      expect(calls.map((call) => call.mode)).toEqual(["explain"]);
+      expect(response).toMatchObject({
+        executed: false,
+        outcome: "failed",
+        confirmationConsumed: false,
+      });
+      expect(response).not.toHaveProperty("execution");
+      expect(resultSetOwnKeysCalls).toBe(0);
+      expect(resultSetDescriptorReads).toBe(0);
+      expect(reasonOwnKeysCalls).toBe(0);
+      expect(reasonDescriptorReads).toBe(0);
+    }
+  });
+
+  it("blocks NoTx without touching a stateful preflight column proxy", async () => {
+    // Production break caught: a preflight column can pass byte measurement
+    // with short descriptor values, swap in large retained values, and then
+    // authorize a confirmed NoTx mutation.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    let fieldDescriptorReads = 0;
+    let ownKeysCalls = 0;
+    const column = new Proxy({ name: "x", type: "x" }, {
+      ownKeys(target) {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        fieldDescriptorReads += 1;
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, property)!;
+        return fieldDescriptorReads <= 4
+          ? descriptor
+          : { ...descriptor, value: "x".repeat(200_000) };
+      },
+    });
+    const preflight = successfulResult({
+      resultSets: [{
+        index: 0,
+        columns: [column],
+        rows: [],
+        truncationReasons: [],
+      }],
+      capturedBytes: 25,
+    });
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+    }, async (_ctx, request) => {
+      calls.push(request);
+      return request.mode === "explain" ? preflight : successfulResult();
+    });
+
+    expect.soft(calls.map((call) => call.mode)).toEqual(["explain"]);
+    expect.soft(response).toMatchObject({
+      executed: false,
+      outcome: "failed",
+      confirmationConsumed: false,
+    });
+    expect.soft(response).not.toHaveProperty("execution");
+    expect.soft(fieldDescriptorReads).toBe(0);
+    expect(ownKeysCalls).toBe(0);
+  });
+
   it("blocks NoTx when success preflight carries a truncation reason", async () => {
     // Production break caught: Task 3 classifies every retained truncation as
     // partial, so a success-shaped truncated preflight is backend corruption.

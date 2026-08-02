@@ -297,6 +297,89 @@ describe("managed SQL backend result normalization", () => {
     expect(ownKeysCalls).toBe(0);
   });
 
+  it("rejects a stateful column-array length before any proxy traversal", () => {
+    // Production break caught: separate measure/inspect passes can observe a
+    // one-column array first and then retain 100,000 columns under a 25-byte
+    // captured counter.
+    const sharedColumn = { name: "x", type: "x" };
+    const target = Array.from({ length: 100_000 }, () => sharedColumn);
+    let lengthDescriptorReads = 0;
+    let indexDescriptorReads = 0;
+    let ownKeysCalls = 0;
+    const columns = new Proxy(target, {
+      ownKeys(array) {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(array);
+      },
+      getOwnPropertyDescriptor(array, property) {
+        if (property === "length") {
+          lengthDescriptorReads += 1;
+          const descriptor = Reflect.getOwnPropertyDescriptor(array, property)!;
+          return lengthDescriptorReads === 1
+            ? { ...descriptor, value: 1 }
+            : descriptor;
+        }
+        indexDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(array, property);
+      },
+    });
+
+    const normalized = normalize({
+      completion: "success",
+      resultSets: [{
+        index: 0,
+        columns,
+        rows: [],
+        truncationReasons: [],
+      }],
+      capturedBytes: 25,
+      truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
+    }, 1_048_576);
+
+    expect.soft(normalized === undefined).toBe(true);
+    expect.soft(lengthDescriptorReads).toBe(0);
+    expect.soft(indexDescriptorReads).toBe(0);
+    expect(ownKeysCalls).toBe(0);
+  });
+
+  it("rejects stateful column descriptors before retaining swapped values", () => {
+    // Production break caught: a column can expose short strings to the byte
+    // measurement passes and large strings to the later normalization pass.
+    let fieldDescriptorReads = 0;
+    let ownKeysCalls = 0;
+    const column = new Proxy({ name: "x", type: "x" }, {
+      ownKeys(target) {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        fieldDescriptorReads += 1;
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, property)!;
+        return fieldDescriptorReads <= 4
+          ? descriptor
+          : { ...descriptor, value: "x".repeat(200_000) };
+      },
+    });
+
+    const normalized = normalize({
+      completion: "success",
+      resultSets: [{
+        index: 0,
+        columns: [column],
+        rows: [],
+        truncationReasons: [],
+      }],
+      capturedBytes: 25,
+      truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
+    }, 1_048_576);
+
+    expect.soft(normalized === undefined).toBe(true);
+    expect.soft(fieldDescriptorReads).toBe(0);
+    expect(ownKeysCalls).toBe(0);
+  });
+
   it("preserves dense-array, exact-record, and accessor rejection for columns", () => {
     const sparseColumns = new Array(1);
     const extraArrayProperty = [{ name: "x", type: "Int32" }];
