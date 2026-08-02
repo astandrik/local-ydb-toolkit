@@ -45,11 +45,12 @@ test("requires exactly 39 tools and the conservative mixed SQL annotations", () 
 
 test("runs the bounded managed SQL safety sequence and cleans up its table", async () => {
   const fixture = managedSqlFixture();
+  const tableName = "managed_sql_fixture";
 
   await verifyManagedSqlLive({
     callTool: fixture.callTool,
     profile: "ci-action",
-    tenantPath: "/local/test",
+    tableName,
   });
 
   assert.equal(fixture.state.tableExists, false);
@@ -89,7 +90,19 @@ test("runs the bounded managed SQL safety sequence and cleans up its table", asy
     )),
     true,
   );
+  assert.equal(
+    fixture.calls.some(({ args }) => args.script?.startsWith(`CREATE TABLE \`${tableName}\``)),
+    true,
+  );
+  assert.equal(
+    fixture.calls.some(({ args }) => (
+      args.action === "explain"
+      && args.script?.startsWith(`CREATE TABLE \`${tableName}_ctas_explain\``)
+    )),
+    true,
+  );
   assert.match(fixture.calls.at(-1).args.script, /^DROP TABLE /);
+  assert.equal(fixture.calls.at(-1).args.script, `DROP TABLE \`${tableName}\`;`);
 });
 
 test("attempts schema cleanup when a managed SQL assertion fails after setup", async () => {
@@ -99,13 +112,103 @@ test("attempts schema cleanup when a managed SQL assertion fails after setup", a
     verifyManagedSqlLive({
       callTool: fixture.callTool,
       profile: "ci-action",
-      tenantPath: "/local/test",
+      tableName: "managed_sql_failure_fixture",
     }),
     /standalone explain fixture failed/,
   );
 
   assert.equal(fixture.state.tableExists, false);
   assert.match(fixture.calls.at(-1).args.script, /^DROP TABLE /);
+});
+
+test("does not drop a pre-existing table when its CREATE fails", async () => {
+  const calls = [];
+  let tableExists = true;
+  const tableName = "managed_sql_preexisting_fixture";
+  const callTool = async (name, args) => {
+    calls.push({ name, args });
+    assert.equal(name, "local_ydb_apply_schema");
+    if (args.script.startsWith("CREATE TABLE ")) {
+      return schemaApplyResponse({
+        executed: false,
+        validationOk: false,
+        includeExecution: false,
+      });
+    }
+    if (args.script.startsWith("DROP TABLE ")) {
+      tableExists = false;
+      return schemaApplyResponse();
+    }
+    throw new Error(`Unexpected schema fixture script: ${args.script}`);
+  };
+
+  await assert.rejects(
+    verifyManagedSqlLive({
+      callTool,
+      profile: "ci-action",
+      tableName,
+    }),
+    /managed SQL setup did not complete successfully/,
+  );
+
+  assert.equal(tableExists, true, "the helper dropped a table it did not create");
+  assert.equal(
+    calls.some(({ args }) => args.script.startsWith("DROP TABLE ")),
+    false,
+    "cleanup must not run until CREATE establishes ownership",
+  );
+});
+
+test("generates a different safe table name for each live-helper run", async () => {
+  const createScripts = [];
+  const callTool = async (name, args) => {
+    assert.equal(name, "local_ydb_apply_schema");
+    if (args.script.startsWith("CREATE TABLE ")) {
+      createScripts.push(args.script);
+      return schemaApplyResponse({
+        executed: false,
+        validationOk: false,
+        includeExecution: false,
+      });
+    }
+    return schemaApplyResponse();
+  };
+
+  for (let run = 0; run < 2; run += 1) {
+    await assert.rejects(
+      verifyManagedSqlLive({
+        callTool,
+        profile: "ci-action",
+      }),
+      /managed SQL setup did not complete successfully/,
+    );
+  }
+
+  const names = createScripts.map((script) => {
+    const match = /^CREATE TABLE `([A-Za-z_][A-Za-z0-9_]*)`/.exec(script);
+    assert(match, `unsafe generated table identifier: ${script}`);
+    return match[1];
+  });
+  assert.equal(names.length, 2);
+  assert.notEqual(names[0], names[1]);
+});
+
+test("rejects an unsafe injected table name before calling MCP", async () => {
+  let calls = 0;
+
+  await assert.rejects(
+    verifyManagedSqlLive({
+      callTool: async () => {
+        calls += 1;
+        return schemaApplyResponse();
+      },
+      profile: "ci-action",
+      tableName: "managed_sql`; DROP TABLE users; --",
+    }),
+    /tableName/,
+  );
+
+  assert.equal(calls, 0);
 });
 
 function managedSqlFixture({ failStandaloneExplain = false } = {}) {
@@ -252,20 +355,32 @@ function managedSqlFixture({ failStandaloneExplain = false } = {}) {
   return { callTool, calls, state };
 }
 
-function schemaApplyResponse() {
+function schemaApplyResponse({
+  executed = true,
+  validationOk = true,
+  includeExecution = true,
+} = {}) {
   return {
     summary: "Schema DDL apply succeeded.",
     action: "apply",
     databasePath: "/local/test",
-    executed: true,
+    executed,
     risk: "high",
     plannedCommands: ["Apply schema DDL"],
     rollback: ["Drop the created table."],
     verification: ["Describe the table."],
     scriptSha256: "a".repeat(64),
     statements: { count: 1, kinds: ["CREATE TABLE"] },
-    validation: { ok: true, status: "SUCCESS", issues: "", issuesBytes: 0, issuesTruncated: false },
-    execution: { ok: true, status: "SUCCESS", issues: "", issuesBytes: 0, issuesTruncated: false },
+    validation: {
+      ok: validationOk,
+      status: validationOk ? "SUCCESS" : "GENERIC_ERROR",
+      issues: validationOk ? "" : "table already exists",
+      issuesBytes: validationOk ? 0 : 20,
+      issuesTruncated: false,
+    },
+    ...(includeExecution
+      ? { execution: { ok: true, status: "SUCCESS", issues: "", issuesBytes: 0, issuesTruncated: false } }
+      : {}),
     maxOutputBytes: 65_536,
   };
 }

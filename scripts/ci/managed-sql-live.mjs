@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
+
 const SQL_TOOL = "local_ydb_sql";
 const SCHEMA_TOOL = "local_ydb_apply_schema";
-const TABLE_NAME = "managed_sql_smoke";
-const CTAS_TABLE_NAME = "managed_sql_ctas_explain";
+const MAX_BASE_TABLE_NAME_LENGTH = 115;
 
 export function assertLiveToolRegistry(result) {
   assert(Array.isArray(result?.tools), "tools/list did not return a tools array.");
@@ -25,24 +26,28 @@ export function assertLiveToolRegistry(result) {
   );
 }
 
-export async function verifyManagedSqlLive({ callTool, profile, tenantPath }) {
+export async function verifyManagedSqlLive({
+  callTool,
+  profile,
+  tableName: requestedTableName,
+}) {
   assert(typeof callTool === "function", "verifyManagedSqlLive requires callTool.");
   assert(typeof profile === "string" && profile.length > 0, "verifyManagedSqlLive requires profile.");
-  assert(
-    typeof tenantPath === "string" && tenantPath.startsWith("/"),
-    "verifyManagedSqlLive requires an absolute tenantPath.",
-  );
+  const tableName = normalizeTableName(requestedTableName ?? generateTableName());
+  const ctasTableName = `${tableName}_ctas_explain`;
+  const quotedTableName = quoteIdentifier(tableName);
+  const quotedCtasTableName = quoteIdentifier(ctasTableName);
 
   const createScript = [
-    `CREATE TABLE \`${TABLE_NAME}\` (`,
+    `CREATE TABLE ${quotedTableName} (`,
     "  id Uint64 NOT NULL,",
     "  value Utf8,",
     "  PRIMARY KEY (id)",
     ");",
   ].join("\n");
-  const dropScript = `DROP TABLE \`${TABLE_NAME}\`;`;
-  const upsertScript = `UPSERT INTO \`${TABLE_NAME}\` (id, value) VALUES (1, "confirmed");`;
-  const countScript = `SELECT COUNT(*) AS count FROM \`${TABLE_NAME}\`;`;
+  const dropScript = `DROP TABLE ${quotedTableName};`;
+  const upsertScript = `UPSERT INTO ${quotedTableName} (id, value) VALUES (1, "confirmed");`;
+  const countScript = `SELECT COUNT(*) AS count FROM ${quotedTableName};`;
   const sql = (arguments_) => callTool(SQL_TOOL, { profile, ...arguments_ });
   const applySchema = (script) => callTool(SCHEMA_TOOL, {
     profile,
@@ -51,13 +56,13 @@ export async function verifyManagedSqlLive({ callTool, profile, tenantPath }) {
     confirm: true,
   });
 
-  let createAttempted = false;
+  let tableCreated = false;
   let failure;
   let cleanupFailure;
   try {
-    createAttempted = true;
     const setup = await applySchema(createScript);
     assertSchemaApplied(setup, "managed SQL setup");
+    tableCreated = true;
 
     const parameterized = await sql({
       action: "query",
@@ -95,7 +100,7 @@ export async function verifyManagedSqlLive({ callTool, profile, tenantPath }) {
 
     const standaloneExplain = await sql({
       action: "explain",
-      script: `SELECT id, value FROM \`${TABLE_NAME}\`;`,
+      script: `SELECT id, value FROM ${quotedTableName};`,
     });
     assertExplainSucceeded(standaloneExplain, "standalone SELECT explain");
 
@@ -154,17 +159,17 @@ export async function verifyManagedSqlLive({ callTool, profile, tenantPath }) {
 
     const ddlExplain = await sql({
       action: "explain",
-      script: `ALTER TABLE \`${TABLE_NAME}\` ADD COLUMN note Utf8;`,
+      script: `ALTER TABLE ${quotedTableName} ADD COLUMN note Utf8;`,
     });
     assertExplainSucceeded(ddlExplain, "ordinary DDL explain");
 
     const ctasExplain = await sql({
       action: "explain",
       script: [
-        `CREATE TABLE \`${CTAS_TABLE_NAME}\` (`,
+        `CREATE TABLE ${quotedCtasTableName} (`,
         "  PRIMARY KEY (id)",
         ")",
-        `AS SELECT id, value FROM \`${TABLE_NAME}\`;`,
+        `AS SELECT id, value FROM ${quotedTableName};`,
       ].join("\n"),
     });
     assertExplainSucceeded(ctasExplain, "CTAS explain");
@@ -220,7 +225,7 @@ export async function verifyManagedSqlLive({ callTool, profile, tenantPath }) {
   } catch (error) {
     failure = error;
   } finally {
-    if (createAttempted) {
+    if (tableCreated) {
       try {
         const cleanup = await applySchema(dropScript);
         assertSchemaApplied(cleanup, "managed SQL cleanup");
@@ -242,6 +247,28 @@ export async function verifyManagedSqlLive({ callTool, profile, tenantPath }) {
   if (cleanupFailure) {
     throw cleanupFailure;
   }
+}
+
+function generateTableName() {
+  return `managed_sql_smoke_${process.pid}_${randomUUID().replaceAll("-", "")}`;
+}
+
+function normalizeTableName(value) {
+  assert(
+    typeof value === "string"
+      && value.length <= MAX_BASE_TABLE_NAME_LENGTH
+      && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value),
+    `tableName must match [A-Za-z_][A-Za-z0-9_]* and be at most ${MAX_BASE_TABLE_NAME_LENGTH} characters.`,
+  );
+  return value;
+}
+
+function quoteIdentifier(value) {
+  assert(
+    value.length <= 128 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value),
+    "Managed SQL generated an unsafe table identifier.",
+  );
+  return `\`${value}\``;
 }
 
 function assertSchemaApplied(response, label) {

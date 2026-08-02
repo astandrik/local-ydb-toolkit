@@ -231,7 +231,6 @@ async function verifyLiveTools(client) {
   await verifyManagedSqlLive({
     callTool: (name, args) => callTool(client, name, args),
     profile,
-    tenantPath,
   });
 
   const permissions = await callTool(client, "local_ydb_permissions", {

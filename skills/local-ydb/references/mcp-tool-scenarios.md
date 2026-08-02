@@ -93,7 +93,7 @@ Calls:
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "ALTER TABLE `managed_sql_smoke` ADD COLUMN note Utf8;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "CREATE TABLE `managed_sql_ctas_explain` (PRIMARY KEY (id)) AS SELECT id, value FROM `managed_sql_smoke`;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT value FROM AS_TABLE($items) ORDER BY value;", "maxRows": 2, "maxOutputBytes": 65536, "parameters": { "items": { "type": { "kind": "list", "item": { "kind": "struct", "fields": [{ "name": "value", "type": { "kind": "primitive", "name": "Int32" } }] } }, "value": [{ "value": 0 }, { "value": 1 }, { "value": 2 }] } } } }
-{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT $large AS first; SELECT $large AS second;", "maxOutputBytes": 256, "parameters": { "large": { "type": { "kind": "primitive", "name": "Utf8" }, "value": "<large test string>" } } } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT $large AS first; SELECT $large AS second;", "maxOutputBytes": 256, "parameters": { "large": { "type": { "kind": "primitive", "name": "Utf8" }, "value": "<replace with an actual string of at least 4096 characters>" } } } }
 ```
 
 Expected:
@@ -104,6 +104,7 @@ Expected:
 - Invalid confirmed YQL is blocked by failed preflight with `executed=false` and `confirmationConsumed=false`.
 - Parameter names are bare names, declarations are generated deterministically, and response metadata contains canonical parameter types but not parameter values.
 - `maxRows` truncates each result set only between complete rows; `maxOutputBytes` is shared across captured issues, plan/AST, metadata, and rows.
+- The byte-limit call's placeholder is documentation only; replace it with an actual value of at least 4096 characters, or an equivalent fixture that reliably exceeds the 256-byte capture budget.
 - Result rows are arrays aligned with `columns`; inspect `outcome`, truncation flags, and `outputBytes` rather than treating partial output as success.
 - Cleanup drops `managed_sql_smoke` even when an earlier check fails.
 <!-- END MANAGED SQL SCENARIOS -->
