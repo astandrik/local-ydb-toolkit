@@ -18,6 +18,7 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_scheme`
 - `local_ydb_generate_schema`
 - `local_ydb_apply_schema`
+- `local_ydb_sql`
 - `local_ydb_permissions`
 - `local_ydb_nodes_check`
 - `local_ydb_graphshard_check`
@@ -67,6 +68,45 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Do not test `cleanup_storage` against active volumes or paths.
 - Do not mix static and dynamic image tags inside one profile.
 - For stable GHCR tests, use the exact patch tag `ghcr.io/ydb-platform/local-ydb:26.1.1.6`.
+
+<!-- BEGIN MANAGED SQL SCENARIOS -->
+## Managed SQL Scenario: Query Service Safety Matrix
+
+Goal: exercise `local_ydb_sql` against the selected configured local-ydb profile. Use the official `ydb-mcp` server instead when the target is an arbitrary YDB endpoint rather than a toolkit-managed local-ydb profile.
+
+Preparation:
+
+- Create a disposable `managed_sql_smoke` table with `local_ydb_apply_schema`.
+- Run every cleanup step from a `finally` block, including after an assertion or preflight failure.
+- Never reuse a table that contains non-test data.
+
+Calls:
+
+```json
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT $value AS value;", "parameters": { "value": { "type": { "kind": "primitive", "name": "Int32" }, "value": 42 } } } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"blocked\");", "confirm": true } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT COUNT(*) AS count FROM `managed_sql_smoke`;" } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "SELECT id, value FROM `managed_sql_smoke`;" } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");" } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");", "confirm": true } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "THIS IS NOT VALID YQL;", "confirm": true } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "ALTER TABLE `managed_sql_smoke` ADD COLUMN note Utf8;" } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "CREATE TABLE `managed_sql_ctas_explain` (PRIMARY KEY (id)) AS SELECT id, value FROM `managed_sql_smoke`;" } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT value FROM AS_TABLE($items) ORDER BY value;", "maxRows": 2, "maxOutputBytes": 65536, "parameters": { "items": { "type": { "kind": "list", "item": { "kind": "struct", "fields": [{ "name": "value", "type": { "kind": "primitive", "name": "Int32" } }] } }, "value": [{ "value": 0 }, { "value": 1 }, { "value": 2 }] } } } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT $large AS first; SELECT $large AS second;", "maxOutputBytes": 256, "parameters": { "large": { "type": { "kind": "primitive", "name": "Utf8" }, "value": "<large test string>" } } } }
+```
+
+Expected:
+
+- `query` uses SnapshotRO even when `confirm=true`; the attempted UPSERT fails and the following count remains zero.
+- `explain` returns a plan or AST without side effects.
+- `execute` always performs mandatory EXPLAIN first. Without `confirm=true` it returns `outcome=planned`; with confirmation it sends one NoTx execution and performs no retries.
+- Invalid confirmed YQL is blocked by failed preflight with `executed=false` and `confirmationConsumed=false`.
+- Parameter names are bare names, declarations are generated deterministically, and response metadata contains canonical parameter types but not parameter values.
+- `maxRows` truncates each result set only between complete rows; `maxOutputBytes` is shared across captured issues, plan/AST, metadata, and rows.
+- Result rows are arrays aligned with `columns`; inspect `outcome`, truncation flags, and `outputBytes` rather than treating partial output as success.
+- Cleanup drops `managed_sql_smoke` even when an earlier check fails.
+<!-- END MANAGED SQL SCENARIOS -->
 
 ## Scenario 0: Prerequisites
 
@@ -796,6 +836,8 @@ Avoid:
   `local_ydb_list_dumps`, `local_ydb_dump_tenant`, `local_ydb_restore_tenant`
 - Auth rollout:
   `local_ydb_prepare_auth_config`, `local_ydb_write_dynamic_auth_config`, `local_ydb_apply_auth_hardening`, `local_ydb_set_root_password`, `local_ydb_permissions`, `local_ydb_auth_check`
+- Managed SQL:
+  `local_ydb_sql`
 - Read-only diagnostics:
   `local_ydb_inventory`, `local_ydb_database_status`, `local_ydb_healthcheck`, `local_ydb_container_logs`, `local_ydb_status_report`, `local_ydb_tenant_check`, `local_ydb_scheme`, `local_ydb_permissions`, `local_ydb_nodes_check`, `local_ydb_graphshard_check`, `local_ydb_storage_placement`, `local_ydb_storage_leftovers`
 - Cleanup:
