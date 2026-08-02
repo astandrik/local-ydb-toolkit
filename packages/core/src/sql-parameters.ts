@@ -108,7 +108,7 @@ export function prepareSqlParameters(
   }
 
   const descriptorBudget = { nodes: 0 };
-  const parameterTypes: Record<string, string> = {};
+  const parameterTypeEntries: Array<[string, string]> = [];
   const typedValues: Record<string, TypedValue> = {};
   for (const name of names) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
@@ -119,9 +119,10 @@ export function prepareSqlParameters(
       throw new Error(`parameter ${name} must contain type and value`);
     }
     validateDescriptor(parameter.type, 1, descriptorBudget);
-    parameterTypes[name] = renderYqlType(parameter.type);
+    parameterTypeEntries.push([name, renderYqlType(parameter.type)]);
     typedValues[`$${name}`] = encodeSqlParameterValue(parameter);
   }
+  const parameterTypes = Object.fromEntries(parameterTypeEntries);
 
   return {
     typedValues,

@@ -69,6 +69,44 @@ describe("SQL parameter descriptors", () => {
     expect(prepared).not.toHaveProperty("parameterValues");
   });
 
+  it("preserves __proto__ as an own metadata key and decoded struct field", () => {
+    const parameters = Object.fromEntries([
+      [
+        "__proto__",
+        {
+          type: { kind: "primitive", name: "Int32" },
+          value: 7,
+        },
+      ],
+      [
+        "struct",
+        {
+          type: {
+            kind: "struct",
+            fields: [
+              { name: "__proto__", type: { kind: "primitive", name: "Utf8" } },
+            ],
+          },
+          value: Object.fromEntries([["__proto__", "kept"]]),
+        },
+      ],
+    ]);
+
+    const prepared = prepareSqlParameters(parameters as never);
+    expect(Object.hasOwn(prepared.parameterTypes, "__proto__")).toBe(true);
+    expect(prepared.parameterTypes.__proto__).toBe("Int32");
+
+    const decoded = decodeYdbValue(
+      prepared.typedValues.$struct.type!,
+      prepared.typedValues.$struct.value!,
+    );
+    expect(decoded).not.toBeNull();
+    expect(Array.isArray(decoded)).toBe(false);
+    expect(typeof decoded).toBe("object");
+    expect(Object.hasOwn(decoded as object, "__proto__")).toBe(true);
+    expect((decoded as Record<string, unknown>).__proto__).toBe("kept");
+  });
+
   it("encodes primitive values with explicit YDB wire types", () => {
     // Production break caught: inferred JS types silently turn Uint64 into Int64,
     // lose 64-bit precision, or return byte arrays and bigint values that JSON cannot serialize.
@@ -298,6 +336,49 @@ describe("SQL parameter descriptors", () => {
     });
   });
 
+  it("rejects expanded ordinary years while preserving wide temporal years", () => {
+    const invalidOrdinaryValues = [
+      ["Date", "+002025-01-02"],
+      ["Date", "02025-01-02"],
+      ["Date", "002025-01-02"],
+      ["Datetime", "+002025-01-02T03:04:05Z"],
+      ["Datetime", "002025-01-02T03:04:05Z"],
+      ["Timestamp", "+002025-01-02T03:04:05.000006Z"],
+      ["Timestamp", "002025-01-02T03:04:05.000006Z"],
+      ["TzDate", "+002025-01-02,Europe/Moscow"],
+      ["TzDatetime", "002025-01-02T03:04:05,Europe/Moscow"],
+      ["TzTimestamp", "+002025-01-02T03:04:05.000006,Europe/Moscow"],
+    ] as const;
+
+    for (const [name, value] of invalidOrdinaryValues) {
+      expect(() => prepareSqlParameters({
+        parameter: {
+          type: { kind: "primitive", name },
+          value,
+        },
+      })).toThrow(/ISO|YYYY-MM-DD/);
+    }
+
+    const prepared = prepareSqlParameters({
+      date32: {
+        type: { kind: "primitive", name: "Date32" },
+        value: "+012345-06-07",
+      },
+      datetime64: {
+        type: { kind: "primitive", name: "Datetime64" },
+        value: "-000001-12-31T23:59:59Z",
+      },
+      timestamp64: {
+        type: { kind: "primitive", name: "Timestamp64" },
+        value: "+012345-06-07T08:09:10.000011Z",
+      },
+    });
+
+    expect(prepared.typedValues.$date32.value?.value.case).toBe("int32Value");
+    expect(prepared.typedValues.$datetime64.value?.value.case).toBe("int64Value");
+    expect(prepared.typedValues.$timestamp64.value?.value.case).toBe("int64Value");
+  });
+
   it("encodes nested List<Struct>, Optional, Tuple, and Dict values from their descriptors", () => {
     // Production break caught: type inference makes empty/null containers untyped
     // and heterogeneous structs optional, producing query parameter type mismatches.
@@ -516,6 +597,52 @@ describe("SQL parameter descriptors", () => {
       "2025-01-01,US/Eastern",
       /timezone must be canonical/,
     );
+  });
+
+  it("accepts each exact global parameter bound", () => {
+    const primitive: SqlParameterType = { kind: "primitive", name: "Int32" };
+
+    const exactCount = prepareSqlParameters(Object.fromEntries(
+      Array.from({ length: 100 }, (_, index) => [
+        `p${index}`,
+        { type: primitive, value: index },
+      ]),
+    ));
+    expect(Object.keys(exactCount.typedValues)).toHaveLength(100);
+
+    let exactDepth: SqlParameterType = primitive;
+    for (let index = 0; index < 15; index += 1) {
+      exactDepth = { kind: "optional", item: exactDepth };
+    }
+    expect(() => prepareSqlParameters({
+      deep: { type: exactDepth, value: null },
+    })).not.toThrow();
+
+    const exactNodes = prepareSqlParameters({
+      nodes: {
+        type: {
+          kind: "tuple",
+          items: Array.from({ length: 999 }, () => primitive),
+        },
+        value: Array.from({ length: 999 }, () => 0),
+      },
+    });
+    expect(exactNodes.typedValues.$nodes.value?.items).toHaveLength(999);
+
+    const emptyPayload = {
+      payload: {
+        type: { kind: "primitive" as const, name: "Utf8" as const },
+        value: "",
+      },
+    };
+    const serializedOverhead = Buffer.byteLength(JSON.stringify(emptyPayload));
+    const exactBytes = prepareSqlParameters({
+      payload: {
+        ...emptyPayload.payload,
+        value: "x".repeat(MAX_SQL_PARAMETER_BYTES - serializedOverhead),
+      },
+    });
+    expect(exactBytes.serializedBytes).toBe(MAX_SQL_PARAMETER_BYTES);
   });
 
   it("enforces JSON-only values, recursive shapes, and every global parameter bound", () => {
