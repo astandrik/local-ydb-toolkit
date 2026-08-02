@@ -597,6 +597,41 @@ describe("low-level Query Service adapter", () => {
       "Mutation was sent but its final Query Service status was not received.",
     );
   });
+
+  it("does not retain unbounded empty result-set envelopes", async () => {
+    // Production break caught: empty result-set parts can create an unbounded
+    // per-index map without consuming any row or byte capture budget.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const emptyParts = Array.from({ length: 100 }, (_, index) => ({
+      status: SUCCESS,
+      issues: [],
+      resultSetIndex: BigInt(index),
+      resultSet: {
+        columns: [],
+        rows: [],
+        truncated: false,
+        format: ResultSet_Format.VALUE,
+        data: new Uint8Array(),
+      },
+    }));
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "SELECT 1;",
+      parameters: {},
+      mode: "snapshotReadOnly",
+      maxRows: 1,
+      maxOutputBytes: 1,
+    }, {
+      createDriver: () => driverForParts(emptyParts) as never,
+    });
+
+    expect(result.completion).toBe("success");
+    expect(result.resultSets).toEqual([]);
+    expect(result.capturedBytes).toBe(0);
+  });
 });
 
 async function* stableAttach(signal: AbortSignal | undefined) {

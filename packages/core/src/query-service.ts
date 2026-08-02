@@ -334,6 +334,9 @@ function captureResultSetPart(
   bytes: number;
   limitReached?: Extract<QueryServiceTruncationReason, "rowLimit" | "byteLimit">;
 } {
+  if (part.columns.length === 0 && part.rows.length === 0 && !part.truncated) {
+    return { bytes: 0 };
+  }
   const index = Number(rawIndex);
   if (!Number.isSafeInteger(index) || index < 0) {
     throw new Error("Query Service returned an invalid result-set index");
