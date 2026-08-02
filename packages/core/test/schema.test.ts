@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applySchema,
   createSdkOperationDeadline,
@@ -74,6 +74,20 @@ describe("schema application", () => {
     expect(remainingSdkOperationTimeoutMs(deadline)).toBeLessThanOrEqual(1_000);
     caller.abort();
     expect(() => remainingSdkOperationTimeoutMs(deadline)).toThrow();
+  });
+
+  it("treats the absolute SDK expiry as authoritative before abort delivery", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const deadline = createSdkOperationDeadline(1_000);
+    now.mockReturnValue(11_001);
+
+    try {
+      expect(() => remainingSdkOperationTimeoutMs(deadline)).toThrow(
+        /deadline expired/,
+      );
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("validates table DDL without applying it by default", async () => {

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { redactText } from "../auth.js";
 import type { SqlParameter } from "../sql-parameter-types.js";
 import { prepareSqlParameters } from "../sql-parameters.js";
 import {
@@ -16,6 +15,10 @@ import {
   remainingSdkOperationTimeoutMs,
 } from "./sdk-connection.js";
 import { normalizeMaxOutputBytes } from "./output.js";
+import {
+  invalidSqlBackendResult,
+  normalizeSqlBackendResult,
+} from "./sql-result.js";
 import type { ToolkitContext } from "./types.js";
 
 const MAX_SCRIPT_CHARACTERS = 1_048_576;
@@ -94,9 +97,10 @@ export async function sql(
   const run = async (
     mode: QueryServiceRequest["mode"],
     captureBudget = maxOutputBytes,
-  ): Promise<QueryServiceExecutionResult> => {
+  ): Promise<SqlBackendCall> => {
+    let backendCalled = false;
     try {
-      const result = await backendExecutor(ctx, {
+      const request: QueryServiceRequest = {
         databasePath,
         timeoutMs: remainingSdkOperationTimeoutMs(deadline),
         script: effectiveScript,
@@ -105,18 +109,33 @@ export async function sql(
         maxRows,
         maxOutputBytes: captureBudget,
         signal: deadline.signal,
+      };
+      backendCalled = true;
+      const result = await backendExecutor(ctx, {
+        ...request,
       });
-      return sanitizeDiagnostics(ctx, result);
+      const normalized = normalizeSqlBackendResult(result, {
+        captureBudget,
+        maxRows,
+        diagnosticRedactions: credentialPaths(ctx),
+      });
+      return {
+        backendCalled,
+        result: normalized ?? invalidSqlBackendResult(),
+      };
     } catch {
       const cancelled = deadline.signal.aborted;
       return {
-        completion: cancelled ? "cancelled" : "failed",
-        resultSets: [],
-        capturedBytes: 0,
-        truncationReasons: [],
-        diagnostics: cancelled
-          ? "Managed SQL backend request was cancelled."
-          : "Managed SQL backend request failed.",
+        backendCalled,
+        result: {
+          completion: cancelled ? "cancelled" : "failed",
+          resultSets: [],
+          capturedBytes: 0,
+          truncationReasons: [],
+          diagnostics: cancelled
+            ? "Managed SQL backend request was cancelled."
+            : "Managed SQL backend request failed.",
+        },
       };
     }
   };
@@ -136,14 +155,12 @@ export async function sql(
   };
 
   if (action === "query" || action === "explain") {
-    const execution = await run(
+    const { result: execution } = await run(
       action === "query" ? "snapshotReadOnly" : "explain",
     );
     return responseWithResults({
       ...common,
-      summary: action === "query"
-        ? `Executed managed YQL query against ${databasePath}.`
-        : `Explained managed YQL against ${databasePath}.`,
+      summary: readActionSummary(action, execution, databasePath),
       risk: "low",
       executed: true,
       outcome: outcomeFor(execution, false),
@@ -155,11 +172,13 @@ export async function sql(
     });
   }
 
-  const preflight = await run("explain");
+  const { result: preflight } = await run("explain");
   if (preflight.completion !== "success") {
     return responseWithResults({
       ...common,
-      summary: `Managed YQL execution was blocked by preflight against ${databasePath}.`,
+      summary: preflight.completion === "partial"
+        ? `Managed YQL execution preflight returned partial output against ${databasePath}; execution was blocked.`
+        : `Managed YQL execution was blocked by failed preflight against ${databasePath}.`,
       risk: "high",
       executed: false,
       outcome: preflight.completion === "partial" ? "partial" : "failed",
@@ -185,10 +204,16 @@ export async function sql(
     });
   }
 
-  if (deadline.signal.aborted) {
+  const executionCall = await run(
+    "noTx",
+    Math.max(0, maxOutputBytes - preflight.capturedBytes),
+  );
+  if (!executionCall.backendCalled) {
     return responseWithResults({
       ...common,
-      summary: `Managed YQL execution was cancelled after preflight against ${databasePath}.`,
+      summary: executionCall.result.completion === "cancelled"
+        ? `Managed YQL execution was cancelled after preflight against ${databasePath}.`
+        : `Managed YQL execution did not start after preflight against ${databasePath}.`,
       risk: "high",
       executed: false,
       outcome: "failed",
@@ -199,14 +224,10 @@ export async function sql(
       calls: [preflight],
     });
   }
-
-  const execution = await run(
-    "noTx",
-    Math.max(0, maxOutputBytes - preflight.capturedBytes),
-  );
+  const execution = executionCall.result;
   return responseWithResults({
     ...common,
-    summary: `Executed managed YQL mutation against ${databasePath}.`,
+    summary: mutationSummary(execution, databasePath),
     risk: "high",
     executed: true,
     outcome: outcomeFor(execution, true),
@@ -257,6 +278,11 @@ interface ResponseWithResultsInput extends Omit<
   "outputBytes" | "truncated" | "truncationReasons"
 > {
   calls: QueryServiceExecutionResult[];
+}
+
+interface SqlBackendCall {
+  backendCalled: boolean;
+  result: QueryServiceExecutionResult;
 }
 
 function responseWithResults(input: ResponseWithResultsInput): SqlResponse {
@@ -310,21 +336,50 @@ function outcomeFor(
   }
 }
 
-function sanitizeDiagnostics(
-  ctx: ToolkitContext,
+function readActionSummary(
+  action: "query" | "explain",
   result: QueryServiceExecutionResult,
-): QueryServiceExecutionResult {
-  if (result.diagnostics === undefined) {
-    return result;
+  databasePath: string,
+): string {
+  const subject = action === "query" ? "query" : "explain";
+  switch (result.completion) {
+    case "success":
+      return action === "query"
+        ? `Executed managed YQL query against ${databasePath}.`
+        : `Explained managed YQL against ${databasePath}.`;
+    case "partial":
+      return `Managed YQL ${subject} returned partial output against ${databasePath}.`;
+    case "cancelled":
+      return `Managed YQL ${subject} was cancelled against ${databasePath}.`;
+    case "failed":
+    case "mutationStatusUnknown":
+      return `Managed YQL ${subject} failed against ${databasePath}.`;
   }
-  const credentialPaths = [
+}
+
+function mutationSummary(
+  result: QueryServiceExecutionResult,
+  databasePath: string,
+): string {
+  switch (result.completion) {
+    case "success":
+      return `Executed managed YQL mutation against ${databasePath}.`;
+    case "partial":
+      return `Managed YQL mutation completed with partial output against ${databasePath}.`;
+    case "mutationStatusUnknown":
+      return `Managed YQL mutation was sent, but its final status is unknown against ${databasePath}.`;
+    case "cancelled":
+      return `Managed YQL mutation was cancelled against ${databasePath}.`;
+    case "failed":
+      return `Managed YQL mutation failed against ${databasePath}.`;
+  }
+}
+
+function credentialPaths(ctx: ToolkitContext): string[] {
+  return [
     ctx.profile.authConfigPath,
     ctx.profile.dynamicNodeAuthTokenFile,
     ctx.profile.rootPasswordFile,
     ctx.profile.ssh?.identityFile,
   ].filter((path): path is string => Boolean(path));
-  return {
-    ...result,
-    diagnostics: redactText(result.diagnostics, credentialPaths),
-  };
 }

@@ -78,7 +78,11 @@ export function remainingSdkOperationTimeoutMs(
   deadline: SdkOperationDeadline,
 ): number {
   deadline.signal.throwIfAborted();
-  return Math.max(1, Math.ceil(deadline.expiresAtMs - Date.now()));
+  const remainingMs = Math.ceil(deadline.expiresAtMs - Date.now());
+  if (remainingMs <= 0) {
+    throw new Error("SDK operation deadline expired");
+  }
+  return remainingMs;
 }
 
 export async function withSdkConnection<T>(
