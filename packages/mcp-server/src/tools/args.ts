@@ -50,6 +50,28 @@ const SqlParameterArgs = z.object({
   ),
 }).strict();
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+const SqlParametersArgs = z.custom<Record<string, unknown>>(
+  isPlainRecord,
+  "parameters must be a JSON object",
+).transform((parameters) => Object.entries(parameters)).pipe(
+  z.array(
+    z.tuple([
+      z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+      SqlParameterArgs,
+    ]),
+  ).max(100),
+).transform(
+  (entries) => Object.fromEntries(entries) as Record<string, SqlParameter>,
+);
+
 export const SqlArgs = ProfileArgs.extend({
   action: z.enum(["query", "explain", "execute"]).optional(),
   script: z.string().min(1).max(1_048_576),
@@ -57,19 +79,8 @@ export const SqlArgs = ProfileArgs.extend({
   timeoutMs: z.number().int().positive().max(600_000).optional(),
   maxRows: z.number().int().positive().max(10_000).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
-  parameters: z.record(
-    z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-    SqlParameterArgs,
-  ).optional(),
+  parameters: SqlParametersArgs.optional(),
   confirm: z.boolean().optional(),
-}).superRefine((args, ctx) => {
-  if (args.parameters && Object.keys(args.parameters).length > 100) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["parameters"],
-      message: "parameters must contain at most 100 entries",
-    });
-  }
 });
 
 const SchemaScalarValue = z.union([z.string(), z.number(), z.boolean()]);

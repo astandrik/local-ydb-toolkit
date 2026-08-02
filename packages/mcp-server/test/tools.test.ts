@@ -300,6 +300,39 @@ describe("mcp tools", () => {
     expect(JSON.stringify(response)).not.toContain(secret);
   });
 
+  it("preserves the valid __proto__ SQL parameter through the MCP boundary", async () => {
+    // Production break caught: z.record rebuilds parsed objects through ordinary
+    // assignment and silently loses the valid own __proto__ parameter.
+    let observedRequest: Parameters<SqlBackendExecutor>[1] | undefined;
+    const args = JSON.parse(`{
+      "script": "SELECT $__proto__;",
+      "parameters": {
+        "__proto__": {
+          "type": { "kind": "primitive", "name": "Int32" },
+          "value": 1
+        }
+      }
+    }`) as unknown;
+    const response = await callLocalYdbToolForTest("local_ydb_sql", args, {
+      config: ConfigSchema.parse({}),
+      sqlExecutor: async (_context, request) => {
+        observedRequest = request;
+        return successfulSqlExecution();
+      },
+    }) as {
+      parameterTypes: Record<string, string>;
+    };
+
+    expect(observedRequest?.script).toBe(
+      "DECLARE $__proto__ AS Int32;\nSELECT $__proto__;",
+    );
+    expect(
+      Object.hasOwn(observedRequest?.parameters ?? {}, "$__proto__"),
+    ).toBe(true);
+    expect(Object.hasOwn(response.parameterTypes, "__proto__")).toBe(true);
+    expect(response.parameterTypes["__proto__"]).toBe("Int32");
+  });
+
   it("keeps execute plan-only through the MCP handler until confirm is true", async () => {
     // Production break caught: MCP wiring consumes confirmation or dispatches
     // NoTx even though the caller requested only the mandatory EXPLAIN plan.
