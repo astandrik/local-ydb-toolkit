@@ -242,6 +242,7 @@ export async function executeQueryServiceWithSdk(
       },
     );
 
+    operationSignal.throwIfAborted();
     const responseStream = nodeClient.executeQuery(
       buildExecuteRequest(request, sessionId),
       { signal: operationSignal },

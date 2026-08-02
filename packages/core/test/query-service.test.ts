@@ -726,6 +726,60 @@ describe("low-level Query Service adapter", () => {
     );
   });
 
+  it("does not send NoTx when cancellation arrives during initial session attach", async () => {
+    // Production break caught: attach can finish after the caller aborts, and
+    // an already-aborted streaming signal must not be handed to executeQuery.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const caller = new AbortController();
+    let executeInvocations = 0;
+    const baseClient = {
+      async createSession() {
+        return { status: SUCCESS, issues: [], sessionId: "session-1", nodeId: 7n };
+      },
+    };
+    const nodeClient = {
+      async *attachSession() {
+        caller.abort();
+        yield { status: SUCCESS, issues: [] };
+      },
+      executeQuery() {
+        executeInvocations += 1;
+        return (async function* emptyQueryStream() {})();
+      },
+      async deleteSession() {
+        return { status: SUCCESS, issues: [] };
+      },
+    };
+
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "UPSERT INTO t(id) VALUES (1);",
+      parameters: {},
+      mode: "noTx",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+      signal: caller.signal,
+    }, {
+      createDriver: () => ({
+        async ready() {},
+        createClient(_definition: unknown, nodeId?: bigint) {
+          return nodeId === undefined ? baseClient : nodeClient;
+        },
+        close() {},
+      }) as never,
+    });
+
+    expect(caller.signal.aborted).toBe(true);
+    expect(executeInvocations).toBe(0);
+    expect(result).toMatchObject({
+      completion: "cancelled",
+      diagnostics: "Query Service request was cancelled.",
+    });
+  });
+
   it("distinguishes read transport failure from a sent mutation with lost final status", async () => {
     // Production break caught: a transport loss after sending a mutation can
     // be reported as an ordinary failure and invite an unsafe automatic retry.
