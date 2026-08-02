@@ -28,6 +28,8 @@ import { decodeYdbValue } from "./sql-parameters.js";
 import { redactText } from "./auth.js";
 
 const CLEANUP_TIMEOUT_MS = 5_000;
+const MAX_CAPTURED_ISSUE_DEPTH = 32;
+const MAX_CAPTURED_ISSUE_NODES = 1_000;
 
 export type QueryServiceMode = "explain" | "snapshotReadOnly" | "noTx";
 
@@ -250,16 +252,19 @@ export async function executeQueryServiceWithSdk(
         receivedPart = true;
         if (!payloadCaptureStopped) {
           for (const issue of part.issues ?? []) {
-            const structuredIssue = captureIssue(issue, payloadRedactions);
-            const issueBytes = jsonBytes(structuredIssue);
-            if (issueBytes > request.maxOutputBytes - capturedBytes) {
+            const capturedIssue = captureBoundedIssue(
+              issue,
+              payloadRedactions,
+              request.maxOutputBytes - capturedBytes,
+            );
+            if (!capturedIssue.issue) {
               limitReached = true;
               payloadCaptureStopped = true;
               payloadTruncationReasons.add("byteLimit");
               break;
             }
-            capturedIssues.push(structuredIssue);
-            capturedBytes += issueBytes;
+            capturedIssues.push(capturedIssue.issue);
+            capturedBytes += capturedIssue.bytes;
           }
         }
         if (!payloadCaptureStopped && part.execStats?.queryPlan) {
@@ -591,31 +596,175 @@ function collectTruncationReasons(
   ));
 }
 
-function captureIssue(
-  issue: QueryIssueMessage,
+interface IssueCaptureResult {
+  issue?: QueryServiceIssue;
+  bytes: number;
+}
+
+interface IssueTraversalFrame {
+  children: unknown[];
+  output: QueryServiceIssue;
+  depth: number;
+  nextChildIndex: number;
+}
+
+function captureBoundedIssue(
+  root: unknown,
   redactions: string[],
-): QueryServiceIssue {
+  remainingBytes: number,
+): IssueCaptureResult {
+  if (remainingBytes <= 0) {
+    return { bytes: 0 };
+  }
+  const rootNode = captureBoundedIssueNode(root, redactions, remainingBytes);
+  if (!rootNode) {
+    return { bytes: 0 };
+  }
+  let capturedBytes = rootNode.bytes;
+  let capturedNodes = 1;
+  const seen = new Set<object>([rootNode.identity]);
+  const stack: IssueTraversalFrame[] = [{
+    children: rootNode.children,
+    output: rootNode.output,
+    depth: 1,
+    nextChildIndex: 0,
+  }];
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    if (frame.nextChildIndex >= frame.children.length) {
+      stack.pop();
+      continue;
+    }
+    const child = frame.children[frame.nextChildIndex];
+    frame.nextChildIndex += 1;
+    if (
+      frame.depth >= MAX_CAPTURED_ISSUE_DEPTH
+      || capturedNodes >= MAX_CAPTURED_ISSUE_NODES
+      || (
+        child !== null
+        && typeof child === "object"
+        && seen.has(child)
+      )
+    ) {
+      return { bytes: 0 };
+    }
+    const childNode = captureBoundedIssueNode(
+      child,
+      redactions,
+      remainingBytes - capturedBytes,
+    );
+    if (!childNode) {
+      return { bytes: 0 };
+    }
+    const separatorBytes = frame.output.issues.length > 0 ? 1 : 0;
+    if (
+      childNode.bytes + separatorBytes
+      > remainingBytes - capturedBytes
+    ) {
+      return { bytes: 0 };
+    }
+    capturedBytes += childNode.bytes + separatorBytes;
+    capturedNodes += 1;
+    seen.add(childNode.identity);
+    frame.output.issues.push(childNode.output);
+    stack.push({
+      children: childNode.children,
+      output: childNode.output,
+      depth: frame.depth + 1,
+      nextChildIndex: 0,
+    });
+  }
+
   return {
-    message: redactText(issue.message, redactions),
-    issueCode: issue.issueCode,
-    severity: issue.severity,
-    ...(issue.position ? { position: captureIssuePosition(issue.position) } : {}),
-    ...(issue.endPosition
-      ? { endPosition: captureIssuePosition(issue.endPosition) }
-      : {}),
-    issues: issue.issues.map((nestedIssue) =>
-      captureIssue(nestedIssue, redactions)),
+    issue: rootNode.output,
+    bytes: capturedBytes,
   };
 }
 
-function captureIssuePosition(
-  position: QueryServiceIssuePosition,
-): QueryServiceIssuePosition {
-  return {
-    row: position.row,
-    column: position.column,
-    file: position.file,
+function captureBoundedIssueNode(
+  value: unknown,
+  redactions: string[],
+  remainingBytes: number,
+): {
+  identity: object;
+  children: unknown[];
+  output: QueryServiceIssue;
+  bytes: number;
+} | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const issue = value as Partial<QueryIssueMessage>;
+  const message = issue.message;
+  const issueCode = issue.issueCode;
+  const severity = issue.severity;
+  const children = issue.issues;
+  if (
+    typeof message !== "string"
+    || typeof issueCode !== "number"
+    || typeof severity !== "number"
+    || !Array.isArray(children)
+  ) {
+    return undefined;
+  }
+  const position = captureBoundedIssuePosition(
+    issue.position,
+    remainingBytes,
+  );
+  const endPosition = captureBoundedIssuePosition(
+    issue.endPosition,
+    remainingBytes,
+  );
+  if (
+    message.length > remainingBytes
+    || position === null
+    || endPosition === null
+  ) {
+    return undefined;
+  }
+  const output: QueryServiceIssue = {
+    message: redactText(message, redactions),
+    issueCode,
+    severity,
+    ...(position ? { position } : {}),
+    ...(endPosition ? { endPosition } : {}),
+    issues: [],
   };
+  const bytes = jsonBytes(output);
+  return bytes <= remainingBytes
+    ? {
+        identity: value,
+        children,
+        output,
+        bytes,
+      }
+    : undefined;
+}
+
+function captureBoundedIssuePosition(
+  value: unknown,
+  remainingBytes: number,
+): QueryServiceIssuePosition | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const position = value as Partial<QueryServiceIssuePosition>;
+  const row = position.row;
+  const column = position.column;
+  const file = position.file;
+  if (
+    typeof row !== "number"
+    || typeof column !== "number"
+    || typeof file !== "string"
+    || file.length > remainingBytes
+  ) {
+    return null;
+  }
+  return { row, column, file };
 }
 
 function addTruncationReason(

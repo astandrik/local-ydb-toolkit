@@ -1,4 +1,14 @@
 import { describe, expect, it } from "vitest";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { StatusIds_StatusCode } from "@ydbjs/api/operation";
 import {
@@ -10,6 +20,7 @@ import {
 import { ResultSet_Format } from "@ydbjs/api/value";
 import { prepareSqlParameters } from "../src/sql-parameters.js";
 import { createContext } from "../src/operations/context.js";
+import { ShellCommandExecutor } from "../src/api-client.js";
 import { ConfigSchema } from "../src/validation.js";
 
 const SUCCESS = StatusIds_StatusCode.SUCCESS;
@@ -230,6 +241,121 @@ describe("low-level Query Service adapter", () => {
     expect(bounded.queryAst).toBeUndefined();
     expect(bounded.capturedBytes).toBe(82);
     expect(bounded.truncationReasons).toEqual(["byteLimit"]);
+  });
+
+  it("omits a complete top-level issue before traversing an over-deep tree", async () => {
+    // Production break caught: recursive issue copying could overflow the JS
+    // stack before maxOutputBytes was checked.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    let accessedMessages = 0;
+    const deepIssue = buildDeepIssueTree(10_000, () => {
+      accessedMessages += 1;
+    });
+    const keptIssue = {
+      message: "kept",
+      issueCode: 1,
+      severity: 2,
+      issues: [],
+    };
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "EXPLAIN SELECT 1;",
+      parameters: {},
+      mode: "explain",
+      maxRows: 10,
+      maxOutputBytes: 1_000_000,
+    }, {
+      createDriver: () => driverForParts([{
+        status: SUCCESS,
+        issues: [keptIssue, deepIssue],
+        resultSetIndex: 0n,
+      }]) as never,
+    });
+
+    expect(result.completion).toBe("partial");
+    expect(result.issues).toEqual([keptIssue]);
+    expect(result.capturedBytes).toBe(57);
+    expect(result.capturedBytes).toBeLessThanOrEqual(1_000_000);
+    expect(result.truncationReasons).toEqual(["byteLimit"]);
+    expect(accessedMessages).toBeLessThanOrEqual(32);
+  });
+
+  it("omits a complete top-level issue before copying an over-wide tree", async () => {
+    // Production break caught: a server-controlled sibling array was fully
+    // materialized and redacted before any output bound was applied.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    let accessedMessages = 0;
+    const wideIssue = buildWideIssueTree(10_000, () => {
+      accessedMessages += 1;
+    });
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "EXPLAIN SELECT 1;",
+      parameters: {},
+      mode: "explain",
+      maxRows: 10,
+      maxOutputBytes: 1_000_000,
+    }, {
+      createDriver: () => driverForParts([{
+        status: SUCCESS,
+        issues: [wideIssue],
+        resultSetIndex: 0n,
+      }]) as never,
+    });
+
+    expect(result.completion).toBe("partial");
+    expect(result.issues).toBeUndefined();
+    expect(result.capturedBytes).toBe(0);
+    expect(result.capturedBytes).toBeLessThanOrEqual(1_000_000);
+    expect(result.truncationReasons).toEqual(["byteLimit"]);
+    expect(accessedMessages).toBeLessThanOrEqual(1_000);
+  });
+
+  it("accounts for a complete nested issue including sibling separators", async () => {
+    // Production break caught: incremental accounting can undercount commas
+    // and retain JSON whose actual encoding exceeds maxOutputBytes.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const nestedIssue = {
+      message: "root",
+      issueCode: 1,
+      severity: 2,
+      issues: [
+        { message: "a", issueCode: 2, severity: 2, issues: [] },
+        { message: "b", issueCode: 3, severity: 2, issues: [] },
+      ],
+    };
+    const execute = (maxOutputBytes: number) => executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "EXPLAIN SELECT 1;",
+      parameters: {},
+      mode: "explain",
+      maxRows: 10,
+      maxOutputBytes,
+    }, {
+      createDriver: () => driverForParts([{
+        status: SUCCESS,
+        issues: [nestedIssue],
+        resultSetIndex: 0n,
+      }]) as never,
+    });
+
+    const exact = await execute(166);
+    const oneByteShort = await execute(165);
+
+    expect(exact.issues).toEqual([nestedIssue]);
+    expect(exact.capturedBytes).toBe(166);
+    expect(oneByteShort.issues).toBeUndefined();
+    expect(oneByteShort.capturedBytes).toBe(0);
+    expect(oneByteShort.truncationReasons).toEqual(["byteLimit"]);
   });
 
   it("incrementally decodes ordered columns and rows across result-set parts", async () => {
@@ -755,6 +881,77 @@ describe("low-level Query Service adapter", () => {
     expect(queryCalls).toBe(0);
   });
 
+  it("aborts an in-flight remote password command before SQL is sent", async () => {
+    // Production break caught: caller cancellation only changed the eventual
+    // classification while the real SSH child kept running until timeout.
+    const tempDir = mkdtempSync(join(tmpdir(), "local-ydb-command-abort-"));
+    const sshPath = join(tempDir, "ssh");
+    const pidFile = join(tempDir, "ssh.pid");
+    const originalPath = process.env.PATH;
+    const originalPidFile = process.env.LOCAL_YDB_TEST_SSH_PID_FILE;
+    writeFileSync(sshPath, [
+      "#!/bin/sh",
+      "echo $$ > \"$LOCAL_YDB_TEST_SSH_PID_FILE\"",
+      "trap 'exit 0' TERM INT",
+      "while :; do :; done",
+      "",
+    ].join("\n"), "utf8");
+    chmodSync(sshPath, 0o755);
+    process.env.PATH = `${tempDir}:${originalPath ?? ""}`;
+    process.env.LOCAL_YDB_TEST_SSH_PID_FILE = pidFile;
+
+    try {
+      const ctx = createContext(undefined, new ShellCommandExecutor(), ConfigSchema.parse({
+        profiles: {
+          default: {
+            mode: "ssh",
+            ssh: { host: "test.invalid" },
+            rootPasswordFile: "/test/root.password",
+          },
+        },
+      }));
+      const caller = new AbortController();
+      let queryCalls = 0;
+      const { executeQueryService } = await import("../src/query-service.js");
+      const operation = executeQueryService(ctx, {
+        timeoutMs: 1_000,
+        script: "SELECT 1;",
+        parameters: {},
+        mode: "snapshotReadOnly",
+        maxRows: 10,
+        maxOutputBytes: 1_024,
+        signal: caller.signal,
+      }, async () => {
+        queryCalls += 1;
+        throw new Error("query executor must not run");
+      });
+
+      await waitForFile(pidFile);
+      const childPid = Number(readFileSync(pidFile, "utf8").trim());
+      const abortedAt = Date.now();
+      caller.abort();
+      const result = await operation;
+
+      expect(Date.now() - abortedAt).toBeLessThan(250);
+      expect(result.completion).toBe("cancelled");
+      expect(result.diagnostics).toBe("Query Service request was cancelled.");
+      expect(queryCalls).toBe(0);
+      expect(isProcessAlive(childPid)).toBe(false);
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      if (originalPidFile === undefined) {
+        delete process.env.LOCAL_YDB_TEST_SSH_PID_FILE;
+      } else {
+        process.env.LOCAL_YDB_TEST_SSH_PID_FILE = originalPidFile;
+      }
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("sanitizes session-setup failures and still closes the driver", async () => {
     // Production break caught: SDK setup exceptions can leak credential paths
     // through diagnostics or bypass driver cleanup before any request is sent.
@@ -1027,6 +1224,49 @@ function queryPart(
   };
 }
 
+function buildDeepIssueTree(
+  depth: number,
+  onMessageAccess: () => void,
+): Record<string, unknown> {
+  let issue: Record<string, unknown> = issueWithObservedMessage(
+    "deep",
+    [],
+    onMessageAccess,
+  );
+  for (let index = 1; index < depth; index += 1) {
+    issue = issueWithObservedMessage("deep", [issue], onMessageAccess);
+  }
+  return issue;
+}
+
+function buildWideIssueTree(
+  width: number,
+  onMessageAccess: () => void,
+): Record<string, unknown> {
+  return issueWithObservedMessage(
+    "wide-root",
+    Array.from({ length: width }, () =>
+      issueWithObservedMessage("wide-child", [], onMessageAccess)),
+    onMessageAccess,
+  );
+}
+
+function issueWithObservedMessage(
+  message: string,
+  issues: Array<Record<string, unknown>>,
+  onMessageAccess: () => void,
+): Record<string, unknown> {
+  return {
+    get message() {
+      onMessageAccess();
+      return message;
+    },
+    issueCode: 1,
+    severity: 2,
+    issues,
+  };
+}
+
 function cancellationDriver(
   part: unknown,
   cancelCaller: (() => void) | undefined,
@@ -1103,6 +1343,25 @@ function cancellationAfterSendDriver() {
     },
     close() {},
   };
+}
+
+async function waitForFile(path: string): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for test file: ${path}`);
+    }
+    await delay(5);
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function transportLossDriver(part: unknown, onExecute: () => void) {

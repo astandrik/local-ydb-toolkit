@@ -178,7 +178,10 @@ async function readRootPassword(
       description: "Read YDB root password file",
       redactions: [file],
       ...(deadline
-        ? { timeoutMs: remainingSdkOperationTimeoutMs(deadline) }
+        ? {
+            timeoutMs: remainingSdkOperationTimeoutMs(deadline),
+            signal: deadline.signal,
+          }
         : {}),
     }));
     deadline?.signal.throwIfAborted();
