@@ -40,6 +40,7 @@ describe("managed SQL backend result normalization", () => {
       resultSets: [emptyResultSet(0, [])],
       capturedBytes: 0,
       truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
     })).toBeUndefined();
   });
 
@@ -51,6 +52,7 @@ describe("managed SQL backend result normalization", () => {
       resultSets: [emptyResultSet(0, ["byteLimit", "server"])],
       capturedBytes: 0,
       truncationReasons: ["byteLimit", "server"],
+      status: StatusIds_StatusCode.SUCCESS,
     };
     const repeatedEnvelope: QueryServiceExecutionResult = {
       ...oneEnvelope,
@@ -68,6 +70,18 @@ describe("managed SQL backend result normalization", () => {
     // Production break caught: a numeric value can satisfy the TypeScript enum
     // shape at runtime or contradict the completion used by the state machine.
     const invalid: QueryServiceExecutionResult[] = [
+      {
+        completion: "success",
+        resultSets: [],
+        capturedBytes: 0,
+        truncationReasons: [],
+      },
+      {
+        completion: "partial",
+        resultSets: [],
+        capturedBytes: 0,
+        truncationReasons: ["byteLimit"],
+      },
       {
         completion: "success",
         resultSets: [],
@@ -136,6 +150,18 @@ describe("managed SQL backend result normalization", () => {
       truncationReasons: [],
       status: StatusIds_StatusCode.BAD_REQUEST,
     })).toBeDefined();
+    expect(normalize({
+      completion: "cancelled",
+      resultSets: [],
+      capturedBytes: 0,
+      truncationReasons: [],
+    })).toBeDefined();
+    expect(normalize({
+      completion: "mutationStatusUnknown",
+      resultSets: [],
+      capturedBytes: 0,
+      truncationReasons: [],
+    })).toBeDefined();
   });
 
   it("rejects completion and truncation combinations Task 3 cannot emit", () => {
@@ -146,12 +172,14 @@ describe("managed SQL backend result normalization", () => {
       resultSets: [],
       capturedBytes: 0,
       truncationReasons: ["server"],
+      status: StatusIds_StatusCode.SUCCESS,
     })).toBeUndefined();
     expect(normalize({
       completion: "partial",
       resultSets: [],
       capturedBytes: 0,
       truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
     })).toBeUndefined();
 
     expect(normalize({
@@ -159,6 +187,7 @@ describe("managed SQL backend result normalization", () => {
       resultSets: [],
       capturedBytes: 0,
       truncationReasons: ["byteLimit"],
+      status: StatusIds_StatusCode.SUCCESS,
     })).toBeDefined();
     expect(normalize({
       completion: "failed",
@@ -196,8 +225,123 @@ describe("managed SQL backend result normalization", () => {
       }],
       capturedBytes: 64,
       truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
     }, 64)).toBeUndefined();
     expect(laterColumnDescriptorReads).toBe(0);
+  });
+
+  it("rejects an oversized column array before full enumeration or copy", () => {
+    // Production break caught: inspectDenseArray can enumerate and copy all
+    // 600,000 raw columns before the one-byte reported payload guard rejects.
+    const sharedColumn = { name: "value", type: "Int32" };
+    const target = Array.from({ length: 600_000 }, () => sharedColumn);
+    let ownKeysCalls = 0;
+    let descriptorReads = 0;
+    const columns = new Proxy(target, {
+      ownKeys(array) {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(array);
+      },
+      getOwnPropertyDescriptor(array, property) {
+        descriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(array, property);
+      },
+    });
+
+    expect(normalize({
+      completion: "success",
+      resultSets: [{
+        index: 0,
+        columns,
+        rows: [],
+        truncationReasons: [],
+      }],
+      capturedBytes: 1,
+      truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
+    }, 1_048_576)).toBeUndefined();
+    expect(descriptorReads).toBeLessThanOrEqual(2);
+    expect(ownKeysCalls).toBe(0);
+  });
+
+  it("rejects byte-fitting non-column entries before full enumeration or copy", () => {
+    // Production break caught: 500,000 numeric entries fit the JSON byte cap
+    // but are not exact column records and must not reach full array copying.
+    const target = Array.from({ length: 500_000 }, () => 0);
+    let ownKeysCalls = 0;
+    let descriptorReads = 0;
+    const columns = new Proxy(target, {
+      ownKeys(array) {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(array);
+      },
+      getOwnPropertyDescriptor(array, property) {
+        descriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(array, property);
+      },
+    });
+
+    expect(normalize({
+      completion: "success",
+      resultSets: [{
+        index: 0,
+        columns: columns as never,
+        rows: [],
+        truncationReasons: [],
+      }],
+      capturedBytes: 1_000_001,
+      truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
+    }, 1_048_576)).toBeUndefined();
+    expect(descriptorReads).toBeLessThanOrEqual(2);
+    expect(ownKeysCalls).toBe(0);
+  });
+
+  it("preserves dense-array, exact-record, and accessor rejection for columns", () => {
+    const sparseColumns = new Array(1);
+    const extraArrayProperty = [{ name: "x", type: "Int32" }];
+    Object.defineProperty(extraArrayProperty, "extra", {
+      value: true,
+      enumerable: true,
+    });
+    const accessorIndex: unknown[] = [];
+    Object.defineProperty(accessorIndex, "0", {
+      get: () => ({ name: "x", type: "Int32" }),
+      enumerable: true,
+    });
+    accessorIndex.length = 1;
+    const extraColumnProperty = [{
+      name: "x",
+      type: "Int32",
+      extra: true,
+    }];
+    const accessorColumn = [{
+      get name() {
+        return "x";
+      },
+      type: "Int32",
+    }];
+
+    for (const columns of [
+      sparseColumns,
+      extraArrayProperty,
+      accessorIndex,
+      extraColumnProperty,
+      accessorColumn,
+    ]) {
+      expect(normalize({
+        completion: "success",
+        resultSets: [{
+          index: 0,
+          columns,
+          rows: [],
+          truncationReasons: [],
+        }],
+        capturedBytes: 29,
+        truncationReasons: [],
+        status: StatusIds_StatusCode.SUCCESS,
+      }, 29)).toBeUndefined();
+    }
   });
 
   it("accepts Task 3 history bytes from overwritten plan and AST parts", () => {

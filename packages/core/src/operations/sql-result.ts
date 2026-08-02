@@ -137,6 +137,24 @@ function normalizeSqlBackendResultUnsafe(
   ) {
     return undefined;
   }
+  let status: StatusIds_StatusCode | undefined;
+  if (record.has("status")) {
+    const rawStatus = record.get("status");
+    if (
+      typeof rawStatus !== "number"
+      || !Number.isSafeInteger(rawStatus)
+      || !STATUS_CODES.has(rawStatus)
+    ) {
+      return undefined;
+    }
+    status = rawStatus;
+  }
+  if (!completionMatchesStatus(
+    completion as QueryServiceExecutionResult["completion"],
+    status,
+  )) {
+    return undefined;
+  }
 
   let measuredPayloadBytes = 0;
   const consumePayload = (payload: unknown, depth = MAX_JSON_DEPTH): boolean => {
@@ -145,6 +163,22 @@ function normalizeSqlBackendResultUnsafe(
       payload,
       remainingReportedBytes,
       depth,
+    );
+    if (measured === undefined) {
+      return false;
+    }
+    measuredPayloadBytes += measured;
+    return true;
+  };
+  const consumeColumnPayload = (
+    payload: unknown,
+    maxLength: number,
+  ): boolean => {
+    const remainingReportedBytes = capturedBytes - measuredPayloadBytes;
+    const measured = measureColumnArrayIncrementally(
+      payload,
+      remainingReportedBytes,
+      maxLength,
     );
     if (measured === undefined) {
       return false;
@@ -164,6 +198,7 @@ function normalizeSqlBackendResultUnsafe(
       options.maxRows,
       options.captureBudget,
       consumePayload,
+      consumeColumnPayload,
       resultSetState,
     );
     if (!normalized || seenResultSetIndexes.has(normalized.index)) {
@@ -219,25 +254,6 @@ function normalizeSqlBackendResultUnsafe(
     return undefined;
   }
 
-  let status: number | undefined;
-  if (record.has("status")) {
-    const rawStatus = record.get("status");
-    if (
-      typeof rawStatus !== "number"
-      || !Number.isSafeInteger(rawStatus)
-      || !STATUS_CODES.has(rawStatus)
-    ) {
-      return undefined;
-    }
-    status = rawStatus;
-  }
-  if (!completionMatchesStatus(
-    completion as QueryServiceExecutionResult["completion"],
-    status,
-  )) {
-    return undefined;
-  }
-
   let diagnostics: string | undefined;
   if (record.has("diagnostics")) {
     const rawDiagnostics = record.get("diagnostics");
@@ -282,7 +298,7 @@ function completionMatchesStatus(
   switch (completion) {
     case "success":
     case "partial":
-      return status === undefined || status === StatusIds_StatusCode.SUCCESS;
+      return status === StatusIds_StatusCode.SUCCESS;
     case "cancelled":
     case "mutationStatusUnknown":
       return status === undefined;
@@ -296,6 +312,7 @@ function normalizeResultSet(
   maxRows: number,
   captureBudget: number,
   consumePayload: (payload: unknown, depth?: number) => boolean,
+  consumeColumnPayload: (payload: unknown, maxLength: number) => boolean,
   state: ResultSetNormalizationState,
 ): QueryServiceResultSet | undefined {
   const record = inspectExactRecord(
@@ -316,12 +333,13 @@ function normalizeResultSet(
   }
   const reasons = normalizeTruncationReasons(record.get("truncationReasons"));
   const nodeLimit = jsonNodeLimit(captureBudget);
-  const rawColumns = inspectDenseArray(record.get("columns"), nodeLimit);
-  const rawRows = inspectDenseArray(record.get("rows"), maxRows);
-  if (!reasons || !rawColumns || !rawRows) {
+  const rawColumnValue = record.get("columns");
+  if (!consumeColumnPayload(rawColumnValue, nodeLimit)) {
     return undefined;
   }
-  if (rawColumns.length > 0 && !consumePayload(rawColumns)) {
+  const rawColumns = inspectDenseArray(rawColumnValue, nodeLimit);
+  const rawRows = inspectDenseArray(record.get("rows"), maxRows);
+  if (!reasons || !rawColumns || !rawRows) {
     return undefined;
   }
 
@@ -587,6 +605,80 @@ function inspectDenseArray(
     items.push(descriptor.value);
   }
   return items;
+}
+
+function measureColumnArrayIncrementally(
+  value: unknown,
+  maxBytes: number,
+  maxLength: number,
+): number | undefined {
+  if (
+    !Array.isArray(value)
+    || !Number.isSafeInteger(maxBytes)
+    || maxBytes < 0
+  ) {
+    return undefined;
+  }
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+  const length = lengthDescriptor?.value;
+  if (
+    typeof length !== "number"
+    || !Number.isSafeInteger(length)
+    || length < 0
+    || length > maxLength
+  ) {
+    return undefined;
+  }
+  if (length === 0) {
+    return 0;
+  }
+
+  let bytes = addBytes(0, length + 1, maxBytes);
+  if (bytes > maxBytes) {
+    return undefined;
+  }
+  const seenColumns = new Set<object>();
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (
+      !descriptor
+      || !descriptor.enumerable
+      || !("value" in descriptor)
+    ) {
+      return undefined;
+    }
+    if (
+      descriptor.value
+      && typeof descriptor.value === "object"
+    ) {
+      if (seenColumns.has(descriptor.value)) {
+        return undefined;
+      }
+      seenColumns.add(descriptor.value);
+    }
+    const column = inspectExactRecord(
+      descriptor.value,
+      COLUMN_FIELDS,
+      ["name", "type"],
+    );
+    if (
+      !column
+      || typeof column.get("name") !== "string"
+      || typeof column.get("type") !== "string"
+    ) {
+      return undefined;
+    }
+    const measured = measureJsonValue(
+      descriptor.value,
+      maxBytes - bytes,
+      MAX_JSON_DEPTH - 1,
+    );
+    if (measured === undefined) {
+      return undefined;
+    }
+    bytes = addBytes(bytes, measured, maxBytes);
+  }
+  return bytes <= maxBytes ? bytes : undefined;
 }
 
 function measureJsonValue(

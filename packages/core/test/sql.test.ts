@@ -30,11 +30,15 @@ async function loadSql(): Promise<SqlFunction> {
 function successfulResult(
   overrides: Partial<QueryServiceExecutionResult> = {},
 ): QueryServiceExecutionResult {
+  const completion = overrides.completion ?? "success";
   return {
-    completion: "success",
+    completion,
     resultSets: [],
     capturedBytes: 0,
     truncationReasons: [],
+    ...(completion === "success" || completion === "partial"
+      ? { status: StatusIds_StatusCode.SUCCESS }
+      : {}),
     ...overrides,
   };
 }
@@ -718,6 +722,42 @@ describe("managed SQL operation", () => {
       });
       expect(response).not.toHaveProperty("execution");
     }
+  });
+
+  it("blocks NoTx when a success preflight omits the Task 3 status", async () => {
+    // Production break caught: an injected success completion without the
+    // producer's mandatory SUCCESS status can authorize a confirmed mutation.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const missingStatus: QueryServiceExecutionResult = {
+      completion: "success",
+      resultSets: [],
+      capturedBytes: 0,
+      truncationReasons: [],
+    };
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+    }, async (_ctx, request) => {
+      calls.push(request);
+      return missingStatus;
+    });
+
+    expect(calls.map((call) => call.mode)).toEqual(["explain"]);
+    expect(response).toMatchObject({
+      executed: false,
+      outcome: "failed",
+      confirmationConsumed: false,
+      preflight: {
+        completion: "failed",
+        resultSets: [],
+        capturedBytes: 0,
+        truncationReasons: [],
+      },
+    });
+    expect(response).not.toHaveProperty("execution");
   });
 
   it("blocks NoTx when success preflight carries a truncation reason", async () => {
