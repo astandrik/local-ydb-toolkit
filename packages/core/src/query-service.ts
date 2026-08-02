@@ -17,12 +17,15 @@ import {
   type TypedValue,
 } from "@ydbjs/api/value";
 import {
+  createSdkOperationDeadline,
+  normalizeSdkTimeoutMs,
   withSdkConnection,
   type SdkConnectionRequest,
 } from "./operations/sdk-connection.js";
 import type { ToolkitContext } from "./operations/types.js";
 import type { JsonValue } from "./sql-parameter-types.js";
 import { decodeYdbValue } from "./sql-parameters.js";
+import { redactText } from "./auth.js";
 
 const CLEANUP_TIMEOUT_MS = 5_000;
 
@@ -53,8 +56,26 @@ export interface QueryServiceExecutionResult {
   resultSets: QueryServiceResultSet[];
   capturedBytes: number;
   truncationReasons: QueryServiceTruncationReason[];
+  issues?: QueryServiceIssue[];
+  queryPlan?: string;
+  queryAst?: string;
   status?: StatusIds_StatusCode;
   diagnostics?: string;
+}
+
+export interface QueryServiceIssue {
+  message: string;
+  issueCode: number;
+  severity: number;
+  position?: QueryServiceIssuePosition;
+  endPosition?: QueryServiceIssuePosition;
+  issues: QueryServiceIssue[];
+}
+
+export interface QueryServiceIssuePosition {
+  row: number;
+  column: number;
+  file: string;
 }
 
 export interface QueryServiceResultSet {
@@ -68,7 +89,20 @@ export type QueryServiceTruncationReason = "rowLimit" | "byteLimit" | "server";
 
 interface QueryResponse {
   status: StatusIds_StatusCode;
-  issues?: unknown[];
+  issues?: QueryIssueMessage[];
+  execStats?: {
+    queryPlan: string;
+    queryAst: string;
+  };
+}
+
+interface QueryIssueMessage {
+  message: string;
+  issueCode: number;
+  severity: number;
+  position?: QueryServiceIssuePosition;
+  endPosition?: QueryServiceIssuePosition;
+  issues: QueryIssueMessage[];
 }
 
 interface QueryServiceClient {
@@ -109,19 +143,35 @@ export async function executeQueryService(
   request: QueryServiceRequest,
   executor: QueryServiceExecutor = executeQueryServiceWithSdk,
 ): Promise<QueryServiceExecutionResult> {
-  return withSdkConnection(ctx, {
-    databasePath: request.databasePath,
-    timeoutMs: request.timeoutMs,
-    operationLabel: "managed SQL query",
-  }, (connection) => executor({
-    ...connection,
-    script: request.script,
-    parameters: request.parameters,
-    mode: request.mode,
-    maxRows: request.maxRows,
-    maxOutputBytes: request.maxOutputBytes,
-    signal: request.signal,
-  }));
+  const timeoutMs = normalizeSdkTimeoutMs(request.timeoutMs);
+  const deadline = createSdkOperationDeadline(timeoutMs, request.signal);
+  try {
+    return await withSdkConnection(ctx, {
+      databasePath: request.databasePath,
+      timeoutMs,
+      operationLabel: "managed SQL query",
+      deadline,
+    }, (connection) => executor({
+      ...connection,
+      script: request.script,
+      parameters: request.parameters,
+      mode: request.mode,
+      maxRows: request.maxRows,
+      maxOutputBytes: request.maxOutputBytes,
+      signal: deadline.signal,
+    }));
+  } catch {
+    if (deadline.signal.aborted) {
+      return {
+        completion: "cancelled",
+        resultSets: [],
+        capturedBytes: 0,
+        truncationReasons: [],
+        diagnostics: "Query Service request was cancelled.",
+      };
+    }
+    throw new Error("Query Service connection setup failed.");
+  }
 }
 
 export async function executeQueryServiceWithSdk(
@@ -129,11 +179,14 @@ export async function executeQueryServiceWithSdk(
   dependencies: QueryServiceDependencies = {},
 ): Promise<QueryServiceExecutionResult> {
   const internalController = new AbortController();
-  const deadlineSignal = AbortSignal.timeout(request.timeoutMs);
+  const operationDeadline = request.deadline
+    ?? createSdkOperationDeadline(request.timeoutMs, request.signal);
   const operationSignal = AbortSignal.any([
-    deadlineSignal,
+    operationDeadline.signal,
     internalController.signal,
-    ...(request.signal ? [request.signal] : []),
+    ...(request.signal && request.signal !== operationDeadline.signal
+      ? [request.signal]
+      : []),
   ]);
   const driver = (dependencies.createDriver ?? createQueryDriver)(
     request.connectionString,
@@ -144,6 +197,10 @@ export async function executeQueryServiceWithSdk(
   let attachMonitor: Promise<void> | undefined;
   let executionFinished = false;
   const resultSets = new Map<number, ResultSetCapture>();
+  const capturedIssues: QueryServiceIssue[] = [];
+  const payloadTruncationReasons = new Set<QueryServiceTruncationReason>();
+  let queryPlan: string | undefined;
+  let queryAst: string | undefined;
   let capturedBytes = 0;
   let limitReached = false;
   let payloadCaptureStopped = false;
@@ -152,6 +209,7 @@ export async function executeQueryServiceWithSdk(
   let requestSent = false;
   let sessionMonitorFailed = false;
   let receivedPart = false;
+  const payloadRedactions = request.rootPassword ? [request.rootPassword] : [];
 
   try {
     await driver.ready(operationSignal);
@@ -190,6 +248,50 @@ export async function executeQueryServiceWithSdk(
     try {
       for await (const part of responseStream) {
         receivedPart = true;
+        if (!payloadCaptureStopped) {
+          for (const issue of part.issues ?? []) {
+            const structuredIssue = captureIssue(issue, payloadRedactions);
+            const issueBytes = jsonBytes(structuredIssue);
+            if (issueBytes > request.maxOutputBytes - capturedBytes) {
+              limitReached = true;
+              payloadCaptureStopped = true;
+              payloadTruncationReasons.add("byteLimit");
+              break;
+            }
+            capturedIssues.push(structuredIssue);
+            capturedBytes += issueBytes;
+          }
+        }
+        if (!payloadCaptureStopped && part.execStats?.queryPlan) {
+          const redactedPlan = redactText(
+            part.execStats.queryPlan,
+            payloadRedactions,
+          );
+          const planBytes = jsonBytes(redactedPlan);
+          if (planBytes > request.maxOutputBytes - capturedBytes) {
+            limitReached = true;
+            payloadCaptureStopped = true;
+            payloadTruncationReasons.add("byteLimit");
+          } else {
+            queryPlan = redactedPlan;
+            capturedBytes += planBytes;
+          }
+        }
+        if (!payloadCaptureStopped && part.execStats?.queryAst) {
+          const redactedAst = redactText(
+            part.execStats.queryAst,
+            payloadRedactions,
+          );
+          const astBytes = jsonBytes(redactedAst);
+          if (astBytes > request.maxOutputBytes - capturedBytes) {
+            limitReached = true;
+            payloadCaptureStopped = true;
+            payloadTruncationReasons.add("byteLimit");
+          } else {
+            queryAst = redactedAst;
+            capturedBytes += astBytes;
+          }
+        }
         if (part.status !== StatusIds_StatusCode.SUCCESS) {
           finalStatus = part.status;
           break;
@@ -205,8 +307,9 @@ export async function executeQueryServiceWithSdk(
           capturedBytes += captured.bytes;
           if (captured.limitReached !== undefined) {
             limitReached = true;
+            payloadCaptureStopped = true;
             if (captured.limitReached === "byteLimit") {
-              payloadCaptureStopped = true;
+              payloadTruncationReasons.add("byteLimit");
             }
             if (request.mode !== "noTx") {
               internalController.abort(new Error("Query Service output limit reached"));
@@ -214,11 +317,15 @@ export async function executeQueryServiceWithSdk(
             }
           }
         }
+        if (limitReached && request.mode !== "noTx") {
+          internalController.abort(new Error("Query Service output limit reached"));
+          break;
+        }
       }
     } catch {
       if (
         request.signal?.aborted !== true
-        && !deadlineSignal.aborted
+        && !operationDeadline.signal.aborted
         && !limitReached
       ) {
         streamFailed = true;
@@ -227,12 +334,13 @@ export async function executeQueryServiceWithSdk(
     if (
       !receivedPart
       && request.signal?.aborted !== true
-      && !deadlineSignal.aborted
+      && !operationDeadline.signal.aborted
       && !limitReached
     ) {
       streamFailed = true;
     }
-    const externallyCancelled = request.signal?.aborted === true || deadlineSignal.aborted;
+    const externallyCancelled = operationDeadline.signal.aborted
+      || request.signal?.aborted === true;
     if (
       internalController.signal.aborted
       && !externallyCancelled
@@ -246,10 +354,18 @@ export async function executeQueryServiceWithSdk(
     const transportCompletion = request.mode === "noTx" && requestSent
       ? "mutationStatusUnknown"
       : "failed";
-    const truncationReasons = collectTruncationReasons(resultSets);
+    const sentMutationCancelled = request.mode === "noTx"
+      && requestSent
+      && externallyCancelled;
+    const truncationReasons = collectTruncationReasons(
+      resultSets,
+      payloadTruncationReasons,
+    );
     let completion: QueryServiceExecutionResult["completion"];
     if (finalStatus !== StatusIds_StatusCode.SUCCESS) {
       completion = "failed";
+    } else if (sentMutationCancelled) {
+      completion = "mutationStatusUnknown";
     } else if (externallyCancelled) {
       completion = "cancelled";
     } else if (streamFailed) {
@@ -263,6 +379,8 @@ export async function executeQueryServiceWithSdk(
     let diagnostics: string | undefined;
     if (finalStatus !== StatusIds_StatusCode.SUCCESS) {
       diagnostics = "Query Service returned a non-success status.";
+    } else if (sentMutationCancelled) {
+      diagnostics = "Mutation was sent but its final Query Service status was not received.";
     } else if (externallyCancelled) {
       diagnostics = "Query Service request was cancelled.";
     } else if (streamFailed && sessionMonitorFailed) {
@@ -282,21 +400,41 @@ export async function executeQueryServiceWithSdk(
         .map(({ output }) => output),
       capturedBytes,
       truncationReasons,
+      ...(capturedIssues.length > 0 ? { issues: capturedIssues } : {}),
+      ...(queryPlan !== undefined ? { queryPlan } : {}),
+      ...(queryAst !== undefined ? { queryAst } : {}),
       ...(externallyCancelled || streamFailed ? {} : { status: finalStatus }),
       ...(diagnostics ? { diagnostics } : {}),
     };
   } catch {
-    const externallyCancelled = request.signal?.aborted === true || deadlineSignal.aborted;
+    const externallyCancelled = operationDeadline.signal.aborted
+      || request.signal?.aborted === true;
+    const sentMutationCancelled = request.mode === "noTx"
+      && requestSent
+      && externallyCancelled;
+    let completion: QueryServiceExecutionResult["completion"] = "failed";
+    let diagnostics = "Query Service session setup failed.";
+    if (sentMutationCancelled) {
+      completion = "mutationStatusUnknown";
+      diagnostics = "Mutation was sent but its final Query Service status was not received.";
+    } else if (externallyCancelled) {
+      completion = "cancelled";
+      diagnostics = "Query Service request was cancelled.";
+    }
     return {
-      completion: externallyCancelled ? "cancelled" : "failed",
+      completion,
       resultSets: Array.from(resultSets.values())
         .sort((left, right) => left.output.index - right.output.index)
         .map(({ output }) => output),
       capturedBytes,
-      truncationReasons: collectTruncationReasons(resultSets),
-      diagnostics: externallyCancelled
-        ? "Query Service request was cancelled."
-        : "Query Service session setup failed.",
+      truncationReasons: collectTruncationReasons(
+        resultSets,
+        payloadTruncationReasons,
+      ),
+      ...(capturedIssues.length > 0 ? { issues: capturedIssues } : {}),
+      ...(queryPlan !== undefined ? { queryPlan } : {}),
+      ...(queryAst !== undefined ? { queryAst } : {}),
+      diagnostics,
     };
   } finally {
     executionFinished = true;
@@ -340,6 +478,29 @@ function captureResultSetPart(
   const index = Number(rawIndex);
   if (!Number.isSafeInteger(index) || index < 0) {
     throw new Error("Query Service returned an invalid result-set index");
+  }
+  if (
+    !captures.has(index)
+    && part.columns.length === 0
+    && part.rows.length === 0
+    && part.truncated
+  ) {
+    const output: QueryServiceResultSet = {
+      index,
+      columns: [],
+      rows: [],
+      truncationReasons: ["server"],
+    };
+    const envelopeBytes = jsonBytes(output);
+    if (envelopeBytes > remainingBytes) {
+      return { bytes: 0, limitReached: "byteLimit" };
+    }
+    captures.set(index, {
+      output,
+      types: [],
+      columnMetadata: undefined,
+    });
+    return { bytes: envelopeBytes };
   }
   let capture = captures.get(index);
   let capturedBytes = 0;
@@ -420,10 +581,41 @@ function captureResultSetPart(
 
 function collectTruncationReasons(
   captures: Map<number, ResultSetCapture>,
+  additionalReasons: ReadonlySet<QueryServiceTruncationReason> = new Set(),
 ): QueryServiceTruncationReason[] {
   return Array.from(new Set(
-    Array.from(captures.values()).flatMap(({ output }) => output.truncationReasons),
+    [
+      ...additionalReasons,
+      ...Array.from(captures.values()).flatMap(({ output }) => output.truncationReasons),
+    ],
   ));
+}
+
+function captureIssue(
+  issue: QueryIssueMessage,
+  redactions: string[],
+): QueryServiceIssue {
+  return {
+    message: redactText(issue.message, redactions),
+    issueCode: issue.issueCode,
+    severity: issue.severity,
+    ...(issue.position ? { position: captureIssuePosition(issue.position) } : {}),
+    ...(issue.endPosition
+      ? { endPosition: captureIssuePosition(issue.endPosition) }
+      : {}),
+    issues: issue.issues.map((nestedIssue) =>
+      captureIssue(nestedIssue, redactions)),
+  };
+}
+
+function captureIssuePosition(
+  position: QueryServiceIssuePosition,
+): QueryServiceIssuePosition {
+  return {
+    row: position.row,
+    column: position.column,
+    file: position.file,
+  };
 }
 
 function addTruncationReason(
@@ -564,7 +756,7 @@ function buildExecuteRequest(
       },
     },
     parameters: request.parameters,
-    statsMode: StatsMode.NONE,
+    statsMode: request.mode === "explain" ? StatsMode.FULL : StatsMode.NONE,
     concurrentResultSets: false,
     responsePartLimitBytes: 0n,
     poolId: "",

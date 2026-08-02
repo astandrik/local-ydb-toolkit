@@ -19,6 +19,12 @@ export interface SdkConnectionRequest {
   timeoutMs: number;
   rootUser?: string;
   rootPassword?: string;
+  deadline?: SdkOperationDeadline;
+}
+
+export interface SdkOperationDeadline {
+  signal: AbortSignal;
+  expiresAtMs: number;
 }
 
 export interface SdkConnectionOptions {
@@ -27,6 +33,7 @@ export interface SdkConnectionOptions {
   /** Avoid an SSH tunnel when an injected executor does not open an SDK connection. */
   useSshTunnel?: boolean;
   operationLabel?: string;
+  deadline?: SdkOperationDeadline;
 }
 
 export function normalizeSdkDatabasePath(ctx: ToolkitContext, databasePath: string | undefined): string {
@@ -54,6 +61,26 @@ export function normalizeSdkTimeoutMs(timeoutMs: number | undefined): number {
   return timeoutMs;
 }
 
+export function createSdkOperationDeadline(
+  timeoutMs: number,
+  callerSignal?: AbortSignal,
+): SdkOperationDeadline {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return {
+    signal: callerSignal
+      ? AbortSignal.any([timeoutSignal, callerSignal])
+      : timeoutSignal,
+    expiresAtMs: Date.now() + timeoutMs,
+  };
+}
+
+export function remainingSdkOperationTimeoutMs(
+  deadline: SdkOperationDeadline,
+): number {
+  deadline.signal.throwIfAborted();
+  return Math.max(1, Math.ceil(deadline.expiresAtMs - Date.now()));
+}
+
 export async function withSdkConnection<T>(
   ctx: ToolkitContext,
   options: SdkConnectionOptions,
@@ -61,19 +88,41 @@ export async function withSdkConnection<T>(
 ): Promise<T> {
   const databasePath = normalizeSdkDatabasePath(ctx, options.databasePath);
   const timeoutMs = normalizeSdkTimeoutMs(options.timeoutMs);
-  const password = await readRootPassword(ctx);
+  options.deadline?.signal.throwIfAborted();
+  const password = await readRootPassword(ctx, options.deadline);
+  options.deadline?.signal.throwIfAborted();
   const remotePort = sdkGrpcPort(ctx, databasePath);
 
   if (ctx.profile.mode !== "ssh" || options.useSshTunnel === false) {
     const endpoint = `grpc://127.0.0.1:${remotePort}`;
-    return run(sdkConnectionRequest(endpoint, databasePath, timeoutMs, ctx, password));
+    return run(sdkConnectionRequest(
+      endpoint,
+      databasePath,
+      operationTimeoutMs(timeoutMs, options.deadline),
+      ctx,
+      password,
+      options.deadline,
+    ));
   }
 
-  const localPort = await allocateLocalPort();
-  const tunnel = await startSshTunnel(ctx.profile, localPort, remotePort, options.operationLabel ?? "YDB SDK operation");
+  const localPort = await allocateLocalPort(options.deadline);
+  const tunnel = await startSshTunnel(
+    ctx.profile,
+    localPort,
+    remotePort,
+    options.operationLabel ?? "YDB SDK operation",
+    options.deadline,
+  );
   try {
     const endpoint = `grpc://127.0.0.1:${localPort}`;
-    return await run(sdkConnectionRequest(endpoint, databasePath, timeoutMs, ctx, password));
+    return await run(sdkConnectionRequest(
+      endpoint,
+      databasePath,
+      operationTimeoutMs(timeoutMs, options.deadline),
+      ctx,
+      password,
+      options.deadline,
+    ));
   } finally {
     tunnel.kill("SIGTERM");
   }
@@ -85,6 +134,7 @@ function sdkConnectionRequest(
   timeoutMs: number,
   ctx: ToolkitContext,
   password: string | undefined,
+  deadline: SdkOperationDeadline | undefined,
 ): SdkConnectionRequest {
   return {
     connectionString: `${endpoint}${databasePath}`,
@@ -93,7 +143,15 @@ function sdkConnectionRequest(
     timeoutMs,
     rootUser: password ? ctx.profile.rootUser : undefined,
     rootPassword: password,
+    ...(deadline ? { deadline } : {}),
   };
+}
+
+function operationTimeoutMs(
+  timeoutMs: number,
+  deadline: SdkOperationDeadline | undefined,
+): number {
+  return deadline ? remainingSdkOperationTimeoutMs(deadline) : timeoutMs;
 }
 
 function sdkGrpcPort(ctx: ToolkitContext, databasePath: string): number {
@@ -107,7 +165,10 @@ function sdkGrpcPort(ctx: ToolkitContext, databasePath: string): number {
   return ports.dynamicGrpc;
 }
 
-async function readRootPassword(ctx: ToolkitContext): Promise<string | undefined> {
+async function readRootPassword(
+  ctx: ToolkitContext,
+  deadline: SdkOperationDeadline | undefined,
+): Promise<string | undefined> {
   const file = ctx.profile.rootPasswordFile;
   if (!file) {
     return undefined;
@@ -116,7 +177,11 @@ async function readRootPassword(ctx: ToolkitContext): Promise<string | undefined
     const result = await ctx.client.run(bash(`cat ${shellQuote(file)}`, {
       description: "Read YDB root password file",
       redactions: [file],
+      ...(deadline
+        ? { timeoutMs: remainingSdkOperationTimeoutMs(deadline) }
+        : {}),
     }));
+    deadline?.signal.throwIfAborted();
     if (!result.ok) {
       throw new Error("Failed to read configured YDB root password file from the target profile");
     }
@@ -129,22 +194,45 @@ async function readRootPassword(ctx: ToolkitContext): Promise<string | undefined
   }
 }
 
-async function allocateLocalPort(): Promise<number> {
+async function allocateLocalPort(
+  deadline: SdkOperationDeadline | undefined,
+): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
-    server.once("error", reject);
+    let settled = false;
+    const finish = (action: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      deadline?.signal.removeEventListener("abort", onAbort);
+      action();
+    };
+    const onAbort = () => {
+      if (server.listening) {
+        server.close();
+      }
+      finish(() => reject(deadline?.signal.reason));
+    };
+    deadline?.signal.addEventListener("abort", onAbort, { once: true });
+    server.once("error", (error) => finish(() => reject(error)));
     server.listen(0, "127.0.0.1", () => {
+      if (settled) {
+        server.close();
+        return;
+      }
       const address = server.address();
       if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate a local SSH tunnel port")));
+        server.close(() => finish(() =>
+          reject(new Error("Failed to allocate a local SSH tunnel port"))));
         return;
       }
       const { port } = address;
       server.close((error) => {
         if (error) {
-          reject(error);
+          finish(() => reject(error));
         } else {
-          resolve(port);
+          finish(() => resolve(port));
         }
       });
     });
@@ -156,6 +244,7 @@ async function startSshTunnel(
   localPort: number,
   remotePort: number,
   operationLabel: string,
+  deadline: SdkOperationDeadline | undefined,
 ): Promise<ChildProcessWithoutNullStreams> {
   const ssh = profile.ssh;
   if (!ssh) {
@@ -180,7 +269,7 @@ async function startSshTunnel(
   child.stdout.resume();
   child.stderr.resume();
   try {
-    await waitForSshTunnelReady(child, localPort, operationLabel);
+    await waitForSshTunnelReady(child, localPort, operationLabel, deadline);
   } catch (error) {
     child.kill("SIGTERM");
     throw error;
@@ -192,6 +281,7 @@ async function waitForSshTunnelReady(
   child: ChildProcessWithoutNullStreams,
   localPort: number,
   operationLabel: string,
+  operationDeadline: SdkOperationDeadline | undefined,
 ): Promise<void> {
   let childFailure: Error | undefined;
   const onError = () => {
@@ -203,18 +293,28 @@ async function waitForSshTunnelReady(
   child.once("error", onError);
   child.once("exit", onExit);
   try {
-    const deadline = Date.now() + SSH_TUNNEL_READY_TIMEOUT_MS;
-    while (Date.now() < deadline) {
+    const tunnelDeadline = Date.now() + SSH_TUNNEL_READY_TIMEOUT_MS;
+    while (Date.now() < tunnelDeadline) {
+      operationDeadline?.signal.throwIfAborted();
       if (childFailure) {
         throw childFailure;
       }
       if (child.exitCode !== null) {
         throw new Error(`Failed to establish SSH tunnel for ${operationLabel}`);
       }
-      if (await canConnectToLocalPort(localPort)) {
+      if (await canConnectToLocalPort(localPort, operationDeadline)) {
         return;
       }
-      await delay(SSH_TUNNEL_READY_POLL_MS);
+      await delay(
+        Math.min(
+          SSH_TUNNEL_READY_POLL_MS,
+          operationDeadline
+            ? remainingSdkOperationTimeoutMs(operationDeadline)
+            : SSH_TUNNEL_READY_POLL_MS,
+        ),
+        undefined,
+        operationDeadline ? { signal: operationDeadline.signal } : undefined,
+      );
     }
     throw new Error(`Timed out establishing SSH tunnel for ${operationLabel}`);
   } finally {
@@ -223,7 +323,10 @@ async function waitForSshTunnelReady(
   }
 }
 
-function canConnectToLocalPort(port: number): Promise<boolean> {
+function canConnectToLocalPort(
+  port: number,
+  deadline: SdkOperationDeadline | undefined,
+): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = createConnection({ host: "127.0.0.1", port });
     const finish = (ok: boolean) => {
@@ -231,7 +334,12 @@ function canConnectToLocalPort(port: number): Promise<boolean> {
       socket.destroy();
       resolve(ok);
     };
-    socket.setTimeout(SSH_TUNNEL_CONNECT_TIMEOUT_MS);
+    socket.setTimeout(Math.min(
+      SSH_TUNNEL_CONNECT_TIMEOUT_MS,
+      deadline
+        ? remainingSdkOperationTimeoutMs(deadline)
+        : SSH_TUNNEL_CONNECT_TIMEOUT_MS,
+    ));
     socket.once("connect", () => finish(true));
     socket.once("error", () => finish(false));
     socket.once("timeout", () => finish(false));

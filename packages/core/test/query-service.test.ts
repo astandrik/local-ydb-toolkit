@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { setTimeout as delay } from "node:timers/promises";
 import { StatusIds_StatusCode } from "@ydbjs/api/operation";
 import {
   ExecMode,
   SchemaInclusionMode,
+  StatsMode,
   Syntax,
 } from "@ydbjs/api/query";
 import { ResultSet_Format } from "@ydbjs/api/value";
@@ -128,6 +130,7 @@ describe("low-level Query Service adapter", () => {
     expect(requests).toEqual([
       {
         ...common,
+        statsMode: StatsMode.FULL,
         execMode: ExecMode.EXPLAIN,
         parameters: { $value: { marker: "explain" } },
       },
@@ -154,6 +157,79 @@ describe("low-level Query Service adapter", () => {
         parameters: { $value: { marker: "noTx" } },
       },
     ]);
+  });
+
+  it("captures complete EXPLAIN issues, plan, and AST inside the shared byte budget", async () => {
+    // Production break caught: EXPLAIN silently discarded its only useful
+    // payload, or plan metadata bypassed the output budget and was sliced.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const issue = {
+      message: "optimizer warning <redacted>",
+      issueCode: 42,
+      severity: 2,
+      issues: [],
+    };
+    const queryPlan = "{\"secret\":\"<redacted>\"}";
+    const queryAst = "(literal <redacted>)";
+    const parts = [{
+      status: SUCCESS,
+      issues: [{
+        message: "optimizer warning do-not-leak",
+        issueCode: issue.issueCode,
+        severity: issue.severity,
+        issues: [],
+      }],
+      execStats: {
+        queryPlan: "{\"secret\":\"do-not-leak\"}",
+        queryAst: "(literal do-not-leak)",
+      },
+      resultSetIndex: 0n,
+    }];
+    const requests: Array<Record<string, unknown>> = [];
+    const full = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      rootPassword: "do-not-leak",
+      script: "SELECT * FROM t;",
+      parameters: {},
+      mode: "explain",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+    }, {
+      createDriver: () => requestCapturingDriver(requests, parts) as never,
+    });
+
+    expect(requests[0]?.statsMode).toBe(StatsMode.FULL);
+    expect(full.issues).toEqual([issue]);
+    expect(full.queryPlan).toBe(queryPlan);
+    expect(full.queryAst).toBe(queryAst);
+    expect(full.capturedBytes).toBe(133);
+    expect(JSON.stringify(full)).not.toContain("do-not-leak");
+
+    const bounded = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      rootPassword: "do-not-leak",
+      script: "SELECT * FROM t;",
+      parameters: {},
+      mode: "explain",
+      maxRows: 10,
+      // The redacted issue fits (82 bytes); the 29-byte plan does not.
+      maxOutputBytes: 100,
+    }, {
+      createDriver: () => driverForParts(parts) as never,
+    });
+
+    expect(bounded.completion).toBe("partial");
+    expect(bounded.issues).toEqual([issue]);
+    expect(bounded.queryPlan).toBeUndefined();
+    expect(bounded.queryAst).toBeUndefined();
+    expect(bounded.capturedBytes).toBe(82);
+    expect(bounded.truncationReasons).toEqual(["byteLimit"]);
   });
 
   it("incrementally decodes ordered columns and rows across result-set parts", async () => {
@@ -335,6 +411,53 @@ describe("low-level Query Service adapter", () => {
     expect(executeCalls).toBe(1);
   });
 
+  it("stops all mutation capture at the row limit but drains final status", async () => {
+    // Production break caught: a NoTx row cap stopped only one result set, so
+    // later server-controlled result-set indexes could keep growing output.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const prepared = prepareSqlParameters({
+      one: { type: { kind: "primitive", name: "Int32" }, value: 1 },
+      two: { type: { kind: "primitive", name: "Int32" }, value: 2 },
+      later: { type: { kind: "primitive", name: "Int32" }, value: 99 },
+    });
+    let yieldedParts = 0;
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "UPSERT INTO t(id) VALUES (1);",
+      parameters: {},
+      mode: "noTx",
+      maxRows: 1,
+      maxOutputBytes: 4_096,
+    }, {
+      createDriver: () => driverForParts([
+        queryPart(0, [{ name: "value", typedValue: prepared.typedValues.$one }]),
+        queryPart(0, [{ typedValue: prepared.typedValues.$two }]),
+        queryPart(1, [{ name: "later", typedValue: prepared.typedValues.$later }]),
+        {
+          status: StatusIds_StatusCode.BAD_REQUEST,
+          issues: [],
+          resultSetIndex: 1n,
+        },
+      ], () => {
+        yieldedParts += 1;
+      }) as never,
+    });
+
+    expect(result.completion).toBe("failed");
+    expect(result.status).toBe(StatusIds_StatusCode.BAD_REQUEST);
+    expect(result.resultSets).toEqual([{
+      index: 0,
+      columns: [{ name: "value", type: "Int32" }],
+      rows: [[1]],
+      truncationReasons: ["rowLimit"],
+    }]);
+    expect(result.truncationReasons).toEqual(["rowLimit"]);
+    expect(yieldedParts).toBe(4);
+  });
+
   it("links caller and total-deadline cancellation but gives cleanup a fresh signal", async () => {
     // Production break caught: cancellation can be ignored by the query stream,
     // or the already-aborted operation signal can prevent session cleanup.
@@ -374,6 +497,67 @@ describe("low-level Query Service adapter", () => {
       expect(cleanupSignals).toHaveLength(1);
       expect(cleanupSignals[0]?.aborted).toBe(false);
     }
+  });
+
+  it("reports cancellation before send but unknown status after a NoTx mutation is sent", async () => {
+    // Production break caught: caller/deadline loss after sending NoTx was
+    // labelled cancelled, which could invite an unsafe automatic retry.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const beforeSend = new AbortController();
+    const before = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "UPSERT INTO t(id) VALUES (1);",
+      parameters: {},
+      mode: "noTx",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+      signal: beforeSend.signal,
+    }, {
+      createDriver: () => cancellationBeforeSendDriver(() => beforeSend.abort()) as never,
+    });
+
+    const afterSend = new AbortController();
+    const afterCaller = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "UPSERT INTO t(id) VALUES (2);",
+      parameters: {},
+      mode: "noTx",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+      signal: afterSend.signal,
+    }, {
+      createDriver: () => driverForParts([], undefined, () => afterSend.abort()) as never,
+    });
+
+    const afterDeadline = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 10,
+      script: "UPSERT INTO t(id) VALUES (3);",
+      parameters: {},
+      mode: "noTx",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+    }, {
+      createDriver: () => cancellationAfterSendDriver() as never,
+    });
+
+    expect(before.completion).toBe("cancelled");
+    expect(afterCaller.completion).toBe("mutationStatusUnknown");
+    expect(afterDeadline.completion).toBe("mutationStatusUnknown");
+    expect(afterCaller.diagnostics).toBe(
+      "Mutation was sent but its final Query Service status was not received.",
+    );
+    expect(afterDeadline.diagnostics).toBe(
+      "Mutation was sent but its final Query Service status was not received.",
+    );
   });
 
   it("distinguishes read transport failure from a sent mutation with lost final status", async () => {
@@ -503,11 +687,11 @@ describe("low-level Query Service adapter", () => {
       };
     });
 
-    expect(calls).toEqual([{
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
       connectionString: "grpc://127.0.0.1:2137/local/example",
       databasePath: "/local/example",
       endpoint: "grpc://127.0.0.1:2137",
-      timeoutMs: 1_500,
       rootUser: undefined,
       rootPassword: undefined,
       script: "SELECT 1;",
@@ -515,8 +699,60 @@ describe("low-level Query Service adapter", () => {
       mode: "explain",
       maxRows: 10,
       maxOutputBytes: 4_096,
-      signal,
-    }]);
+    });
+    expect(calls[0]?.timeoutMs).toBeGreaterThan(0);
+    expect(calls[0]?.timeoutMs).toBeLessThanOrEqual(1_500);
+    const deadline = calls[0]?.deadline as { signal: AbortSignal };
+    expect(calls[0]?.signal).toBe(deadline.signal);
+  });
+
+  it("starts the total deadline before remote credential setup", async () => {
+    // Production break caught: password and SSH setup previously happened
+    // before the Query Service timeout started, extending the total operation.
+    let passwordCommandTimeoutMs: number | undefined;
+    let queryCalls = 0;
+    const ctx = createContext(undefined, {
+      display: () => "redacted",
+      async run(_profile, spec) {
+        passwordCommandTimeoutMs = spec.timeoutMs;
+        await delay(20);
+        return {
+          command: "redacted",
+          exitCode: 0,
+          stdout: "test-password\n",
+          stderr: "",
+          ok: true,
+          timedOut: false,
+        };
+      },
+    }, ConfigSchema.parse({
+      profiles: {
+        default: {
+          mode: "ssh",
+          ssh: { host: "test.invalid" },
+          rootPasswordFile: "/test/root.password",
+        },
+      },
+    }));
+
+    const { executeQueryService } = await import("../src/query-service.js");
+    const result = await executeQueryService(ctx, {
+      timeoutMs: 5,
+      script: "SELECT 1;",
+      parameters: {},
+      mode: "snapshotReadOnly",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+    }, async () => {
+      queryCalls += 1;
+      throw new Error("query executor must not run after the deadline");
+    });
+
+    expect(result.completion).toBe("cancelled");
+    expect(result.diagnostics).toBe("Query Service request was cancelled.");
+    expect(passwordCommandTimeoutMs).toBeGreaterThan(0);
+    expect(passwordCommandTimeoutMs).toBeLessThanOrEqual(5);
+    expect(queryCalls).toBe(0);
   });
 
   it("sanitizes session-setup failures and still closes the driver", async () => {
@@ -632,6 +868,52 @@ describe("low-level Query Service adapter", () => {
     expect(result.resultSets).toEqual([]);
     expect(result.capturedBytes).toBe(0);
   });
+
+  it("atomically charges truncated empty result-set envelopes", async () => {
+    // Production break caught: truncated=true created one retained object per
+    // server-controlled index while consuming zero output bytes.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    let yieldedParts = 0;
+    const truncatedParts = Array.from({ length: 100 }, (_, index) => ({
+      status: SUCCESS,
+      issues: [],
+      resultSetIndex: BigInt(index),
+      resultSet: {
+        columns: [],
+        rows: [],
+        truncated: true,
+        format: ResultSet_Format.VALUE,
+        data: new Uint8Array(),
+      },
+    }));
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "UPSERT INTO t(id) VALUES (1);",
+      parameters: {},
+      mode: "noTx",
+      maxRows: 1,
+      // Exact JSON size of the retained index-0 envelope with "server".
+      maxOutputBytes: 65,
+    }, {
+      createDriver: () => driverForParts(truncatedParts, () => {
+        yieldedParts += 1;
+      }) as never,
+    });
+
+    expect(result.completion).toBe("partial");
+    expect(result.resultSets).toEqual([{
+      index: 0,
+      columns: [],
+      rows: [],
+      truncationReasons: ["server"],
+    }]);
+    expect(result.capturedBytes).toBe(65);
+    expect(result.truncationReasons).toEqual(["byteLimit", "server"]);
+    expect(yieldedParts).toBe(100);
+  });
 });
 
 async function* stableAttach(signal: AbortSignal | undefined) {
@@ -644,7 +926,10 @@ async function* stableAttach(signal: AbortSignal | undefined) {
   });
 }
 
-function requestCapturingDriver(requests: Array<Record<string, unknown>>) {
+function requestCapturingDriver(
+  requests: Array<Record<string, unknown>>,
+  parts: unknown[] = [{ status: SUCCESS, issues: [], resultSetIndex: 0n }],
+) {
   const baseClient = {
     async createSession() {
       return { status: SUCCESS, issues: [], sessionId: "session-1", nodeId: 7n };
@@ -656,7 +941,7 @@ function requestCapturingDriver(requests: Array<Record<string, unknown>>) {
     },
     async *executeQuery(request: Record<string, unknown>) {
       requests.push(request);
-      yield { status: SUCCESS, issues: [], resultSetIndex: 0n };
+      yield* parts;
     },
     async deleteSession() {
       return { status: SUCCESS, issues: [] };
@@ -767,6 +1052,47 @@ function cancellationDriver(
     },
     async deleteSession(_request: unknown, options?: { signal?: AbortSignal }) {
       cleanupSignals.push(options!.signal!);
+      return { status: SUCCESS, issues: [] };
+    },
+  };
+  return {
+    async ready() {},
+    createClient(_definition: unknown, nodeId?: bigint) {
+      return nodeId === undefined ? baseClient : nodeClient;
+    },
+    close() {},
+  };
+}
+
+function cancellationBeforeSendDriver(cancel: () => void) {
+  return {
+    async ready() {
+      cancel();
+      throw new Error("cancelled before send");
+    },
+    createClient() {
+      throw new Error("client must not be created");
+    },
+    close() {},
+  };
+}
+
+function cancellationAfterSendDriver() {
+  const baseClient = {
+    async createSession() {
+      return { status: SUCCESS, issues: [], sessionId: "session-1", nodeId: 7n };
+    },
+  };
+  const nodeClient = {
+    attachSession(_request: unknown, options?: { signal?: AbortSignal }) {
+      return stableAttach(options?.signal);
+    },
+    async *executeQuery(_request: unknown, options?: { signal?: AbortSignal }) {
+      await new Promise<void>((resolve) => {
+        options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+    },
+    async deleteSession() {
       return { status: SUCCESS, issues: [] };
     },
   };

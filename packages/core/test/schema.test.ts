@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   applySchema,
+  createSdkOperationDeadline,
   createContext,
+  remainingSdkOperationTimeoutMs,
   type SchemaSdkExecuteRequest,
   type SchemaSdkExecuteResult,
   withSdkConnection,
@@ -58,9 +60,20 @@ describe("schema application", () => {
         endpoint: "grpc://127.0.0.1:2136",
         connectionString: "grpc://127.0.0.1:2136/local",
       });
+      expect(tenant).not.toHaveProperty("deadline");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it("links an SDK operation deadline to caller cancellation", () => {
+    const caller = new AbortController();
+    const deadline = createSdkOperationDeadline(1_000, caller.signal);
+
+    expect(remainingSdkOperationTimeoutMs(deadline)).toBeGreaterThan(0);
+    expect(remainingSdkOperationTimeoutMs(deadline)).toBeLessThanOrEqual(1_000);
+    caller.abort();
+    expect(() => remainingSdkOperationTimeoutMs(deadline)).toThrow();
   });
 
   it("validates table DDL without applying it by default", async () => {
