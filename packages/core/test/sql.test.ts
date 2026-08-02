@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { StatusIds_StatusCode } from "@ydbjs/api/operation";
 import { describe, expect, it, vi } from "vitest";
 import type {
   QueryServiceExecutionResult,
@@ -82,7 +83,7 @@ describe("managed SQL operation", () => {
         rows: [[1]],
         truncationReasons: [],
       }],
-      capturedBytes: 64,
+      capturedBytes: 36,
     });
     const backend: SqlBackendExecutor = async (_ctx, request) => {
       calls.push(request);
@@ -120,7 +121,7 @@ describe("managed SQL operation", () => {
         maxRows: 100,
         maxOutputBytes: 65_536,
       },
-      outputBytes: 64,
+      outputBytes: 36,
       truncated: false,
       truncationReasons: [],
       plannedCommands: expect.any(Array),
@@ -233,7 +234,10 @@ describe("managed SQL operation", () => {
     const sql = await loadSql();
     const ctx = testContext();
     const calls: QueryServiceRequest[] = [];
-    const preflight = successfulResult({ capturedBytes: 7 });
+    const preflight = successfulResult({
+      queryPlan: "12345",
+      capturedBytes: 7,
+    });
     const execution = successfulResult({
       resultSets: [{
         index: 0,
@@ -267,6 +271,9 @@ describe("managed SQL operation", () => {
       resultSets: execution.resultSets,
       outputBytes: 49,
     });
+    expect(response.outputBytes).toBe(
+      preflight.capturedBytes + execution.capturedBytes,
+    );
   });
 
   it("blocks confirmed execution for every non-successful preflight completion", async () => {
@@ -373,6 +380,38 @@ describe("managed SQL operation", () => {
     expect(calls).toHaveLength(2);
     expect(calls.map((call) => call.timeoutMs)).toEqual([1_000, 750]);
     expect(calls[0]?.signal).toBe(calls[1]?.signal);
+  });
+
+  it("starts the operation deadline before action and script normalization", async () => {
+    // Production break caught: boundary preparation can happen before the
+    // documented operation-entry timeout starts and extend the total deadline.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const calls: QueryServiceRequest[] = [];
+    const options = {
+      timeoutMs: 1_000,
+      get action() {
+        now.mockReturnValue(10_200);
+        return "query";
+      },
+      get script() {
+        now.mockReturnValue(10_250);
+        return "SELECT 1;";
+      },
+    };
+
+    try {
+      await sql(ctx, options, async (_ctx, request) => {
+        calls.push(request);
+        return successfulResult();
+      });
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.timeoutMs).toBe(750);
   });
 
   it("blocks NoTx when the shared signal is cancelled after preflight", async () => {
@@ -491,12 +530,19 @@ describe("managed SQL operation", () => {
     const ctx = testContext();
     const calls: QueryServiceRequest[] = [];
     const preflight = successfulResult({
+      queryPlan: "12345",
       capturedBytes: 7,
-      truncationReasons: ["server"],
     });
     const execution = successfulResult({
+      completion: "partial",
       capturedBytes: 0,
-      truncationReasons: ["server"],
+      truncationReasons: ["byteLimit", "server"],
+      resultSets: [{
+        index: 0,
+        columns: [],
+        rows: [],
+        truncationReasons: ["byteLimit", "server"],
+      }],
     });
     const backend: SqlBackendExecutor = async (_ctx, request) => {
       calls.push(request);
@@ -516,7 +562,7 @@ describe("managed SQL operation", () => {
       executed: true,
       outputBytes: 7,
       truncated: true,
-      truncationReasons: ["server"],
+      truncationReasons: ["byteLimit", "server"],
     });
   });
 
@@ -638,6 +684,72 @@ describe("managed SQL operation", () => {
     }
   });
 
+  it("blocks NoTx when a success preflight has an unknown or non-success status", async () => {
+    // Production break caught: completion alone can authorize NoTx even when
+    // the version-matched Query Service status contradicts it.
+    const sql = await loadSql();
+    const ctx = testContext();
+
+    for (const status of [
+      999_999 as StatusIds_StatusCode,
+      StatusIds_StatusCode.BAD_REQUEST,
+    ]) {
+      const calls: QueryServiceRequest[] = [];
+      const response = await sql(ctx, {
+        action: "execute",
+        confirm: true,
+        script: "DELETE FROM items;",
+      }, async (_ctx, request) => {
+        calls.push(request);
+        return successfulResult({ status });
+      });
+
+      expect(calls.map((call) => call.mode)).toEqual(["explain"]);
+      expect(response).toMatchObject({
+        executed: false,
+        outcome: "failed",
+        confirmationConsumed: false,
+        preflight: {
+          completion: "failed",
+          resultSets: [],
+          capturedBytes: 0,
+          truncationReasons: [],
+        },
+      });
+      expect(response).not.toHaveProperty("execution");
+    }
+  });
+
+  it("blocks NoTx when success preflight carries a truncation reason", async () => {
+    // Production break caught: Task 3 classifies every retained truncation as
+    // partial, so a success-shaped truncated preflight is backend corruption.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+    }, async (_ctx, request) => {
+      calls.push(request);
+      return successfulResult({ truncationReasons: ["server"] });
+    });
+
+    expect(calls.map((call) => call.mode)).toEqual(["explain"]);
+    expect(response).toMatchObject({
+      executed: false,
+      outcome: "failed",
+      confirmationConsumed: false,
+      preflight: {
+        completion: "failed",
+        resultSets: [],
+        capturedBytes: 0,
+        truncationReasons: [],
+      },
+    });
+    expect(response).not.toHaveProperty("execution");
+  });
+
   it("rejects cyclic and excessively deep retained row values without traversal failure", async () => {
     // Production break caught: retaining backend-owned JSON recursively can
     // loop, overflow the stack, or allow NoTx after invalid preflight data.
@@ -683,6 +795,107 @@ describe("managed SQL operation", () => {
       });
       expect(response).not.toHaveProperty("execution");
     }
+  });
+
+  it("fails closed on zero-byte result-set amplification before confirmed NoTx", async () => {
+    // Production break caught: a success-shaped preflight can return thousands
+    // of uncharged limit envelopes and both amplify output and unlock NoTx.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+    const amplified = successfulResult({
+      resultSets: Array.from({ length: 10_000 }, (_, index) => ({
+        index,
+        columns: [],
+        rows: [],
+        truncationReasons: ["byteLimit"],
+      })),
+      capturedBytes: 0,
+      truncationReasons: ["byteLimit"],
+    });
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+      maxOutputBytes: 1,
+    }, async (_ctx, request) => {
+      calls.push(request);
+      return amplified;
+    });
+
+    expect(calls.map((call) => call.mode)).toEqual(["explain"]);
+    expect(response).toMatchObject({
+      executed: false,
+      outcome: "failed",
+      confirmationConsumed: false,
+      preflight: {
+        completion: "failed",
+        resultSets: [],
+        capturedBytes: 0,
+        truncationReasons: [],
+      },
+      resultSets: [],
+      outputBytes: 0,
+    });
+    expect(response).not.toHaveProperty("execution");
+  });
+
+  it("fails closed on repeated zero-byte envelopes with no execution capture budget", async () => {
+    // Production break caught: after preflight consumes the whole byte budget,
+    // a confirmed call can still amplify its response with uncharged envelopes.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const calls: QueryServiceRequest[] = [];
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "DELETE FROM items;",
+      maxOutputBytes: 3,
+    }, async (_ctx, request) => {
+      calls.push(request);
+      return request.mode === "explain"
+        ? successfulResult({ queryPlan: "x", capturedBytes: 3 })
+        : successfulResult({
+            completion: "partial",
+            resultSets: [
+              {
+                index: 0,
+                columns: [],
+                rows: [],
+                truncationReasons: ["byteLimit"],
+              },
+              {
+                index: 1,
+                columns: [],
+                rows: [],
+                truncationReasons: ["byteLimit", "server"],
+              },
+            ],
+            capturedBytes: 0,
+            truncationReasons: ["byteLimit", "server"],
+          });
+    });
+
+    expect(calls.map((call) => [call.mode, call.maxOutputBytes])).toEqual([
+      ["explain", 3],
+      ["noTx", 0],
+    ]);
+    expect(response).toMatchObject({
+      executed: true,
+      outcome: "failed",
+      confirmationConsumed: true,
+      execution: {
+        completion: "failed",
+        resultSets: [],
+        capturedBytes: 0,
+        truncationReasons: [],
+      },
+      resultSets: [],
+      outputBytes: 3,
+      truncated: false,
+    });
   });
 
   it("accepts honest Task 3 multi-payload accounting and empty truncation envelopes", async () => {

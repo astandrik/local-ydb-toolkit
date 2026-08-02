@@ -334,6 +334,12 @@ function canConnectToLocalPort(
   port: number,
   deadline: SdkOperationDeadline | undefined,
 ): Promise<boolean> {
+  const timeoutMs = Math.min(
+    SSH_TUNNEL_CONNECT_TIMEOUT_MS,
+    deadline
+      ? remainingSdkOperationTimeoutMs(deadline)
+      : SSH_TUNNEL_CONNECT_TIMEOUT_MS,
+  );
   return new Promise((resolve) => {
     const socket = createConnection({ host: "127.0.0.1", port });
     const finish = (ok: boolean) => {
@@ -341,12 +347,7 @@ function canConnectToLocalPort(
       socket.destroy();
       resolve(ok);
     };
-    socket.setTimeout(Math.min(
-      SSH_TUNNEL_CONNECT_TIMEOUT_MS,
-      deadline
-        ? remainingSdkOperationTimeoutMs(deadline)
-        : SSH_TUNNEL_CONNECT_TIMEOUT_MS,
-    ));
+    socket.setTimeout(timeoutMs);
     socket.once("connect", () => finish(true));
     socket.once("error", () => finish(false));
     socket.once("timeout", () => finish(false));

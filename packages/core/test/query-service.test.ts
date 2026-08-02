@@ -243,6 +243,46 @@ describe("low-level Query Service adapter", () => {
     expect(bounded.truncationReasons).toEqual(["byteLimit"]);
   });
 
+  it("accounts repeated plan and AST parts while retaining only the latest values", async () => {
+    // Compatibility evidence: Task 3 charges every received metadata value but
+    // overwrites the public plan/AST fields, so captured bytes can legitimately
+    // exceed the JSON bytes visible in the final retained payload.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "EXPLAIN SELECT 1;",
+      parameters: {},
+      mode: "explain",
+      maxRows: 10,
+      maxOutputBytes: 12,
+    }, {
+      createDriver: () => driverForParts([
+        {
+          status: SUCCESS,
+          issues: [],
+          execStats: { queryPlan: "a", queryAst: "x" },
+        },
+        {
+          status: SUCCESS,
+          issues: [],
+          execStats: { queryPlan: "b", queryAst: "y" },
+        },
+      ]) as never,
+    });
+
+    expect(result).toMatchObject({
+      completion: "success",
+      queryPlan: "b",
+      queryAst: "y",
+      capturedBytes: 12,
+      truncationReasons: [],
+      status: SUCCESS,
+    });
+  });
+
   it("omits a complete top-level issue before traversing an over-deep tree", async () => {
     // Production break caught: recursive issue copying could overflow the JS
     // stack before maxOutputBytes was checked.

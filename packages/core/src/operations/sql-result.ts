@@ -1,3 +1,4 @@
+import { StatusIds_StatusCode } from "@ydbjs/api/operation";
 import { redactText } from "../auth.js";
 import type { JsonValue } from "../sql-parameter-types.js";
 import type {
@@ -20,6 +21,11 @@ const TRUNCATION_REASONS = new Set<QueryServiceTruncationReason>([
   "byteLimit",
   "server",
 ]);
+const STATUS_CODES = new Set(
+  Object.values(StatusIds_StatusCode)
+    .filter((value): value is StatusIds_StatusCode =>
+      typeof value === "number"),
+);
 const MAX_DIAGNOSTICS_BYTES = 4_096;
 const MAX_RESULT_SETS = 10_000;
 const MAX_TOP_LEVEL_ISSUES = 10_000;
@@ -125,6 +131,12 @@ function normalizeSqlBackendResultUnsafe(
   if (!topReasons || !rawResultSets) {
     return undefined;
   }
+  if (
+    (completion === "success" && topReasons.length > 0)
+    || (completion === "partial" && topReasons.length === 0)
+  ) {
+    return undefined;
+  }
 
   let measuredPayloadBytes = 0;
   const consumePayload = (payload: unknown, depth = MAX_JSON_DEPTH): boolean => {
@@ -143,12 +155,16 @@ function normalizeSqlBackendResultUnsafe(
 
   const normalizedResultSets: QueryServiceResultSet[] = [];
   const seenResultSetIndexes = new Set<number>();
+  const resultSetState: ResultSetNormalizationState = {
+    unchargedLimitEnvelopeSeen: false,
+  };
   for (const rawResultSet of rawResultSets) {
     const normalized = normalizeResultSet(
       rawResultSet,
       options.maxRows,
       options.captureBudget,
       consumePayload,
+      resultSetState,
     );
     if (!normalized || seenResultSetIndexes.has(normalized.index)) {
       return undefined;
@@ -206,16 +222,32 @@ function normalizeSqlBackendResultUnsafe(
   let status: number | undefined;
   if (record.has("status")) {
     const rawStatus = record.get("status");
-    if (typeof rawStatus !== "number" || !Number.isSafeInteger(rawStatus)) {
+    if (
+      typeof rawStatus !== "number"
+      || !Number.isSafeInteger(rawStatus)
+      || !STATUS_CODES.has(rawStatus)
+    ) {
       return undefined;
     }
     status = rawStatus;
+  }
+  if (!completionMatchesStatus(
+    completion as QueryServiceExecutionResult["completion"],
+    status,
+  )) {
+    return undefined;
   }
 
   let diagnostics: string | undefined;
   if (record.has("diagnostics")) {
     const rawDiagnostics = record.get("diagnostics");
-    if (typeof rawDiagnostics !== "string") {
+    if (
+      typeof rawDiagnostics !== "string"
+      || jsonStringBytes(
+        rawDiagnostics,
+        MAX_DIAGNOSTICS_BYTES,
+      ) === undefined
+    ) {
       return undefined;
     }
     const redacted = redactText(
@@ -243,11 +275,28 @@ function normalizeSqlBackendResultUnsafe(
   };
 }
 
+function completionMatchesStatus(
+  completion: QueryServiceExecutionResult["completion"],
+  status: StatusIds_StatusCode | undefined,
+): boolean {
+  switch (completion) {
+    case "success":
+    case "partial":
+      return status === undefined || status === StatusIds_StatusCode.SUCCESS;
+    case "cancelled":
+    case "mutationStatusUnknown":
+      return status === undefined;
+    case "failed":
+      return status !== StatusIds_StatusCode.SUCCESS;
+  }
+}
+
 function normalizeResultSet(
   value: unknown,
   maxRows: number,
   captureBudget: number,
   consumePayload: (payload: unknown, depth?: number) => boolean,
+  state: ResultSetNormalizationState,
 ): QueryServiceResultSet | undefined {
   const record = inspectExactRecord(
     value,
@@ -270,6 +319,9 @@ function normalizeResultSet(
   const rawColumns = inspectDenseArray(record.get("columns"), nodeLimit);
   const rawRows = inspectDenseArray(record.get("rows"), maxRows);
   if (!reasons || !rawColumns || !rawRows) {
+    return undefined;
+  }
+  if (rawColumns.length > 0 && !consumePayload(rawColumns)) {
     return undefined;
   }
 
@@ -297,9 +349,6 @@ function normalizeResultSet(
     rows.push(structuredClone(rawRow) as JsonValue[]);
   }
 
-  if (rawColumns.length > 0 && !consumePayload(record.get("columns"))) {
-    return undefined;
-  }
   if (rawColumns.length === 0 && rawRows.length > 0) {
     return undefined;
   }
@@ -310,16 +359,28 @@ function normalizeResultSet(
     rows,
     truncationReasons: reasons,
   };
-  if (
-    columns.length === 0
-    && rows.length === 0
-    && reasons.includes("server")
-    && !reasons.includes("byteLimit")
-    && !consumePayload(value)
-  ) {
-    return undefined;
+  if (columns.length === 0 && rows.length === 0) {
+    const unchargedLimitEnvelope = reasons.includes("byteLimit")
+      && reasons.every((reason) =>
+        reason === "byteLimit" || reason === "server");
+    if (unchargedLimitEnvelope) {
+      if (state.unchargedLimitEnvelopeSeen) {
+        return undefined;
+      }
+      state.unchargedLimitEnvelopeSeen = true;
+    } else if (
+      reasons.length !== 1
+      || reasons[0] !== "server"
+      || !consumePayload(value)
+    ) {
+      return undefined;
+    }
   }
   return normalized;
+}
+
+interface ResultSetNormalizationState {
+  unchargedLimitEnvelopeSeen: boolean;
 }
 
 function normalizeCapturedString(

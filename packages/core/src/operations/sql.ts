@@ -79,10 +79,10 @@ export async function sql(
   options: SqlOptions,
   backendExecutor: SqlBackendExecutor = executeQueryService,
 ): Promise<SqlResponse> {
-  const action = normalizeAction(options.action);
-  const script = normalizeScript(options.script);
   const timeoutMs = normalizeSdkTimeoutMs(options.timeoutMs);
   const deadline = createSdkOperationDeadline(timeoutMs, options.signal);
+  const action = normalizeAction(options.action);
+  const script = normalizeScript(options.script);
   const maxRows = normalizeMaxRows(options.maxRows);
   const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes);
   const databasePath = normalizeSdkDatabasePath(ctx, options.databasePath);
@@ -292,9 +292,9 @@ function responseWithResults(input: ResponseWithResultsInput): SqlResponse {
   ));
   return {
     ...response,
-    outputBytes: Math.min(
-      response.limits.maxOutputBytes,
-      calls.reduce((total, call) => total + call.capturedBytes, 0),
+    outputBytes: calls.reduce(
+      (total, call) => total + call.capturedBytes,
+      0,
     ),
     truncated: truncationReasons.length > 0,
     truncationReasons,
