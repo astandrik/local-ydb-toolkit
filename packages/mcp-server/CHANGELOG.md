@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.14.1...mcp-server-v0.15.0) (2026-08-03)
+
+
+### Features
+
+* add managed local_ydb_sql Query Service tool ([#115](https://github.com/astandrik/local-ydb-toolkit/issues/115)) ([a387e9a](https://github.com/astandrik/local-ydb-toolkit/commit/a387e9a55a28f3a4babc63337b36958864e6d916))
+
 ## [0.14.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.14.0...mcp-server-v0.14.1) (2026-07-13)
 
 
