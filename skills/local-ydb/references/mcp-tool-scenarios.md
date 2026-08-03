@@ -91,7 +91,7 @@ Calls:
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");", "confirm": true } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "THIS IS NOT VALID YQL;", "confirm": true } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "ALTER TABLE `managed_sql_smoke` ADD COLUMN note Utf8;" } }
-{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "CREATE TABLE `managed_sql_ctas_explain` (PRIMARY KEY (id)) AS SELECT id, value FROM `managed_sql_smoke`;" } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "CREATE TABLE `managed_sql_ctas_explain` (PRIMARY KEY (id)) WITH (STORE = COLUMN) AS SELECT id, value FROM `managed_sql_smoke`;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT value FROM AS_TABLE($items) ORDER BY value;", "maxRows": 2, "maxOutputBytes": 65536, "parameters": { "items": { "type": { "kind": "list", "item": { "kind": "struct", "fields": [{ "name": "value", "type": { "kind": "primitive", "name": "Int32" } }] } }, "value": [{ "value": 0 }, { "value": 1 }, { "value": 2 }] } } } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT $large AS first; SELECT $large AS second;", "maxOutputBytes": 256, "parameters": { "large": { "type": { "kind": "primitive", "name": "Utf8" }, "value": "<replace with an actual string of at least 4096 characters>" } } } }
 ```

@@ -240,6 +240,7 @@ function normalizeSqlBackendResultUnsafe(
     record,
     "queryPlan",
     consumePayload,
+    options.diagnosticRedactions,
   );
   if (queryPlan === null) {
     return undefined;
@@ -248,6 +249,7 @@ function normalizeSqlBackendResultUnsafe(
     record,
     "queryAst",
     consumePayload,
+    options.diagnosticRedactions,
   );
   if (queryAst === null) {
     return undefined;
@@ -391,15 +393,20 @@ function normalizeCapturedString(
   record: Map<string, unknown>,
   field: "queryPlan" | "queryAst",
   consumePayload: (payload: unknown, depth?: number) => boolean,
+  redactions: string[],
 ): string | null | undefined {
   if (!record.has(field)) {
     return undefined;
   }
   const value = record.get(field);
-  if (typeof value !== "string" || !consumePayload(value)) {
+  if (typeof value !== "string") {
     return null;
   }
-  return value;
+  const redacted = redactText(value, redactions);
+  if (!consumePayload(redacted)) {
+    return null;
+  }
+  return redacted;
 }
 
 function normalizeTruncationReasons(

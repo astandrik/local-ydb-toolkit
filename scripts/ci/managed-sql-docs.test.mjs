@@ -28,6 +28,7 @@ test("keeps the managed SQL manual scenario block synchronized in both copies", 
   assert.match(rootBlock, /confirm=true/);
   assert.match(rootBlock, /maxRows/);
   assert.match(rootBlock, /maxOutputBytes/);
+  assert.match(rootBlock, /WITH \(STORE = COLUMN\)/);
   assert.match(rootBlock, /cleanup/i);
 });
 

@@ -360,7 +360,7 @@ export async function executeQueryServiceWithSdk(
       if (
         request.signal?.aborted !== true
         && !operationDeadline.signal.aborted
-        && !limitReached
+        && (!limitReached || request.mode === "noTx")
       ) {
         streamFailed = true;
       }

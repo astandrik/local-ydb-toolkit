@@ -1269,9 +1269,9 @@ describe("managed SQL operation", () => {
     expect(serialized).not.toContain("serializedBytes");
   });
 
-  it("redacts configured credential paths from returned diagnostics", async () => {
-    // Production break caught: backend diagnostics can reveal configured auth,
-    // password, token, or SSH identity file paths.
+  it("redacts configured credential paths from returned textual payloads", async () => {
+    // Production break caught: backend diagnostics, plans, and ASTs can reveal
+    // configured auth, password, token, or SSH identity file paths.
     const sql = await loadSql();
     const credentialPaths = [
       "/private/auth.yaml",
@@ -1293,7 +1293,10 @@ describe("managed SQL operation", () => {
       },
     }));
     const backend: SqlBackendExecutor = async () => successfulResult({
+      capturedBytes: 4_096,
       diagnostics: credentialPaths.join(" "),
+      queryPlan: `plan ${credentialPaths[0]} ${credentialPaths[1]}`,
+      queryAst: `ast ${credentialPaths[2]} ${credentialPaths[3]}`,
     });
 
     const response = await sql(ctx, {
@@ -1302,6 +1305,12 @@ describe("managed SQL operation", () => {
 
     expect(response.execution?.diagnostics).toBe(
       "<redacted> <redacted> <redacted> <redacted>",
+    );
+    expect(response.execution?.queryPlan).toBe(
+      "plan <redacted> <redacted>",
+    );
+    expect(response.execution?.queryAst).toBe(
+      "ast <redacted> <redacted>",
     );
     for (const path of credentialPaths) {
       expect(JSON.stringify(response)).not.toContain(path);

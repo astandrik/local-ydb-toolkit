@@ -657,6 +657,43 @@ describe("low-level Query Service adapter", () => {
     expect(yieldedParts).toBe(4);
   });
 
+  it("keeps a post-limit mutation transport failure status unknown", async () => {
+    // Production break caught: once a NoTx capture limit was reached, a later
+    // stream failure was suppressed and the indeterminate mutation looked partial.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const prepared = prepareSqlParameters({
+      one: { type: { kind: "primitive", name: "Int32" }, value: 1 },
+      two: { type: { kind: "primitive", name: "Int32" }, value: 2 },
+    });
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "UPSERT INTO t(id) VALUES (1) RETURNING id;",
+      parameters: {},
+      mode: "noTx",
+      maxRows: 1,
+      maxOutputBytes: 4_096,
+    }, {
+      createDriver: () => transportLossDriver(
+        queryPart(0, [
+          { name: "value", typedValue: prepared.typedValues.$one },
+          { typedValue: prepared.typedValues.$two },
+        ]),
+        () => undefined,
+      ) as never,
+    });
+
+    expect(result).toMatchObject({
+      completion: "mutationStatusUnknown",
+      diagnostics: "Mutation was sent but its final Query Service status was not received.",
+      truncationReasons: ["rowLimit"],
+    });
+    expect(result.status).toBeUndefined();
+    expect(result.resultSets[0]?.rows).toEqual([[1]]);
+  });
+
   it("links caller and total-deadline cancellation but gives cleanup a fresh signal", async () => {
     // Production break caught: cancellation can be ignored by the query stream,
     // or the already-aborted operation signal can prevent session cleanup.
