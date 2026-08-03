@@ -28,7 +28,7 @@ export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
   server.setRequestHandler(GetPromptRequestSchema, async (request) =>
     getLocalYdbPrompt(request.params.name, request.params.arguments ?? {}),
   );
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const name = request.params.name;
     const handler = resolveHandler(name);
     if (!handler) {
@@ -36,7 +36,11 @@ export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
     }
     try {
       const responseContentFormat = resolveResponseContentFormat(options.responseContentFormat);
-      const callOptions = { ...options, responseContentFormat };
+      const callOptions = {
+        ...options,
+        responseContentFormat,
+        signal: extra.signal ?? options.signal,
+      };
       return successResult(
         await handler(request.params.arguments ?? {}, callOptions),
         callOptions,

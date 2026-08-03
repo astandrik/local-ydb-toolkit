@@ -1,12 +1,15 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applySchema,
+  createSdkOperationDeadline,
   createContext,
+  remainingSdkOperationTimeoutMs,
   type SchemaSdkExecuteRequest,
   type SchemaSdkExecuteResult,
+  withSdkConnection,
 } from "../src/index.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -22,6 +25,72 @@ function successfulSdkRecorder(calls: SchemaSdkExecuteRequest[] = []): (request:
 }
 
 describe("schema application", () => {
+  it("provides normalized root and tenant SDK connections with local credentials", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "local-ydb-sdk-connection-test-"));
+    const passwordFile = join(tempDir, "root.password");
+    const password = "S3cr3t! \t";
+    writeFileSync(passwordFile, `${password}\n`, "utf8");
+    try {
+      const ctx = createContext(undefined, undefined, ConfigSchema.parse({
+        profiles: {
+          default: {
+            rootPasswordFile: passwordFile,
+          },
+        },
+      }));
+
+      const tenant = await withSdkConnection(ctx, {
+        databasePath: "/local/example",
+        timeoutMs: 1_500,
+      }, async (connection) => connection);
+      const root = await withSdkConnection(ctx, {
+        databasePath: "/local",
+        timeoutMs: 1_500,
+      }, async (connection) => connection);
+
+      expect(tenant).toMatchObject({
+        databasePath: "/local/example",
+        endpoint: "grpc://127.0.0.1:2137",
+        connectionString: "grpc://127.0.0.1:2137/local/example",
+        timeoutMs: 1_500,
+        rootUser: "root",
+        rootPassword: password,
+      });
+      expect(root).toMatchObject({
+        databasePath: "/local",
+        endpoint: "grpc://127.0.0.1:2136",
+        connectionString: "grpc://127.0.0.1:2136/local",
+      });
+      expect(tenant).not.toHaveProperty("deadline");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("links an SDK operation deadline to caller cancellation", () => {
+    const caller = new AbortController();
+    const deadline = createSdkOperationDeadline(1_000, caller.signal);
+
+    expect(remainingSdkOperationTimeoutMs(deadline)).toBeGreaterThan(0);
+    expect(remainingSdkOperationTimeoutMs(deadline)).toBeLessThanOrEqual(1_000);
+    caller.abort();
+    expect(() => remainingSdkOperationTimeoutMs(deadline)).toThrow();
+  });
+
+  it("treats the absolute SDK expiry as authoritative before abort delivery", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const deadline = createSdkOperationDeadline(1_000);
+    now.mockReturnValue(11_001);
+
+    try {
+      expect(() => remainingSdkOperationTimeoutMs(deadline)).toThrow(
+        /deadline expired/,
+      );
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("validates table DDL without applying it by default", async () => {
     const calls: SchemaSdkExecuteRequest[] = [];
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));

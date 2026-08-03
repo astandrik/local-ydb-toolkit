@@ -8,6 +8,7 @@ export interface CommandSpec {
   args?: string[];
   stdin?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
   allowFailure?: boolean;
   description?: string;
   redactions?: string[];
@@ -58,6 +59,7 @@ export class ShellCommandExecutor implements CommandExecutor {
   }
 
   run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+    spec.signal?.throwIfAborted();
     const redactions = collectRedactions(profile, spec);
     const timeoutMs = spec.timeoutMs ?? 30_000;
     const command = profile.mode === "ssh" ? "ssh" : spec.command;
@@ -69,10 +71,32 @@ export class ShellCommandExecutor implements CommandExecutor {
       let stdout = "";
       let stderr = "";
       let timedOut = false;
+      let aborted = false;
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        spec.signal?.removeEventListener("abort", onAbort);
+      };
+      const settle = (action: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        action();
+      };
+      const onAbort = () => {
+        aborted = true;
+        child.kill("SIGTERM");
+      };
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill("SIGTERM");
       }, timeoutMs);
+      spec.signal?.addEventListener("abort", onAbort, { once: true });
+      if (spec.signal?.aborted) {
+        onAbort();
+      }
 
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
@@ -82,9 +106,14 @@ export class ShellCommandExecutor implements CommandExecutor {
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
       });
-      child.on("error", reject);
-      child.on("close", (exitCode) => {
-        clearTimeout(timer);
+      child.once("error", (error) => {
+        settle(() => reject(
+          aborted
+            ? spec.signal?.reason ?? new Error("Command execution was aborted")
+            : error,
+        ));
+      });
+      child.once("close", (exitCode) => {
         const result: CommandResult = {
           command: displayCommand,
           exitCode,
@@ -93,7 +122,13 @@ export class ShellCommandExecutor implements CommandExecutor {
           ok: exitCode === 0,
           timedOut
         };
-        resolve(result);
+        settle(() => {
+          if (aborted) {
+            reject(spec.signal?.reason ?? new Error("Command execution was aborted"));
+          } else {
+            resolve(result);
+          }
+        });
       });
       if (spec.stdin) {
         child.stdin.end(spec.stdin);

@@ -5,10 +5,14 @@ interface PackageJson {
   name: string;
   version: string;
   mcpName?: string;
+  dependencies: Record<string, string>;
 }
 
 interface PackageLock {
-  packages: Record<string, { version?: string }>;
+  packages: Record<string, {
+    version?: string;
+    dependencies?: Record<string, string>;
+  }>;
 }
 
 interface ServerJson {
@@ -45,6 +49,9 @@ function readJson<T>(url: URL): T {
 
 describe("MCP Registry metadata", () => {
   const packageJson = readJson<PackageJson>(new URL("../package.json", import.meta.url));
+  const corePackageJson = readJson<PackageJson>(
+    new URL("../../core/package.json", import.meta.url),
+  );
   const packageLock = readJson<PackageLock>(new URL("../../../package-lock.json", import.meta.url));
   const serverJson = readJson<ServerJson>(new URL("../../../server.json", import.meta.url));
   const releasePleaseConfig = readJson<ReleasePleaseConfig>(new URL("../../../.github/release-please-config.json", import.meta.url));
@@ -58,6 +65,13 @@ describe("MCP Registry metadata", () => {
     expect(npmPackage.identifier).toBe(packageJson.name);
     expect(npmPackage.version).toBe(packageJson.version);
     expect(packageLock.packages["packages/mcp-server"]?.version).toBe(packageJson.version);
+  });
+
+  it("declares every runtime dependency required by the vendored core", () => {
+    expect(packageJson.dependencies).toMatchObject(corePackageJson.dependencies);
+    expect(
+      packageLock.packages["packages/mcp-server"]?.dependencies,
+    ).toMatchObject(corePackageJson.dependencies);
   });
 
   it("describes the local stdio npm install shape", () => {

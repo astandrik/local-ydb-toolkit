@@ -15,6 +15,18 @@ function createTempDir(): { path: string; cleanup: () => void } {
 }
 
 describe("waitForCommand", () => {
+  it("does not spawn a command for a pre-aborted signal", () => {
+    const controller = new AbortController();
+    controller.abort(new Error("test pre-abort"));
+    const executor = new ShellCommandExecutor();
+    const profile = resolveProfile(ConfigSchema.parse({}));
+
+    expect(() => executor.run(profile, {
+      command: "command-that-must-not-spawn",
+      signal: controller.signal,
+    })).toThrow("test pre-abort");
+  });
+
   it("retries retryable failures until a later attempt succeeds", async () => {
     const tempDir = createTempDir();
     try {

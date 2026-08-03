@@ -5,6 +5,7 @@ import {
   type CommandExecutor,
   type LocalYdbConfig,
   type SchemaSdkExecutor,
+  type SqlBackendExecutor,
   type ToolkitContext,
 } from "@local-ydb-toolkit/core";
 import type { ResponseContentFormat } from "../response-format.js";
@@ -15,6 +16,8 @@ export type HandlerOptions = {
   fetchImpl?: typeof fetch;
   responseContentFormat?: ResponseContentFormat;
   sdkExecutor?: SchemaSdkExecutor;
+  sqlExecutor?: SqlBackendExecutor;
+  signal?: AbortSignal;
 };
 
 export type ToolHandler = (

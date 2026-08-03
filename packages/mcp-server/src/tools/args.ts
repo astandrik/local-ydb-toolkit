@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SqlParameter } from "@local-ydb-toolkit/core";
 
 export const ProfileArgs = z.object({
   profile: z.string().optional(),
@@ -36,6 +37,50 @@ export const ApplySchemaArgs = ProfileArgs.extend({
   confirm: z.boolean().optional(),
   timeoutMs: z.number().int().positive().max(600_000).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+});
+
+const SqlParameterArgs = z.object({
+  type: z.custom<SqlParameter["type"]>(
+    (value) => value !== undefined,
+    "SQL parameter type is required",
+  ),
+  value: z.custom<SqlParameter["value"]>(
+    (value) => value !== undefined,
+    "SQL parameter value is required",
+  ),
+}).strict();
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+const SqlParametersArgs = z.custom<Record<string, unknown>>(
+  isPlainRecord,
+  "parameters must be a JSON object",
+).transform((parameters) => Object.entries(parameters)).pipe(
+  z.array(
+    z.tuple([
+      z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+      SqlParameterArgs,
+    ]),
+  ).max(100),
+).transform(
+  (entries) => Object.fromEntries(entries) as Record<string, SqlParameter>,
+);
+
+export const SqlArgs = ProfileArgs.extend({
+  action: z.enum(["query", "explain", "execute"]).optional(),
+  script: z.string().min(1).max(1_048_576),
+  databasePath: z.string().min(1).optional(),
+  timeoutMs: z.number().int().positive().max(600_000).optional(),
+  maxRows: z.number().int().positive().max(10_000).optional(),
+  maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
+  parameters: SqlParametersArgs.optional(),
+  confirm: z.boolean().optional(),
 });
 
 const SchemaScalarValue = z.union([z.string(), z.number(), z.boolean()]);

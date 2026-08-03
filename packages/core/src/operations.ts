@@ -11,5 +11,7 @@ export * from "./operations/prerequisites.js";
 export * from "./operations/version.js";
 export * from "./operations/scheme.js";
 export * from "./operations/schema.js";
+export * from "./operations/sdk-connection.js";
 export * from "./operations/schema-generate.js";
 export * from "./operations/permissions.js";
+export * from "./operations/sql.js";

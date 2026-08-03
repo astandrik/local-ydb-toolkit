@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  assertLiveToolRegistry,
+  verifyManagedSqlLive,
+} from "./managed-sql-live.mjs";
 
 const profileName = "ci-action";
 const tenantPath = requiredEnv("LOCAL_YDB_DATABASE");
@@ -99,6 +103,7 @@ async function verifyToolRegistry(client) {
   console.log("::group::tools/list");
   try {
     const result = await client.listTools(undefined, { timeout: 60_000 });
+    assertLiveToolRegistry(result);
     const tools = new Map(result.tools.map((tool) => [tool.name, tool]));
     const expectedTools = [
       "local_ydb_status_report",
@@ -109,6 +114,7 @@ async function verifyToolRegistry(client) {
       "local_ydb_nodes_check",
       "local_ydb_scheme",
       "local_ydb_apply_schema",
+      "local_ydb_sql",
       "local_ydb_graphshard_check",
       "local_ydb_auth_check",
       "local_ydb_storage_placement",
@@ -127,6 +133,7 @@ async function verifyToolRegistry(client) {
 
     const expectedMutatingTools = new Set([
       "local_ydb_apply_schema",
+      "local_ydb_sql",
       "local_ydb_permissions",
       "local_ydb_add_dynamic_nodes",
       "local_ydb_dump_tenant",
@@ -135,6 +142,7 @@ async function verifyToolRegistry(client) {
     ]);
     const expectedDestructiveTools = new Set([
       "local_ydb_apply_schema",
+      "local_ydb_sql",
       "local_ydb_permissions",
       "local_ydb_restore_tenant",
       "local_ydb_cleanup_storage",
@@ -220,6 +228,10 @@ async function verifyLiveTools(client) {
   assert(scheme.ok === true, scheme.stderr || "scheme list failed");
 
   await verifySchemaApply(client, profile);
+  await verifyManagedSqlLive({
+    callTool: (name, args) => callTool(client, name, args),
+    profile,
+  });
 
   const permissions = await callTool(client, "local_ydb_permissions", {
     profile,
@@ -665,6 +677,11 @@ function summarize(value) {
     graphShardExists: value.graphShardExists,
     viewerWhoamiStatus: value.viewerWhoamiStatus,
     executed: value.executed,
+    outcome: value.outcome,
+    confirmationRequired: value.confirmationRequired,
+    confirmationConsumed: value.confirmationConsumed,
+    outputBytes: value.outputBytes,
+    truncated: value.truncated,
     risk: value.risk,
     command: value.command,
   };
