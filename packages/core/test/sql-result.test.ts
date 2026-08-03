@@ -11,11 +11,12 @@ import type {
 function normalize(
   result: QueryServiceExecutionResult,
   captureBudget = 1,
+  diagnosticRedactions: string[] = [],
 ): QueryServiceExecutionResult | undefined {
   return normalizeSqlBackendResult(result, {
     captureBudget,
     maxRows: 100,
-    diagnosticRedactions: [],
+    diagnosticRedactions,
   });
 }
 
@@ -32,6 +33,23 @@ function emptyResultSet(
 }
 
 describe("managed SQL backend result normalization", () => {
+  it("rejects result-row redaction that exceeds the reported capture budget", () => {
+    // Production break caught: a short configured redaction can expand one
+    // retained row beyond maxOutputBytes after the backend charged its raw form.
+    expect(normalize({
+      completion: "success",
+      resultSets: [{
+        index: 0,
+        columns: [{ name: "value", type: "Utf8" }],
+        rows: [["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]],
+        truncationReasons: [],
+      }],
+      capturedBytes: 200,
+      truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
+    }, 200, ["x"])).toBeUndefined();
+  });
+
   it("rejects an empty result set without a Task 3 truncation envelope", () => {
     // Production break caught: zero-byte empty result sets that Task 3 never
     // retains can amplify the public response without consuming the budget.

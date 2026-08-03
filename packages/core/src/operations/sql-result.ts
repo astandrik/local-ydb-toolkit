@@ -201,6 +201,7 @@ function normalizeSqlBackendResultUnsafe(
       options.captureBudget,
       consumePayload,
       consumeColumnPayload,
+      options.diagnosticRedactions,
       resultSetState,
     );
     if (!normalized || seenResultSetIndexes.has(normalized.index)) {
@@ -323,6 +324,7 @@ function normalizeResultSet(
     payload: unknown,
     maxLength: number,
   ) => QueryServiceResultSet["columns"] | undefined,
+  redactions: string[],
   state: ResultSetNormalizationState,
 ): QueryServiceResultSet | undefined {
   const record = inspectExactRecord(
@@ -352,10 +354,17 @@ function normalizeResultSet(
   const rows: JsonValue[][] = [];
   for (const rawRow of rawRows) {
     const row = inspectDenseArray(rawRow, columns.length);
-    if (!row || row.length !== columns.length || !consumePayload(rawRow)) {
+    if (!row || row.length !== columns.length) {
       return undefined;
     }
-    rows.push(structuredClone(rawRow) as JsonValue[]);
+    const redactedRow = redactJsonValue(
+      structuredClone(rawRow) as JsonValue[],
+      redactions,
+    ) as JsonValue[];
+    if (!consumePayload(redactedRow)) {
+      return undefined;
+    }
+    rows.push(redactedRow);
   }
 
   if (columns.length === 0 && rawRows.length > 0) {
@@ -533,6 +542,22 @@ function redactIssuePosition(
     ...position,
     file: redactText(position.file, redactions),
   };
+}
+
+function redactJsonValue(value: JsonValue, redactions: string[]): JsonValue {
+  if (typeof value === "string") {
+    return redactText(value, redactions);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactJsonValue(item, redactions));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      redactText(key, redactions),
+      redactJsonValue(item, redactions),
+    ]));
+  }
+  return value;
 }
 
 function isSafeInteger(value: unknown): value is number {

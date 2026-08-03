@@ -148,7 +148,11 @@ export function encodePrimitive(name: SqlPrimitiveName, value: JsonValue): Typed
       );
       break;
     case "Utf8":
-      encoded = primitive(type, "textValue", requireString(value, name));
+      encoded = primitive(
+        type,
+        "textValue",
+        requireWellFormedUnicodeString(value, name),
+      );
       break;
     case "Json":
     case "JsonDocument":
@@ -607,6 +611,30 @@ function requireString(value: JsonValue, label: string): string {
     throw new Error(`${label} value must be a string`);
   }
   return value;
+}
+
+function requireWellFormedUnicodeString(
+  value: JsonValue,
+  label: string,
+): string {
+  const text = requireString(value, label);
+  for (let index = 0; index < text.length; index += 1) {
+    const codeUnit = text.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = text.charCodeAt(index + 1);
+      if (
+        index + 1 >= text.length
+        || nextCodeUnit < 0xdc00
+        || nextCodeUnit > 0xdfff
+      ) {
+        throw new Error(`${label} value must be well-formed Unicode`);
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new Error(`${label} value must be well-formed Unicode`);
+    }
+  }
+  return text;
 }
 
 function decodeCanonicalBase64(value: JsonValue, label: string): Uint8Array {

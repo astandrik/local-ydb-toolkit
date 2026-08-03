@@ -1369,6 +1369,70 @@ describe("managed SQL operation", () => {
     }
   });
 
+  it("redacts configured credential paths recursively from result rows", async () => {
+    // Production break caught: result rows bypassing the same credential-path
+    // redaction as diagnostics/issues can expose local password and identity paths.
+    const sql = await loadSql();
+    const rootPasswordFile = "/private/root.password";
+    const identityFile = "/private/id_ed25519";
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({
+      profiles: {
+        default: {
+          rootPasswordFile,
+          ssh: {
+            host: "example.invalid",
+            identityFile,
+          },
+        },
+      },
+    }));
+    const backend: SqlBackendExecutor = async () => successfulResult({
+      capturedBytes: 4_096,
+      resultSets: [{
+        index: 0,
+        columns: [
+          { name: "direct", type: "Utf8" },
+          { name: "nested", type: "Json" },
+          { name: "safe", type: "Utf8" },
+        ],
+        rows: [[
+          `password file: ${rootPasswordFile}`,
+          {
+            paths: [
+              identityFile,
+              { deep: `both ${rootPasswordFile} and ${identityFile}` },
+            ],
+            metadata: {
+              [identityFile]: rootPasswordFile,
+            },
+          },
+          "ordinary row value",
+        ]],
+        truncationReasons: [],
+      }],
+    });
+
+    const response = await sql(ctx, {
+      script: "SELECT 'configured paths';",
+    }, backend);
+
+    expect(response.execution?.resultSets[0]?.rows).toEqual([[
+      "password file: <redacted>",
+      {
+        paths: [
+          "<redacted>",
+          { deep: "both <redacted> and <redacted>" },
+        ],
+        metadata: {
+          "<redacted>": "<redacted>",
+        },
+      },
+      "ordinary row value",
+    ]]);
+    expect(JSON.stringify(response)).not.toContain(rootPasswordFile);
+    expect(JSON.stringify(response)).not.toContain(identityFile);
+  });
+
   it("maps every query and explain completion without allowing unknown", async () => {
     // Production break caught: low-risk actions can report success after a
     // partial/failing call, or expose mutation-only unknown outcome.

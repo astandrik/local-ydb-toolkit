@@ -183,6 +183,26 @@ describe("SQL parameter descriptors", () => {
     });
   });
 
+  it("rejects ill-formed Unicode before encoding Utf8 parameters", () => {
+    // Production break caught: protobuf replaces lone UTF-16 surrogates with
+    // U+FFFD, silently sending a different Utf8 value than the MCP request.
+    for (const value of ["\ud800", "\udc00", `left\ud800right`]) {
+      expect(() => prepareSqlParameters({
+        text: {
+          type: { kind: "primitive", name: "Utf8" },
+          value,
+        },
+      })).toThrow("Utf8 value must be well-formed Unicode");
+    }
+
+    expect(() => prepareSqlParameters({
+      text: {
+        type: { kind: "primitive", name: "Utf8" },
+        value: "valid \ud83d\ude80 pair",
+      },
+    })).not.toThrow();
+  });
+
   it("encodes Decimal and DyNumber without converting precision-sensitive strings to numbers", () => {
     // Production break caught: Number conversion rounds Decimal/DyNumber inputs
     // before they reach YDB and Decimal values need signed 128-bit wire halves.
