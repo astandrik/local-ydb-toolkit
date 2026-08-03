@@ -648,6 +648,34 @@ describe("SQL parameter descriptors", () => {
     }
   });
 
+  it("preserves signed zero in Float and Double results across response serialization", () => {
+    // Production break caught: returning JavaScript -0 lets JSON-RPC serialize
+    // a database negative zero as positive zero.
+    for (const name of ["Float", "Double"] as const) {
+      const prepared = prepareSqlParameters({
+        value: {
+          type: { kind: "primitive", name },
+          value: 1,
+        },
+      });
+      const typed = prepared.typedValues.$value;
+      const valueCase = name === "Float" ? "floatValue" : "doubleValue";
+      const negativeZero = decodeYdbValue(typed.type!, {
+        ...typed.value!,
+        value: { case: valueCase, value: -0 },
+      });
+      const positiveZero = decodeYdbValue(typed.type!, {
+        ...typed.value!,
+        value: { case: valueCase, value: 0 },
+      });
+
+      expect(negativeZero).toBe("-0");
+      expect(JSON.stringify(negativeZero)).toBe("\"-0\"");
+      expect(positiveZero).toBe(0);
+      expect(Object.is(positiveZero, -0)).toBe(false);
+    }
+  });
+
   it("rejects unsafe integers recursively in JSON parameters", () => {
     const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
     expect(() => prepareSqlParameters({

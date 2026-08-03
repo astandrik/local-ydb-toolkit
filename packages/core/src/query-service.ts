@@ -486,7 +486,11 @@ export async function executeQueryServiceWithSdk(
         // Session cleanup is best effort; driver and tunnel cleanup still run.
       }
     }
-    driver?.close();
+    try {
+      driver?.close();
+    } catch {
+      // Driver cleanup must not replace a definitive Query Service result.
+    }
   }
 }
 

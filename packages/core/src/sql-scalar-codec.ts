@@ -423,6 +423,7 @@ function jsonSafeNumber(value: number): JsonValue {
   if (Number.isNaN(value)) return "NaN";
   if (value === Infinity) return "Infinity";
   if (value === -Infinity) return "-Infinity";
+  if (Object.is(value, -0)) return "-0";
   return value;
 }
 

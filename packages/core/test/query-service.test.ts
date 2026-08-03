@@ -97,6 +97,39 @@ describe("low-level Query Service adapter", () => {
     ]);
   });
 
+  it("preserves a definitive query result when driver cleanup throws", async () => {
+    // Production break caught: synchronous driver cleanup can replace a final
+    // Query Service status with a generic adapter failure.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const driver = driverForParts([{
+      status: SUCCESS,
+      issues: [],
+      resultSetIndex: 0n,
+    }]);
+    driver.close = () => {
+      throw new Error("close boom");
+    };
+
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "SELECT 1;",
+      parameters: {},
+      mode: "snapshotReadOnly",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+    }, {
+      createDriver: () => driver as never,
+    });
+
+    expect(result).toMatchObject({
+      completion: "success",
+      status: SUCCESS,
+    });
+  });
+
   it("builds exact explain, SnapshotRO, and implicit NoTx requests", async () => {
     // Production break caught: read-only queries can accidentally run without
     // SnapshotRO, mutations can inherit a transaction, or PG/concurrent output
