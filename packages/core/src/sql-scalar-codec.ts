@@ -34,6 +34,9 @@ import {
   parseWideIsoDateTime,
 } from "./sql-temporal-codec.js";
 
+const YDB_DECIMAL_INFINITY = 10n ** 35n;
+const YDB_DECIMAL_NAN = YDB_DECIMAL_INFINITY + 1n;
+
 const PRIMITIVE_TYPE_IDS: Record<SqlPrimitiveName, Type_PrimitiveTypeId> = {
   Bool: Type_PrimitiveTypeId.BOOL,
   Int8: Type_PrimitiveTypeId.INT8,
@@ -334,6 +337,15 @@ export function decodeDecimal(
   const scaled = value.high128 >= 1n << 63n
     ? unsigned - (1n << 128n)
     : unsigned;
+  if (scaled === YDB_DECIMAL_INFINITY) {
+    return "inf";
+  }
+  if (scaled === -YDB_DECIMAL_INFINITY) {
+    return "-inf";
+  }
+  if (scaled === YDB_DECIMAL_NAN) {
+    return "nan";
+  }
   const negative = scaled < 0;
   const digits = (negative ? -scaled : scaled).toString().padStart(scale + 1, "0");
   const rendered = scale === 0

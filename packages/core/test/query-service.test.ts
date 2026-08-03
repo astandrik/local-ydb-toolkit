@@ -483,6 +483,155 @@ describe("low-level Query Service adapter", () => {
     ]);
   });
 
+  it("decodes Variant and Tagged result columns without failing the query", async () => {
+    // Production break caught: valid YQL Variant/Tagged columns used to turn a
+    // successful read into a failed adapter call after dispatch.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const prepared = prepareSqlParameters({
+      number: { type: { kind: "primitive", name: "Int32" }, value: 42 },
+      text: { type: { kind: "primitive", name: "Utf8" }, value: "alice" },
+    });
+    const numberType = prepared.typedValues.$number.type!;
+    const textType = prepared.typedValues.$text.type!;
+    const tupleVariantType = {
+      $typeName: "Ydb.Type",
+      type: {
+        case: "variantType",
+        value: {
+          $typeName: "Ydb.VariantType",
+          type: {
+            case: "tupleItems",
+            value: {
+              $typeName: "Ydb.TupleType",
+              elements: [numberType, textType],
+            },
+          },
+        },
+      },
+    };
+    const structVariantType = {
+      $typeName: "Ydb.Type",
+      type: {
+        case: "variantType",
+        value: {
+          $typeName: "Ydb.VariantType",
+          type: {
+            case: "structItems",
+            value: {
+              $typeName: "Ydb.StructType",
+              members: [
+                { $typeName: "Ydb.StructMember", name: "number", type: numberType },
+                { $typeName: "Ydb.StructMember", name: "text", type: textType },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const taggedType = {
+      $typeName: "Ydb.Type",
+      type: {
+        case: "taggedType",
+        value: {
+          $typeName: "Ydb.TaggedType",
+          tag: "label",
+          type: textType,
+        },
+      },
+    };
+    const optionalVariantType = {
+      $typeName: "Ydb.Type",
+      type: {
+        case: "optionalType",
+        value: {
+          $typeName: "Ydb.OptionalType",
+          item: tupleVariantType,
+        },
+      },
+    };
+    const variantValue = (index: number, value: unknown) => ({
+      $typeName: "Ydb.Value",
+      value: { case: "nestedValue", value },
+      items: [],
+      pairs: [],
+      variantIndex: index,
+      high128: 0n,
+    });
+
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "SELECT Variant(...), Tagged(...);",
+      parameters: {},
+      mode: "snapshotReadOnly",
+      maxRows: 10,
+      maxOutputBytes: 4_096,
+    }, {
+      createDriver: () => driverForParts([
+        {
+          status: SUCCESS,
+          issues: [],
+          resultSetIndex: 0n,
+          resultSet: {
+            columns: [
+              { name: "tuple_variant", type: tupleVariantType },
+              { name: "struct_variant", type: structVariantType },
+              { name: "tagged", type: taggedType },
+              { name: "optional_variant", type: optionalVariantType },
+            ],
+            rows: [{
+              items: [
+                variantValue(1, prepared.typedValues.$text.value),
+                variantValue(0, prepared.typedValues.$number.value),
+                prepared.typedValues.$text.value,
+                // Optional unwraps one transport layer before Variant's
+                // mandatory nested value, matching the upstream SDK parser.
+                variantValue(
+                  0,
+                  variantValue(0, prepared.typedValues.$number.value),
+                ),
+              ],
+              pairs: [],
+              value: { case: undefined },
+              variantIndex: 0,
+              high128: 0n,
+            }],
+            truncated: false,
+            format: ResultSet_Format.VALUE,
+            data: new Uint8Array(),
+          },
+        },
+      ]) as never,
+    });
+
+    expect(result.diagnostics).toBeUndefined();
+    expect(result.completion).toBe("success");
+    expect(result.resultSets).toEqual([{
+      index: 0,
+      columns: [
+        { name: "tuple_variant", type: "Variant<Tuple<Int32, Utf8>>" },
+        {
+          name: "struct_variant",
+          type: "Variant<Struct<`number`:Int32, `text`:Utf8>>",
+        },
+        { name: "tagged", type: "Tagged<Utf8, 'label'>" },
+        {
+          name: "optional_variant",
+          type: "Optional<Variant<Tuple<Int32, Utf8>>>",
+        },
+      ],
+      rows: [[
+        { index: 1, value: "alice" },
+        { index: 0, name: "number", value: 42 },
+        "alice",
+        { index: 0, value: 42 },
+      ]],
+      truncationReasons: [],
+    }]);
+  });
+
   it("cancels read-only streaming after a per-result-set row limit", async () => {
     // Production break caught: a bounded read can continue consuming unbounded
     // rows, or return a row beyond maxRows without marking the partial result.

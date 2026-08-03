@@ -830,6 +830,18 @@ function renderYdbType(type: Type): string {
         `${quoteYqlIdentifier(member.name)}:${renderRequiredType(member.type)}`).join(", ")}>`;
     case "dictType":
       return `Dict<${renderRequiredType(type.type.value.key)}, ${renderRequiredType(type.type.value.payload)}>`;
+    case "variantType":
+      switch (type.type.value.type.case) {
+        case "tupleItems":
+          return `Variant<Tuple<${type.type.value.type.value.elements.map(renderYdbType).join(", ")}>>`;
+        case "structItems":
+          return `Variant<Struct<${type.type.value.type.value.members.map((member) =>
+            `${quoteYqlIdentifier(member.name)}:${renderRequiredType(member.type)}`).join(", ")}>>`;
+        default:
+          throw new Error("Query Service returned a Variant type without alternatives");
+      }
+    case "taggedType":
+      return `Tagged<${renderRequiredType(type.type.value.type)}, ${quoteYqlString(type.type.value.tag)}>`;
     case "voidType":
       return "Void";
     case "nullType":
@@ -856,6 +868,14 @@ function quoteYqlIdentifier(identifier: string): string {
     .replace(/`/g, "\\`")
     .replace(/\r/g, "\\r")
     .replace(/\n/g, "\\n")}\``;
+}
+
+function quoteYqlString(value: string): string {
+  return `'${value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")}'`;
 }
 
 function primitiveTypeName(typeId: Type_PrimitiveTypeId): string {

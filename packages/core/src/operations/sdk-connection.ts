@@ -218,13 +218,20 @@ async function readRootPassword(
     if (!result.ok) {
       throw new Error("Failed to read configured YDB root password file from the target profile");
     }
-    return result.stdout.trimEnd();
+    return stripPasswordFileTerminator(result.stdout);
   }
   try {
-    return readFileSync(file, "utf8").trimEnd();
+    return stripPasswordFileTerminator(readFileSync(file, "utf8"));
   } catch {
     throw new Error("Failed to read configured YDB root password file from the target profile");
   }
+}
+
+function stripPasswordFileTerminator(value: string): string {
+  if (value.endsWith("\r\n")) {
+    return value.slice(0, -2);
+  }
+  return value.endsWith("\n") ? value.slice(0, -1) : value;
 }
 
 async function allocateLocalPort(

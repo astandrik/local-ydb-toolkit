@@ -77,6 +77,48 @@ export function decodeYdbValue(type: Type, value: Value): JsonValue {
         value: decodeYdbValue(valueType, requireValue(pair.payload, "Dict value")),
       }));
     }
+    case "variantType": {
+      if (value.value.case !== "nestedValue") {
+        throw new Error("YDB Variant value is missing its nested value");
+      }
+      const index = value.variantIndex;
+      if (!Number.isSafeInteger(index) || index < 0) {
+        throw new Error("YDB Variant value has an invalid index");
+      }
+      switch (type.type.value.type.case) {
+        case "tupleItems": {
+          const itemType = type.type.value.type.value.elements[index];
+          if (!itemType) {
+            throw new Error("YDB Variant tuple index is out of range");
+          }
+          return {
+            index,
+            value: decodeYdbValue(itemType, value.value.value),
+          };
+        }
+        case "structItems": {
+          const member = type.type.value.type.value.members[index];
+          if (!member) {
+            throw new Error("YDB Variant struct index is out of range");
+          }
+          return {
+            index,
+            name: member.name,
+            value: decodeYdbValue(
+              requireType(member.type, `Variant member ${member.name}`),
+              value.value.value,
+            ),
+          };
+        }
+        default:
+          throw new Error("YDB Variant type is missing its alternatives");
+      }
+    }
+    case "taggedType":
+      return decodeYdbValue(
+        requireType(type.type.value.type, `Tagged item ${type.type.value.tag}`),
+        value,
+      );
     case "voidType":
     case "nullType":
       return null;

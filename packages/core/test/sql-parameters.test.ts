@@ -587,6 +587,45 @@ describe("SQL parameter descriptors", () => {
     }
   });
 
+  it("decodes YDB Decimal special values as JSON-safe strings", () => {
+    // Production break caught: the reserved NaN and infinity encodings exceed
+    // finite precision but remain valid Decimal query results.
+    const type = {
+      $typeName: "Ydb.Type",
+      type: {
+        case: "decimalType",
+        value: {
+          $typeName: "Ydb.DecimalType",
+          precision: 10,
+          scale: 2,
+        },
+      },
+    } as Parameters<typeof decodeYdbValue>[0];
+    const infinity = 10n ** 35n;
+    const cases = [
+      [infinity, "inf"],
+      [-infinity, "-inf"],
+      [infinity + 1n, "nan"],
+    ] as const;
+
+    for (const [scaled, expected] of cases) {
+      const unsigned = scaled < 0 ? (1n << 128n) + scaled : scaled;
+      const value = {
+        $typeName: "Ydb.Value",
+        value: {
+          case: "low128",
+          value: unsigned & ((1n << 64n) - 1n),
+        },
+        items: [],
+        pairs: [],
+        variantIndex: 0,
+        high128: unsigned >> 64n,
+      } as Parameters<typeof decodeYdbValue>[1];
+
+      expect(decodeYdbValue(type, value)).toBe(expected);
+    }
+  });
+
   it("preserves JSON numbers that cannot round-trip through JavaScript Number", () => {
     // Production break caught: JSON.parse silently rounds unsafe integers and
     // long numeric lexemes before they cross the MCP JSON boundary.

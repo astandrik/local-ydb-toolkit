@@ -28,7 +28,8 @@ describe("schema application", () => {
   it("provides normalized root and tenant SDK connections with local credentials", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "local-ydb-sdk-connection-test-"));
     const passwordFile = join(tempDir, "root.password");
-    writeFileSync(passwordFile, "S3cr3t!\n", "utf8");
+    const password = "S3cr3t! \t";
+    writeFileSync(passwordFile, `${password}\n`, "utf8");
     try {
       const ctx = createContext(undefined, undefined, ConfigSchema.parse({
         profiles: {
@@ -53,7 +54,7 @@ describe("schema application", () => {
         connectionString: "grpc://127.0.0.1:2137/local/example",
         timeoutMs: 1_500,
         rootUser: "root",
-        rootPassword: "S3cr3t!",
+        rootPassword: password,
       });
       expect(root).toMatchObject({
         databasePath: "/local",
