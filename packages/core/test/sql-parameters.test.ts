@@ -590,6 +590,7 @@ describe("SQL parameter descriptors", () => {
   it("preserves JSON numbers that cannot round-trip through JavaScript Number", () => {
     // Production break caught: JSON.parse silently rounds unsafe integers and
     // long numeric lexemes before they cross the MCP JSON boundary.
+    const numberWithManyTrailingZeros = `1.234567890123456789${"0".repeat(512)}`;
     const prepared = prepareSqlParameters({
       json: {
         type: { kind: "primitive", name: "Json" },
@@ -602,7 +603,7 @@ describe("SQL parameter descriptors", () => {
       ...baseValue,
       value: {
         case: "textValue" as const,
-        value: "{\"safe\":42,\"unsafe\":9007199254740993,\"decimal\":1.234567890123456789,\"overflow\":1e400,\"label\":\"9007199254740993\"}",
+        value: `{"safe":42,"unsafe":9007199254740993,"decimal":1.234567890123456789,"trailing":${numberWithManyTrailingZeros},"overflow":1e400,"label":"9007199254740993"}`,
       },
     };
 
@@ -610,6 +611,7 @@ describe("SQL parameter descriptors", () => {
       safe: 42,
       unsafe: "9007199254740993",
       decimal: "1.234567890123456789",
+      trailing: numberWithManyTrailingZeros,
       overflow: "1e400",
       label: "9007199254740993",
     });

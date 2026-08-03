@@ -542,9 +542,13 @@ function canonicalDecimal(text: string): {
     return { negative: false, digits: "0", exponent: 0 };
   }
   let exponent = Number(match[4] ?? "0") - fraction.length;
-  const trailingZeros = digits.match(/0+$/)?.[0].length ?? 0;
+  let trailingZeroStart = digits.length;
+  while (trailingZeroStart > 0 && digits[trailingZeroStart - 1] === "0") {
+    trailingZeroStart -= 1;
+  }
+  const trailingZeros = digits.length - trailingZeroStart;
   if (trailingZeros > 0) {
-    digits = digits.slice(0, -trailingZeros);
+    digits = digits.slice(0, trailingZeroStart);
     exponent += trailingZeros;
   }
   return {
