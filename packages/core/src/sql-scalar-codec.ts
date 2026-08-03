@@ -540,6 +540,9 @@ function jsonNumberRoundTrips(token: string): boolean {
   if (!Number.isFinite(numeric)) {
     return false;
   }
+  if (Object.is(numeric, -0)) {
+    return false;
+  }
   const original = canonicalDecimal(token);
   if (numeric === 0 && original?.digits === "0") {
     return true;

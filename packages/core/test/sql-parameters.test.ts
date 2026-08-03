@@ -617,6 +617,37 @@ describe("SQL parameter descriptors", () => {
     });
   });
 
+  it("preserves negative-zero JSON result numbers across response serialization", () => {
+    const resultText = "{\"negativeInteger\":-0,\"negativeFraction\":-0.0,\"negativeExponent\":-0e10,\"positiveInteger\":0,\"positiveFraction\":0.0}";
+    const expected = {
+      negativeInteger: "-0",
+      negativeFraction: "-0.0",
+      negativeExponent: "-0e10",
+      positiveInteger: 0,
+      positiveFraction: 0,
+    };
+
+    for (const name of ["Json", "JsonDocument"] as const) {
+      const prepared = prepareSqlParameters({
+        value: {
+          type: { kind: "primitive", name },
+          value: null,
+        },
+      });
+      const baseValue = prepared.typedValues.$value.value!;
+      const decoded = decodeYdbValue(
+        prepared.typedValues.$value.type!,
+        {
+          ...baseValue,
+          value: { case: "textValue", value: resultText },
+        },
+      );
+
+      expect(decoded).toEqual(expected);
+      expect(JSON.stringify(decoded)).toBe(JSON.stringify(expected));
+    }
+  });
+
   it("rejects unsafe integers recursively in JSON parameters", () => {
     const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
     expect(() => prepareSqlParameters({
