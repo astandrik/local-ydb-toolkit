@@ -169,6 +169,7 @@ export async function verifyManagedSqlLive({
         `CREATE TABLE ${quotedCtasTableName} (`,
         "  PRIMARY KEY (id)",
         ")",
+        "WITH (STORE = COLUMN)",
         `AS SELECT id, value FROM ${quotedTableName};`,
       ].join("\n"),
     });

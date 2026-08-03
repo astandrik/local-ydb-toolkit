@@ -115,6 +115,16 @@ test("accepts successful ordinary DDL explain without a plan or AST", async () =
   });
 });
 
+test("uses column-store CTAS when row CTAS is disabled", async () => {
+  const fixture = managedSqlFixture({ disableRowCtas: true });
+
+  await verifyManagedSqlLive({
+    callTool: fixture.callTool,
+    profile: "ci-action",
+    tableName: "managed_sql_disabled_row_ctas_fixture",
+  });
+});
+
 test("attempts schema cleanup when a managed SQL assertion fails after setup", async () => {
   const fixture = managedSqlFixture({ failStandaloneExplain: true });
 
@@ -222,6 +232,7 @@ test("rejects an unsafe injected table name before calling MCP", async () => {
 });
 
 function managedSqlFixture({
+  disableRowCtas = false,
   failStandaloneExplain = false,
   omitDdlExplainPayload = false,
 } = {}) {
@@ -322,6 +333,13 @@ function managedSqlFixture({
       });
     }
     if (args.action === "explain" && args.script.startsWith("CREATE TABLE ")) {
+      if (disableRowCtas && !args.script.includes("WITH (STORE = COLUMN)")) {
+        return sqlResponse({
+          action: "explain",
+          outcome: "failed",
+          execution: executionResult({ completion: "failed", status: 400010 }),
+        });
+      }
       return sqlResponse({
         action: "explain",
         execution: executionResult({ queryAst: "(CtasPlan)" }),
