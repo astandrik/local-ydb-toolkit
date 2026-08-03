@@ -476,6 +476,9 @@ function requireSafeJsonNumbers(value: JsonValue, label: "Json" | "JsonDocument"
   while (pending.length > 0) {
     const current = pending.pop()!;
     if (typeof current === "number") {
+      if (Object.is(current, -0)) {
+        throw new Error(`${label} values must not contain negative zero`);
+      }
       if (!Number.isFinite(current)) {
         throw new Error(`${label} values must contain only finite numbers`);
       }

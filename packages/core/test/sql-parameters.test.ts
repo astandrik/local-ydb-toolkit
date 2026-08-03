@@ -704,6 +704,31 @@ describe("SQL parameter descriptors", () => {
     })).not.toThrow();
   });
 
+  it("rejects negative zero recursively in JSON parameters", () => {
+    // Production break caught: JSON.stringify silently serializes JavaScript
+    // negative zero as positive zero before the value is sent to YDB.
+    expect(() => prepareSqlParameters({
+      json: {
+        type: { kind: "primitive", name: "Json" },
+        value: { nested: [-0] },
+      },
+    })).toThrow(/Json values must not contain negative zero/);
+
+    expect(() => prepareSqlParameters({
+      jsonDocument: {
+        type: { kind: "primitive", name: "JsonDocument" },
+        value: [{ nested: -0 }],
+      },
+    })).toThrow(/JsonDocument values must not contain negative zero/);
+
+    expect(() => prepareSqlParameters({
+      json: {
+        type: { kind: "primitive", name: "Json" },
+        value: { zero: 0, nested: [0] },
+      },
+    })).not.toThrow();
+  });
+
   it("rejects out-of-range primitives and non-canonical scalar encodings", () => {
     // Production break caught: protobuf constructors accept truncated/out-of-range
     // numerics and Node's base64/UUID parsing is deliberately permissive.
