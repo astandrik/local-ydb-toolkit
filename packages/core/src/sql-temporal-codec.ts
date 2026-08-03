@@ -97,15 +97,10 @@ export function parseTzValue(
   }
   const dateTime = value.slice(0, comma);
   const timeZone = value.slice(comma + 1);
-  let canonicalTimeZone: string;
   try {
-    canonicalTimeZone = new Intl.DateTimeFormat("en-US", { timeZone })
-      .resolvedOptions().timeZone;
+    new Intl.DateTimeFormat("en-US", { timeZone });
   } catch {
     throw new Error(`${label} value has an unknown timezone: ${timeZone}`);
-  }
-  if (canonicalTimeZone !== timeZone) {
-    throw new Error(`${label} timezone must be canonical: ${canonicalTimeZone}`);
   }
   if (kind === "date") {
     requireRange(parseIsoDate(dateTime, label), 0n, MAX_DATE_DAYS - 1n, label);

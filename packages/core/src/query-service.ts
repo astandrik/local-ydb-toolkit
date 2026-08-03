@@ -30,6 +30,7 @@ import { redactText } from "./auth.js";
 const CLEANUP_TIMEOUT_MS = 5_000;
 const MAX_CAPTURED_ISSUE_DEPTH = 32;
 const MAX_CAPTURED_ISSUE_NODES = 1_000;
+const queryServiceDispatchState = new WeakMap<object, boolean>();
 
 export type QueryServiceMode = "explain" | "snapshotReadOnly" | "noTx";
 
@@ -140,6 +141,25 @@ export type QueryServiceExecutor = (
   request: QueryServiceSdkRequest,
 ) => Promise<QueryServiceExecutionResult>;
 
+export function queryServiceRequestWasDispatched(
+  result: unknown,
+): boolean | undefined {
+  return (
+    result !== null
+    && (typeof result === "object" || typeof result === "function")
+  )
+    ? queryServiceDispatchState.get(result)
+    : undefined;
+}
+
+function withQueryServiceDispatchState(
+  result: QueryServiceExecutionResult,
+  requestDispatched: boolean,
+): QueryServiceExecutionResult {
+  queryServiceDispatchState.set(result, requestDispatched);
+  return result;
+}
+
 export async function executeQueryService(
   ctx: ToolkitContext,
   request: QueryServiceRequest,
@@ -147,32 +167,39 @@ export async function executeQueryService(
 ): Promise<QueryServiceExecutionResult> {
   const timeoutMs = normalizeSdkTimeoutMs(request.timeoutMs);
   const deadline = createSdkOperationDeadline(timeoutMs, request.signal);
+  let executorStarted = false;
   try {
-    return await withSdkConnection(ctx, {
+    const result = await withSdkConnection(ctx, {
       databasePath: request.databasePath,
       timeoutMs,
       operationLabel: "managed SQL query",
       deadline,
-    }, (connection) => executor({
-      ...connection,
-      script: request.script,
-      parameters: request.parameters,
-      mode: request.mode,
-      maxRows: request.maxRows,
-      maxOutputBytes: request.maxOutputBytes,
-      signal: deadline.signal,
-    }));
+    }, (connection) => {
+      executorStarted = true;
+      return executor({
+        ...connection,
+        script: request.script,
+        parameters: request.parameters,
+        mode: request.mode,
+        maxRows: request.maxRows,
+        maxOutputBytes: request.maxOutputBytes,
+        signal: deadline.signal,
+      });
+    });
+    return queryServiceRequestWasDispatched(result) === undefined
+      ? withQueryServiceDispatchState(result, executorStarted)
+      : result;
   } catch {
-    if (deadline.signal.aborted) {
-      return {
-        completion: "cancelled",
-        resultSets: [],
-        capturedBytes: 0,
-        truncationReasons: [],
-        diagnostics: "Query Service request was cancelled.",
-      };
-    }
-    throw new Error("Query Service connection setup failed.");
+    const cancelled = deadline.signal.aborted;
+    return withQueryServiceDispatchState({
+      completion: cancelled ? "cancelled" : "failed",
+      resultSets: [],
+      capturedBytes: 0,
+      truncationReasons: [],
+      diagnostics: cancelled
+        ? "Query Service request was cancelled."
+        : "Query Service connection setup failed.",
+    }, executorStarted);
   }
 }
 
@@ -190,10 +217,7 @@ export async function executeQueryServiceWithSdk(
       ? [request.signal]
       : []),
   ]);
-  const driver = (dependencies.createDriver ?? createQueryDriver)(
-    request.connectionString,
-    driverOptions(request),
-  );
+  let driver: QueryDriver | undefined;
   let sessionId: string | undefined;
   let nodeClient: QueryServiceClient | undefined;
   let attachMonitor: Promise<void> | undefined;
@@ -214,6 +238,10 @@ export async function executeQueryServiceWithSdk(
   const payloadRedactions = request.rootPassword ? [request.rootPassword] : [];
 
   try {
+    driver = (dependencies.createDriver ?? createQueryDriver)(
+      request.connectionString,
+      driverOptions(request),
+    );
     await driver.ready(operationSignal);
     const baseClient = driver.createClient(QueryServiceDefinition);
     const created = await baseClient.createSession({}, { signal: operationSignal });
@@ -399,7 +427,7 @@ export async function executeQueryServiceWithSdk(
         : "Query Service stream ended without a final status.";
     }
 
-    return {
+    return withQueryServiceDispatchState({
       completion,
       resultSets: Array.from(resultSets.values())
         .sort((left, right) => left.output.index - right.output.index)
@@ -411,7 +439,7 @@ export async function executeQueryServiceWithSdk(
       ...(queryAst !== undefined ? { queryAst } : {}),
       ...(externallyCancelled || streamFailed ? {} : { status: finalStatus }),
       ...(diagnostics ? { diagnostics } : {}),
-    };
+    }, requestSent);
   } catch {
     const externallyCancelled = operationDeadline.signal.aborted
       || request.signal?.aborted === true;
@@ -427,7 +455,7 @@ export async function executeQueryServiceWithSdk(
       completion = "cancelled";
       diagnostics = "Query Service request was cancelled.";
     }
-    return {
+    return withQueryServiceDispatchState({
       completion,
       resultSets: Array.from(resultSets.values())
         .sort((left, right) => left.output.index - right.output.index)
@@ -441,7 +469,7 @@ export async function executeQueryServiceWithSdk(
       ...(queryPlan !== undefined ? { queryPlan } : {}),
       ...(queryAst !== undefined ? { queryAst } : {}),
       diagnostics,
-    };
+    }, requestSent);
   } finally {
     executionFinished = true;
     internalController.abort();
@@ -458,7 +486,7 @@ export async function executeQueryServiceWithSdk(
         // Session cleanup is best effort; driver and tunnel cleanup still run.
       }
     }
-    driver.close();
+    driver?.close();
   }
 }
 

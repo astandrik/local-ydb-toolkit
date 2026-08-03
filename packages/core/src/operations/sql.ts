@@ -3,6 +3,7 @@ import type { SqlParameter } from "../sql-parameter-types.js";
 import { prepareSqlParameters } from "../sql-parameters.js";
 import {
   executeQueryService,
+  queryServiceRequestWasDispatched,
   type QueryServiceExecutionResult,
   type QueryServiceRequest,
   type QueryServiceResultSet,
@@ -114,6 +115,7 @@ export async function sql(
       const result = await backendExecutor(ctx, {
         ...request,
       });
+      backendCalled = queryServiceRequestWasDispatched(result) ?? backendCalled;
       const normalized = normalizeSqlBackendResult(result, {
         captureBudget,
         maxRows,

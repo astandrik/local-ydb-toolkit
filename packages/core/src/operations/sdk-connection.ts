@@ -44,11 +44,37 @@ export function normalizeSdkDatabasePath(ctx: ToolkitContext, databasePath: stri
   if (!path.startsWith("/")) {
     throw new Error("databasePath must be an absolute YDB database path");
   }
+  validateDatabasePathUrlSegments(path);
   const { rootDatabase } = ctx.profile;
   if (path !== rootDatabase && !path.startsWith(`${rootDatabase}/`)) {
     throw new Error(`databasePath must be ${rootDatabase} or a child path under ${rootDatabase}`);
   }
   return path;
+}
+
+function validateDatabasePathUrlSegments(path: string): void {
+  if (path.includes("?") || path.includes("#")) {
+    throw new Error("databasePath must not contain URL query or fragment separators");
+  }
+  for (const segment of path.slice(1).split("/")) {
+    if (segment.length === 0) {
+      throw new Error("databasePath must not contain empty path segments");
+    }
+    let decodedSegment: string;
+    try {
+      decodedSegment = decodeURIComponent(segment);
+    } catch {
+      throw new Error("databasePath must contain valid percent encoding");
+    }
+    if (
+      decodedSegment === "."
+      || decodedSegment === ".."
+      || decodedSegment.includes("/")
+      || decodedSegment.includes("\\")
+    ) {
+      throw new Error("databasePath contains an unsafe URL path segment");
+    }
+  }
 }
 
 export function normalizeSdkTimeoutMs(timeoutMs: number | undefined): number {

@@ -14,6 +14,7 @@ import {
 export const MAX_SQL_PARAMETERS = 100;
 export const MAX_SQL_PARAMETER_DEPTH = 16;
 export const MAX_SQL_PARAMETER_NODES = 1_000;
+export const MAX_SQL_PARAMETER_VALUE_NODES = 10_000;
 export const MAX_SQL_PARAMETER_BYTES = 1_048_576;
 
 const PRIMITIVE_NAMES = new Set<SqlPrimitiveName>([
@@ -108,8 +109,8 @@ export function prepareSqlParameters(
   }
 
   const descriptorBudget = { nodes: 0 };
+  const valueBudget = { nodes: 0 };
   const parameterTypeEntries: Array<[string, string]> = [];
-  const typedValues: Record<string, TypedValue> = {};
   for (const name of names) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
       throw new Error(`invalid SQL parameter name: ${name}`);
@@ -119,7 +120,13 @@ export function prepareSqlParameters(
       throw new Error(`parameter ${name} must contain type and value`);
     }
     validateDescriptor(parameter.type, 1, descriptorBudget);
+    countParameterValueNodes(parameter.value, valueBudget);
     parameterTypeEntries.push([name, renderYqlType(parameter.type)]);
+  }
+
+  const typedValues: Record<string, TypedValue> = {};
+  for (const name of names) {
+    const parameter = parameters[name]!;
     typedValues[`$${name}`] = encodeSqlParameterValue(parameter);
   }
   const parameterTypes = Object.fromEntries(parameterTypeEntries);
@@ -132,6 +139,32 @@ export function prepareSqlParameters(
       .join("\n") + (names.length === 0 ? "" : "\n"),
     serializedBytes,
   };
+}
+
+function countParameterValueNodes(
+  value: JsonValue,
+  budget: { nodes: number },
+): void {
+  const pending: JsonValue[] = [value];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    budget.nodes += 1;
+    if (budget.nodes > MAX_SQL_PARAMETER_VALUE_NODES) {
+      throw new Error(
+        `SQL parameter values must contain at most ${MAX_SQL_PARAMETER_VALUE_NODES} nodes`,
+      );
+    }
+    if (Array.isArray(current)) {
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        pending.push(current[index]!);
+      }
+    } else if (current !== null && typeof current === "object") {
+      const values = Object.values(current);
+      for (let index = values.length - 1; index >= 0; index -= 1) {
+        pending.push(values[index]!);
+      }
+    }
+  }
 }
 
 export function decodeYdbValue(type: Type, value: Value): JsonValue {

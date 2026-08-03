@@ -280,6 +280,56 @@ describe("managed SQL operation", () => {
     );
   });
 
+  it("does not consume confirmation when Query Service fails before NoTx dispatch", async () => {
+    // Production break caught: invoking the backend adapter is not proof that
+    // executeQuery was dispatched, so setup failures must remain unexecuted.
+    const sql = await loadSql();
+    const ctx = testContext();
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const calls: QueryServiceRequest[] = [];
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      if (request.mode === "explain") {
+        return successfulResult({
+          queryPlan: "{\"Plan\":\"ok\"}",
+          capturedBytes: 20,
+        });
+      }
+      return executeQueryServiceWithSdk({
+        connectionString: "grpc://127.0.0.1:2136/local",
+        databasePath: request.databasePath ?? "/local",
+        endpoint: "grpc://127.0.0.1:2136",
+        timeoutMs: request.timeoutMs ?? 1_000,
+        script: request.script,
+        parameters: request.parameters,
+        mode: request.mode,
+        maxRows: request.maxRows,
+        maxOutputBytes: request.maxOutputBytes,
+        signal: request.signal,
+      }, {
+        createDriver: () => {
+          throw new Error("driver construction failed before executeQuery");
+        },
+      });
+    };
+
+    const response = await sql(ctx, {
+      action: "execute",
+      confirm: true,
+      script: "UPSERT INTO items (id) VALUES (1);",
+    }, backend);
+
+    expect(calls.map((call) => call.mode)).toEqual(["explain", "noTx"]);
+    expect(response).toMatchObject({
+      executed: false,
+      outcome: "failed",
+      confirmationRequired: false,
+      confirmationConsumed: false,
+    });
+    expect(response).not.toHaveProperty("execution");
+    expect(JSON.stringify(response)).not.toContain("requestDispatched");
+  });
+
   it("blocks confirmed execution for every non-successful preflight completion", async () => {
     // Production break caught: partial, cancelled, failed, or mutation-status
     // loss from EXPLAIN can be mistaken for permission to send NoTx.

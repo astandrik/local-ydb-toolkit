@@ -77,6 +77,12 @@ export function decodeYdbValue(type: Type, value: Value): JsonValue {
         value: decodeYdbValue(valueType, requireValue(pair.payload, "Dict value")),
       }));
     }
+    case "voidType":
+    case "nullType":
+      return null;
+    case "emptyListType":
+    case "emptyDictType":
+      return [];
     default:
       throw new Error(`Unsupported YDB result type: ${String(type.type.case)}`);
   }

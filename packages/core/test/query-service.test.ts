@@ -845,6 +845,58 @@ describe("low-level Query Service adapter", () => {
     expect(JSON.stringify([readResult, mutationResult])).not.toContain("credential");
   });
 
+  it("keeps a sent mutation unknown when result decoding fails", async () => {
+    // Characterization for review feedback: post-dispatch capture errors are
+    // already contained by the stream boundary and must never invite a retry.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const unsupportedType = {
+      $typeName: "Ydb.Type",
+      type: {
+        case: "taggedType",
+        value: {
+          $typeName: "Ydb.TaggedType",
+          tag: "unsupported",
+        },
+      },
+    };
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "UPSERT INTO t(id) VALUES (1) RETURNING id;",
+      parameters: {},
+      mode: "noTx",
+      maxRows: 10,
+      maxOutputBytes: 4_096,
+    }, {
+      createDriver: () => driverForParts([{
+        status: SUCCESS,
+        issues: [],
+        resultSetIndex: 0n,
+        resultSet: {
+          columns: [{ name: "value", type: unsupportedType }],
+          rows: [{
+            items: [{}],
+            pairs: [],
+            value: { case: undefined },
+            variantIndex: 0,
+            high128: 0n,
+          }],
+          truncated: false,
+          format: ResultSet_Format.VALUE,
+          data: new Uint8Array(),
+        },
+      }]) as never,
+    });
+
+    expect(result).toMatchObject({
+      completion: "mutationStatusUnknown",
+      diagnostics: "Mutation was sent but its final Query Service status was not received.",
+    });
+    expect(result.status).toBeUndefined();
+  });
+
   it("uses the background attach monitor to stop work when the session is lost", async () => {
     // Production break caught: only validating the first attach state leaves a
     // query running after the owning node reports that its session is gone.

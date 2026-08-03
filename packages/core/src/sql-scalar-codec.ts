@@ -125,9 +125,14 @@ export function encodePrimitive(name: SqlPrimitiveName, value: JsonValue): Typed
       encoded = primitive(type, "uint64Value", integer);
       break;
     }
-    case "Float":
-      encoded = primitive(type, "floatValue", requireFiniteNumber(value, name));
+    case "Float": {
+      const rounded = Math.fround(requireFiniteNumber(value, name));
+      if (!Number.isFinite(rounded)) {
+        throw new Error("Float value must fit the finite binary32 range");
+      }
+      encoded = primitive(type, "floatValue", rounded);
       break;
+    }
     case "Double":
       encoded = primitive(type, "doubleValue", requireFiniteNumber(value, name));
       break;
@@ -285,7 +290,7 @@ export function decodePrimitive(
       return expectValueCase(value, "textValue");
     case Type_PrimitiveTypeId.JSON:
     case Type_PrimitiveTypeId.JSON_DOCUMENT:
-      return JSON.parse(expectValueCase(value, "textValue")) as JsonValue;
+      return parseLosslessJson(expectValueCase(value, "textValue"));
     case Type_PrimitiveTypeId.UUID:
       return uuidFromBigInts(
         expectValueCase(value, "low128"),
@@ -464,6 +469,91 @@ function requireFiniteNumber(value: JsonValue, label: string): number {
   return value;
 }
 
+function parseLosslessJson(text: string): JsonValue {
+  const numberPattern = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+  let cursor = 0;
+  let transformed = "";
+  while (cursor < text.length) {
+    if (text[cursor] === "\"") {
+      const stringStart = cursor;
+      cursor += 1;
+      while (cursor < text.length) {
+        if (text[cursor] === "\\") {
+          cursor += 2;
+          continue;
+        }
+        if (text[cursor] === "\"") {
+          cursor += 1;
+          break;
+        }
+        cursor += 1;
+      }
+      transformed += text.slice(stringStart, cursor);
+      continue;
+    }
+    const character = text[cursor]!;
+    if (character === "-" || (character >= "0" && character <= "9")) {
+      numberPattern.lastIndex = cursor;
+      const match = numberPattern.exec(text);
+      if (match) {
+        const token = match[0];
+        transformed += jsonNumberRoundTrips(token)
+          ? token
+          : JSON.stringify(token);
+        cursor = numberPattern.lastIndex;
+        continue;
+      }
+    }
+    transformed += character;
+    cursor += 1;
+  }
+  return JSON.parse(transformed) as JsonValue;
+}
+
+function jsonNumberRoundTrips(token: string): boolean {
+  const numeric = Number(token);
+  if (!Number.isFinite(numeric)) {
+    return false;
+  }
+  const original = canonicalDecimal(token);
+  if (numeric === 0 && original?.digits === "0") {
+    return true;
+  }
+  const roundTripped = canonicalDecimal(String(numeric));
+  return original !== undefined
+    && roundTripped !== undefined
+    && original.negative === roundTripped.negative
+    && original.digits === roundTripped.digits
+    && original.exponent === roundTripped.exponent;
+}
+
+function canonicalDecimal(text: string): {
+  negative: boolean;
+  digits: string;
+  exponent: number;
+} | undefined {
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!match) {
+    return undefined;
+  }
+  const fraction = match[3] ?? "";
+  let digits = `${match[2]}${fraction}`.replace(/^0+/, "");
+  if (digits.length === 0) {
+    return { negative: false, digits: "0", exponent: 0 };
+  }
+  let exponent = Number(match[4] ?? "0") - fraction.length;
+  const trailingZeros = digits.match(/0+$/)?.[0].length ?? 0;
+  if (trailingZeros > 0) {
+    digits = digits.slice(0, -trailingZeros);
+    exponent += trailingZeros;
+  }
+  return {
+    negative: match[1] === "-",
+    digits,
+    exponent,
+  };
+}
+
 function requireString(value: JsonValue, label: string): string {
   if (typeof value !== "string") {
     throw new Error(`${label} value must be a string`);
@@ -528,7 +618,7 @@ function requireDyNumber(value: JsonValue): string {
         if (isZero) {
           trailingZeros += 1;
         } else {
-          nonZeroAfterDot += trailingZeros + 1;
+          nonZeroAfterDot += trailingZeros;
           trailingZeros = 0;
         }
       } else {

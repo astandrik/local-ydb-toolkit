@@ -195,6 +195,10 @@ describe("SQL parameter descriptors", () => {
         type: { kind: "primitive", name: "DyNumber" },
         value: "9.9999999999999999999999999999999999999E+125",
       },
+      fixedDynamic: {
+        type: { kind: "primitive", name: "DyNumber" },
+        value: "0.000000000000000000000000000000000000001",
+      },
     });
 
     expect(prepared.typedValues.$amount.type?.type).toEqual({
@@ -215,6 +219,10 @@ describe("SQL parameter descriptors", () => {
     expect(prepared.typedValues.$dynamic.value?.value).toEqual({
       case: "textValue",
       value: "9.9999999999999999999999999999999999999E+125",
+    });
+    expect(prepared.typedValues.$fixedDynamic.value?.value).toEqual({
+      case: "textValue",
+      value: "0.000000000000000000000000000000000000001",
     });
   });
 
@@ -246,6 +254,14 @@ describe("SQL parameter descriptors", () => {
       tzTimestamp: {
         type: { kind: "primitive", name: "TzTimestamp" },
         value: "2025-01-02T03:04:05.000006,Europe/Moscow",
+      },
+      tzDateAlias: {
+        type: { kind: "primitive", name: "TzDate" },
+        value: "2025-01-02,Etc/UTC",
+      },
+      tzDatetimeAlias: {
+        type: { kind: "primitive", name: "TzDatetime" },
+        value: "2025-01-02T03:04:05,US/Eastern",
       },
       date32: { type: { kind: "primitive", name: "Date32" }, value: "1969-12-31" },
       datetime64: {
@@ -290,6 +306,14 @@ describe("SQL parameter descriptors", () => {
       case: "textValue",
       value: "2025-01-02T03:04:05.000006,Europe/Moscow",
     });
+    expect(prepared.typedValues.$tzDateAlias.value?.value).toEqual({
+      case: "textValue",
+      value: "2025-01-02,Etc/UTC",
+    });
+    expect(prepared.typedValues.$tzDatetimeAlias.value?.value).toEqual({
+      case: "textValue",
+      value: "2025-01-02T03:04:05,US/Eastern",
+    });
     expect(prepared.typedValues.$date32.value?.value).toEqual({
       case: "int32Value",
       value: -1,
@@ -312,7 +336,9 @@ describe("SQL parameter descriptors", () => {
       "timestamp",
       "interval",
       "tzDate",
+      "tzDateAlias",
       "tzDatetime",
+      "tzDatetimeAlias",
       "tzTimestamp",
       "date32",
       "datetime64",
@@ -327,7 +353,9 @@ describe("SQL parameter descriptors", () => {
       timestamp: "1970-01-01T00:00:00.000001Z",
       interval: "P9DT2H3M4.56789S",
       tzDate: "2025-01-02,Europe/Moscow",
+      tzDateAlias: "2025-01-02,Etc/UTC",
       tzDatetime: "2025-01-02T03:04:05,Europe/Moscow",
+      tzDatetimeAlias: "2025-01-02T03:04:05,US/Eastern",
       tzTimestamp: "2025-01-02T03:04:05.000006,Europe/Moscow",
       date32: "1969-12-31",
       datetime64: "1969-12-31T23:59:59Z",
@@ -539,6 +567,54 @@ describe("SQL parameter descriptors", () => {
     expect(() => JSON.stringify(decoded)).not.toThrow();
   });
 
+  it("decodes renderer-supported special result types", () => {
+    // Production break caught: Query Service accepts these column types while
+    // the value decoder used to reject them after the response was dispatched.
+    const value = {} as Parameters<typeof decodeYdbValue>[1];
+    const specialTypes = [
+      ["voidType", null],
+      ["nullType", null],
+      ["emptyListType", []],
+      ["emptyDictType", []],
+    ] as const;
+
+    for (const [typeCase, expected] of specialTypes) {
+      const type = {
+        $typeName: "Ydb.Type",
+        type: { case: typeCase, value: 0 },
+      } as Parameters<typeof decodeYdbValue>[0];
+      expect(decodeYdbValue(type, value)).toEqual(expected);
+    }
+  });
+
+  it("preserves JSON numbers that cannot round-trip through JavaScript Number", () => {
+    // Production break caught: JSON.parse silently rounds unsafe integers and
+    // long numeric lexemes before they cross the MCP JSON boundary.
+    const prepared = prepareSqlParameters({
+      json: {
+        type: { kind: "primitive", name: "Json" },
+        value: null,
+      },
+    });
+    const type = prepared.typedValues.$json.type!;
+    const baseValue = prepared.typedValues.$json.value!;
+    const value = {
+      ...baseValue,
+      value: {
+        case: "textValue" as const,
+        value: "{\"safe\":42,\"unsafe\":9007199254740993,\"decimal\":1.234567890123456789,\"overflow\":1e400,\"label\":\"9007199254740993\"}",
+      },
+    };
+
+    expect(decodeYdbValue(type, value)).toEqual({
+      safe: 42,
+      unsafe: "9007199254740993",
+      decimal: "1.234567890123456789",
+      overflow: "1e400",
+      label: "9007199254740993",
+    });
+  });
+
   it("rejects out-of-range primitives and non-canonical scalar encodings", () => {
     // Production break caught: protobuf constructors accept truncated/out-of-range
     // numerics and Node's base64/UUID parsing is deliberately permissive.
@@ -568,6 +644,7 @@ describe("SQL parameter descriptors", () => {
     );
     invalid({ kind: "primitive", name: "Int64" }, 1, /Int64.*string/);
     invalid({ kind: "primitive", name: "Float" }, Number.NaN, /JSON-only|Float.*finite/);
+    invalid({ kind: "primitive", name: "Float" }, Number.MAX_VALUE, /Float.*binary32/);
     invalid({ kind: "primitive", name: "Double" }, Infinity, /JSON-only|Double.*finite/);
     invalid({ kind: "primitive", name: "String" }, "AAEC/w=", /canonical base64/);
     invalid({ kind: "primitive", name: "Yson" }, "***", /canonical base64/);
@@ -577,6 +654,11 @@ describe("SQL parameter descriptors", () => {
       /canonical UUID/,
     );
     invalid({ kind: "primitive", name: "DyNumber" }, "1E127", /DyNumber/);
+    invalid(
+      { kind: "primitive", name: "DyNumber" },
+      `0.${"0".repeat(39)}1`,
+      /DyNumber/,
+    );
     invalid(
       { kind: "decimal", precision: 5, scale: 2 },
       "1000.00",
@@ -594,8 +676,8 @@ describe("SQL parameter descriptors", () => {
     invalid({ kind: "primitive", name: "Interval64" }, "P1Y", /without years or months/);
     invalid(
       { kind: "primitive", name: "TzDate" },
-      "2025-01-01,US/Eastern",
-      /timezone must be canonical/,
+      "2025-01-01,Mars/Olympus_Mons",
+      /unknown timezone/,
     );
   });
 
@@ -628,6 +710,19 @@ describe("SQL parameter descriptors", () => {
       },
     });
     expect(exactNodes.typedValues.$nodes.value?.items).toHaveLength(999);
+
+    const exactValueNodes = prepareSqlParameters({
+      firstValues: {
+        type: { kind: "list", item: primitive },
+        value: Array.from({ length: 4_999 }, () => 0),
+      },
+      secondValues: {
+        type: { kind: "list", item: primitive },
+        value: Array.from({ length: 4_999 }, () => 0),
+      },
+    });
+    expect(exactValueNodes.typedValues.$firstValues.value?.items).toHaveLength(4_999);
+    expect(exactValueNodes.typedValues.$secondValues.value?.items).toHaveLength(4_999);
 
     const emptyPayload = {
       payload: {
@@ -673,6 +768,17 @@ describe("SQL parameter descriptors", () => {
         value: Array.from({ length: 1_000 }, () => 0),
       },
     })).toThrow(/at most 1000 nodes/);
+
+    expect(() => prepareSqlParameters({
+      firstValues: {
+        type: { kind: "list", item: primitive },
+        value: Array.from({ length: 5_000 }, () => 0),
+      },
+      secondValues: {
+        type: { kind: "list", item: primitive },
+        value: Array.from({ length: 5_000 }, () => 0),
+      },
+    })).toThrow(/value.*at most 10000 nodes/);
 
     expect(() => prepareSqlParameters({
       payload: {

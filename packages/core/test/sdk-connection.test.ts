@@ -37,6 +37,37 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 describe("shared SDK connection lifecycle", () => {
+  it("rejects database paths whose URL form escapes the configured root", async () => {
+    // Production break caught: WHATWG URL normalization can turn an apparently
+    // rooted child path with raw or encoded dot segments into another database.
+    const { normalizeSdkDatabasePath } = await import(
+      "../src/operations/sdk-connection.js"
+    );
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    for (const databasePath of [
+      "/local/../other",
+      "/local/%2e%2e/other",
+      "/local/./example",
+      "/local/%2E/example",
+      "/local/child%2Fother",
+      "/local/child%5Cother",
+      "/local/child\\other",
+      "/local/child?query",
+      "/local/child#fragment",
+      "/local//child",
+    ]) {
+      expect(() => normalizeSdkDatabasePath(ctx, databasePath)).toThrow(
+        /databasePath/,
+      );
+    }
+
+    expect(normalizeSdkDatabasePath(ctx, "/local")).toBe("/local");
+    expect(normalizeSdkDatabasePath(ctx, "/local/example")).toBe(
+      "/local/example",
+    );
+  });
+
   it("does not create a tunnel probe socket after the absolute deadline expires", async () => {
     // Production break caught: creating the socket before checking remaining
     // time leaves it without error listeners when the deadline check throws.
