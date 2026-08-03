@@ -613,7 +613,7 @@ function requireString(value: JsonValue, label: string): string {
   return value;
 }
 
-function requireWellFormedUnicodeString(
+export function requireWellFormedUnicodeString(
   value: JsonValue,
   label: string,
 ): string {

@@ -59,6 +59,7 @@ describe("managed SQL operation", () => {
     const invalidOptions: Array<[Record<string, unknown>, RegExp]> = [
       [{ script: "", action: "query" }, /script must contain/],
       [{ script: " \n\t", action: "query" }, /script must contain/],
+      [{ script: "SELECT \"\ud800\";", action: "query" }, /well-formed Unicode/],
       [{ script: "x".repeat(1_048_577), action: "query" }, /1048576/],
       [{ script: "SELECT 1;", action: "select" }, /action/],
       [{ script: "SELECT 1;", timeoutMs: 0 }, /timeoutMs/],

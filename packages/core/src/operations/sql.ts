@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SqlParameter } from "../sql-parameter-types.js";
 import { prepareSqlParameters } from "../sql-parameters.js";
+import { requireWellFormedUnicodeString } from "../sql-scalar-codec.js";
 import {
   executeQueryService,
   queryServiceRequestWasDispatched,
@@ -261,6 +262,7 @@ function normalizeScript(script: string): string {
   if (script.length > MAX_SCRIPT_CHARACTERS) {
     throw new Error(`script must contain at most ${MAX_SCRIPT_CHARACTERS} characters`);
   }
+  requireWellFormedUnicodeString(script, "script");
   return script;
 }
 

@@ -158,9 +158,13 @@ function normalizeSqlBackendResultUnsafe(
     return undefined;
   }
 
-  let measuredPayloadBytes = 0;
-  const consumePayload = (payload: unknown, depth = MAX_JSON_DEPTH): boolean => {
-    const remainingReportedBytes = capturedBytes - measuredPayloadBytes;
+  let measuredRawPayloadBytes = 0;
+  let measuredRetainedPayloadBytes = 0;
+  const consumeRawPayload = (
+    payload: unknown,
+    depth = MAX_JSON_DEPTH,
+  ): boolean => {
+    const remainingReportedBytes = capturedBytes - measuredRawPayloadBytes;
     const measured = measureJsonValue(
       payload,
       remainingReportedBytes,
@@ -169,14 +173,31 @@ function normalizeSqlBackendResultUnsafe(
     if (measured === undefined) {
       return false;
     }
-    measuredPayloadBytes += measured;
+    measuredRawPayloadBytes += measured;
+    return true;
+  };
+  const consumeRetainedPayload = (
+    payload: unknown,
+    depth = MAX_JSON_DEPTH,
+  ): boolean => {
+    const remainingCaptureBytes = options.captureBudget
+      - measuredRetainedPayloadBytes;
+    const measured = measureJsonValue(
+      payload,
+      remainingCaptureBytes,
+      depth,
+    );
+    if (measured === undefined) {
+      return false;
+    }
+    measuredRetainedPayloadBytes += measured;
     return true;
   };
   const consumeColumnPayload = (
     payload: unknown,
     maxLength: number,
   ): QueryServiceResultSet["columns"] | undefined => {
-    const remainingReportedBytes = capturedBytes - measuredPayloadBytes;
+    const remainingReportedBytes = capturedBytes - measuredRawPayloadBytes;
     const snapshot = snapshotColumnArray(
       payload,
       remainingReportedBytes,
@@ -185,7 +206,7 @@ function normalizeSqlBackendResultUnsafe(
     if (!snapshot) {
       return undefined;
     }
-    measuredPayloadBytes += snapshot.bytes;
+    measuredRawPayloadBytes += snapshot.bytes;
     return snapshot.columns;
   };
 
@@ -199,7 +220,8 @@ function normalizeSqlBackendResultUnsafe(
       rawResultSet,
       options.maxRows,
       options.captureBudget,
-      consumePayload,
+      consumeRawPayload,
+      consumeRetainedPayload,
       consumeColumnPayload,
       options.diagnosticRedactions,
       resultSetState,
@@ -229,21 +251,26 @@ function normalizeSqlBackendResultUnsafe(
     for (const rawIssue of rawIssues) {
       if (
         !validateIssue(rawIssue)
-        || !consumePayload(rawIssue, MAX_ISSUE_DEPTH)
+        || !consumeRawPayload(rawIssue, MAX_ISSUE_DEPTH)
       ) {
         return undefined;
       }
-      normalizedIssues.push(redactIssue(
+      const normalizedIssue = redactIssue(
         structuredClone(rawIssue) as QueryServiceIssue,
         options.diagnosticRedactions,
-      ));
+      );
+      if (!consumeRetainedPayload(normalizedIssue, MAX_ISSUE_DEPTH)) {
+        return undefined;
+      }
+      normalizedIssues.push(normalizedIssue);
     }
   }
 
   const queryPlan = normalizeCapturedString(
     record,
     "queryPlan",
-    consumePayload,
+    consumeRawPayload,
+    consumeRetainedPayload,
     options.diagnosticRedactions,
   );
   if (queryPlan === null) {
@@ -252,13 +279,14 @@ function normalizeSqlBackendResultUnsafe(
   const queryAst = normalizeCapturedString(
     record,
     "queryAst",
-    consumePayload,
+    consumeRawPayload,
+    consumeRetainedPayload,
     options.diagnosticRedactions,
   );
   if (queryAst === null) {
     return undefined;
   }
-  if (measuredPayloadBytes > capturedBytes) {
+  if (measuredRawPayloadBytes > capturedBytes) {
     return undefined;
   }
 
@@ -289,7 +317,7 @@ function normalizeSqlBackendResultUnsafe(
   return {
     completion: completion as QueryServiceExecutionResult["completion"],
     resultSets: normalizedResultSets,
-    capturedBytes,
+    capturedBytes: Math.max(capturedBytes, measuredRetainedPayloadBytes),
     truncationReasons: topReasons,
     ...(normalizedIssues ? { issues: normalizedIssues } : {}),
     ...(queryPlan !== undefined ? { queryPlan } : {}),
@@ -319,7 +347,8 @@ function normalizeResultSet(
   value: unknown,
   maxRows: number,
   captureBudget: number,
-  consumePayload: (payload: unknown, depth?: number) => boolean,
+  consumeRawPayload: (payload: unknown, depth?: number) => boolean,
+  consumeRetainedPayload: (payload: unknown, depth?: number) => boolean,
   consumeColumnPayload: (
     payload: unknown,
     maxLength: number,
@@ -345,9 +374,16 @@ function normalizeResultSet(
   }
   const reasons = normalizeTruncationReasons(record.get("truncationReasons"));
   const nodeLimit = jsonNodeLimit(captureBudget);
-  const columns = consumeColumnPayload(record.get("columns"), nodeLimit);
+  const rawColumns = consumeColumnPayload(record.get("columns"), nodeLimit);
   const rawRows = inspectDenseArray(record.get("rows"), maxRows);
-  if (!reasons || !columns || !rawRows) {
+  if (!reasons || !rawColumns || !rawRows) {
+    return undefined;
+  }
+  const columns = rawColumns.map((column) => ({
+    name: redactText(column.name, redactions),
+    type: redactText(column.type, redactions),
+  }));
+  if (columns.length > 0 && !consumeRetainedPayload(columns)) {
     return undefined;
   }
 
@@ -357,11 +393,14 @@ function normalizeResultSet(
     if (!row || row.length !== columns.length) {
       return undefined;
     }
+    if (!consumeRawPayload(rawRow)) {
+      return undefined;
+    }
     const redactedRow = redactJsonValue(
       structuredClone(rawRow) as JsonValue[],
       redactions,
     ) as JsonValue[];
-    if (!consumePayload(redactedRow)) {
+    if (!consumeRetainedPayload(redactedRow)) {
       return undefined;
     }
     rows.push(redactedRow);
@@ -389,7 +428,8 @@ function normalizeResultSet(
     } else if (
       reasons.length !== 1
       || reasons[0] !== "server"
-      || !consumePayload(value)
+      || !consumeRawPayload(value)
+      || !consumeRetainedPayload(normalized)
     ) {
       return undefined;
     }
@@ -404,7 +444,8 @@ interface ResultSetNormalizationState {
 function normalizeCapturedString(
   record: Map<string, unknown>,
   field: "queryPlan" | "queryAst",
-  consumePayload: (payload: unknown, depth?: number) => boolean,
+  consumeRawPayload: (payload: unknown, depth?: number) => boolean,
+  consumeRetainedPayload: (payload: unknown, depth?: number) => boolean,
   redactions: string[],
 ): string | null | undefined {
   if (!record.has(field)) {
@@ -414,8 +455,11 @@ function normalizeCapturedString(
   if (typeof value !== "string") {
     return null;
   }
+  if (!consumeRawPayload(value)) {
+    return null;
+  }
   const redacted = redactText(value, redactions);
-  if (!consumePayload(redacted)) {
+  if (!consumeRetainedPayload(redacted)) {
     return null;
   }
   return redacted;
@@ -552,10 +596,26 @@ function redactJsonValue(value: JsonValue, redactions: string[]): JsonValue {
     return value.map((item) => redactJsonValue(item, redactions));
   }
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-      redactText(key, redactions),
-      redactJsonValue(item, redactions),
-    ]));
+    const usedKeys = new Set<string>();
+    const nextSuffixByKey = new Map<string, number>();
+    const entries = Object.entries(value).map(([key, item]) => {
+      const redactedKey = redactText(key, redactions);
+      let retainedKey = redactedKey;
+      if (usedKeys.has(retainedKey)) {
+        let suffix = nextSuffixByKey.get(redactedKey) ?? 2;
+        do {
+          retainedKey = `${redactedKey}#${suffix}`;
+          suffix += 1;
+        } while (usedKeys.has(retainedKey));
+        nextSuffixByKey.set(redactedKey, suffix);
+      }
+      usedKeys.add(retainedKey);
+      return [
+        retainedKey,
+        redactJsonValue(item, redactions),
+      ] as const;
+    });
+    return Object.fromEntries(entries);
   }
   return value;
 }

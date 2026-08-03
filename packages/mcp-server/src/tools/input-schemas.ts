@@ -251,7 +251,7 @@ export function sqlSchema(): Tool["inputSchema"] {
         minLength: 1,
         maxLength: 1_048_576,
         description:
-          "YQL v1 script. Parameter DECLARE statements are generated from parameters and prepended before execution.",
+          "Well-formed-Unicode YQL v1 script; lone UTF-16 surrogates are rejected. Parameter DECLARE statements are generated from parameters and prepended before execution.",
       },
       databasePath: {
         type: "string",

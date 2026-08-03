@@ -33,9 +33,31 @@ function emptyResultSet(
 }
 
 describe("managed SQL backend result normalization", () => {
-  it("rejects result-row redaction that exceeds the reported capture budget", () => {
+  it("remeasures redacted rows against the public capture budget", () => {
     // Production break caught: a short configured redaction can expand one
-    // retained row beyond maxOutputBytes after the backend charged its raw form.
+    // retained row beyond the backend-reported raw byte count while still
+    // fitting the public maxOutputBytes budget.
+    const normalized = normalize({
+      completion: "success",
+      resultSets: [{
+        index: 0,
+        columns: [{ name: "value", type: "Utf8" }],
+        rows: [["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]],
+        truncationReasons: [],
+      }],
+      capturedBytes: 200,
+      truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
+    }, 1_000, ["x"]);
+
+    expect(normalized?.capturedBytes).toBeGreaterThan(200);
+    expect(normalized?.capturedBytes).toBeLessThanOrEqual(1_000);
+    expect(normalized?.resultSets[0]?.rows).toEqual([[
+      "<redacted>".repeat(50),
+    ]]);
+  });
+
+  it("rejects redacted rows that exceed the public capture budget", () => {
     expect(normalize({
       completion: "success",
       resultSets: [{
@@ -48,6 +70,60 @@ describe("managed SQL backend result normalization", () => {
       truncationReasons: [],
       status: StatusIds_StatusCode.SUCCESS,
     }, 200, ["x"])).toBeUndefined();
+  });
+
+  it("redacts column metadata before retaining it", () => {
+    const normalized = normalize({
+      completion: "success",
+      resultSets: [{
+        index: 0,
+        columns: [{
+          name: "/private/root.password",
+          type: "Tagged<Utf8, \"/private/id_ed25519\">",
+        }],
+        rows: [["safe"]],
+        truncationReasons: [],
+      }],
+      capturedBytes: 200,
+      truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
+    }, 1_000, [
+      "/private/root.password",
+      "/private/id_ed25519",
+    ]);
+
+    expect(normalized?.resultSets[0]?.columns).toEqual([{
+      name: "<redacted>",
+      type: "Tagged<Utf8, \"<redacted>\">",
+    }]);
+    expect(JSON.stringify(normalized)).not.toContain("/private/");
+  });
+
+  it("preserves every value when redacted object keys collide", () => {
+    const normalized = normalize({
+      completion: "success",
+      resultSets: [{
+        index: 0,
+        columns: [{ name: "value", type: "Json" }],
+        rows: [[{
+          "token=one": "first",
+          "token=two": "second",
+          "token=<redacted>": "third",
+        }]],
+        truncationReasons: [],
+      }],
+      capturedBytes: 200,
+      truncationReasons: [],
+      status: StatusIds_StatusCode.SUCCESS,
+    }, 1_000);
+
+    expect(normalized?.resultSets[0]?.rows).toEqual([[
+      {
+        "token=<redacted>": "first",
+        "token=<redacted>#2": "second",
+        "token=<redacted>#3": "third",
+      },
+    ]]);
   });
 
   it("rejects an empty result set without a Task 3 truncation envelope", () => {
