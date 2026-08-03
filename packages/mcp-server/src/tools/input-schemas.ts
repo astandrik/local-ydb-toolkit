@@ -293,7 +293,7 @@ export function sqlSchema(): Tool["inputSchema"] {
           $ref: "#/$defs/sqlParameter",
         },
         description:
-          "Typed YQL parameters keyed by bare name. The request is limited to 100 parameters, 1,000 descriptor nodes, 10,000 value nodes, and 1 MiB of serialized parameter data. Values use the documented JSON representation and are never echoed in response metadata. Json/JsonDocument numbers must be finite, integer values must be JavaScript safe integers, and negative zero is rejected because JSON encoding cannot preserve its sign.",
+          "Typed YQL parameters keyed by bare name. The request is limited to 100 parameters, 1,000 descriptor nodes, 10,000 value nodes, and 1 MiB of serialized parameter data. Struct field names must be well-formed Unicode. Values use the documented JSON representation and are never echoed in response metadata. Json/JsonDocument numbers must be finite, integer values must be JavaScript safe integers, and negative zero is rejected because JSON encoding cannot preserve its sign.",
       },
       confirm: {
         type: "boolean",
@@ -385,7 +385,12 @@ export function sqlSchema(): Tool["inputSchema"] {
                   type: "object",
                   required: ["name", "type"],
                   properties: {
-                    name: { type: "string", minLength: 1 },
+                    name: {
+                      type: "string",
+                      minLength: 1,
+                      description:
+                        "Well-formed-Unicode Struct field name; lone UTF-16 surrogates are rejected.",
+                    },
                     type: typeRef,
                   },
                   additionalProperties: false,

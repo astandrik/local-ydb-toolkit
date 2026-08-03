@@ -276,6 +276,44 @@ describe("low-level Query Service adapter", () => {
     expect(bounded.truncationReasons).toEqual(["byteLimit"]);
   });
 
+  it("redacts the root password from result-set metadata and rows before retention", async () => {
+    // Production break caught: the SDK adapter knows the authentication secret,
+    // but result-set capture previously retained decoded values and names verbatim.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const rootPassword = "do-not-leak-result";
+    const typedValue = prepareSqlParameters({
+      secret: {
+        type: { kind: "primitive", name: "Utf8" },
+        value: rootPassword,
+      },
+    }).typedValues.$secret;
+
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      rootPassword,
+      script: "SELECT secret;",
+      parameters: {},
+      mode: "snapshotReadOnly",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+    }, {
+      createDriver: () => driverForParts([
+        queryPart(0, [{ name: rootPassword, typedValue }]),
+      ]) as never,
+    });
+
+    expect(result.resultSets).toEqual([{
+      index: 0,
+      columns: [{ name: "<redacted>", type: "Utf8" }],
+      rows: [["<redacted>"]],
+      truncationReasons: [],
+    }]);
+    expect(JSON.stringify(result)).not.toContain(rootPassword);
+  });
+
   it("accounts repeated plan and AST parts while retaining only the latest values", async () => {
     // Compatibility evidence: Task 3 charges every received metadata value but
     // overwrites the public plan/AST fields, so captured bytes can legitimately

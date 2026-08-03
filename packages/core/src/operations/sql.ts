@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactText } from "../auth.js";
 import type { SqlParameter } from "../sql-parameter-types.js";
 import { prepareSqlParameters } from "../sql-parameters.js";
 import { requireWellFormedUnicodeString } from "../sql-scalar-codec.js";
@@ -142,11 +143,17 @@ export async function sql(
       };
     }
   };
+  const responseParameterTypes = Object.fromEntries(
+    Object.entries(preparedParameters.parameterTypes).map(([name, type]) => [
+      name,
+      redactText(type, credentialPaths(ctx)),
+    ]),
+  );
   const common = {
     action,
     databasePath,
     scriptSha256,
-    parameterTypes: preparedParameters.parameterTypes,
+    parameterTypes: responseParameterTypes,
     limits,
     plannedCommands: logicalPlannedCommands(action, databasePath, scriptSha256),
     rollback: action === "execute"

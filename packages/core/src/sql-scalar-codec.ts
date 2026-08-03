@@ -694,7 +694,7 @@ function requireDyNumber(value: JsonValue): string {
         if (isZero) {
           trailingZeros += 1;
         } else {
-          nonZeroAfterDot += trailingZeros;
+          nonZeroAfterDot += trailingZeros + 1;
           trailingZeros = 0;
         }
       } else {
@@ -713,7 +713,7 @@ function requireDyNumber(value: JsonValue): string {
     return text;
   }
   if (
-    beforeDot + zeroAfterDot + nonZeroAfterDot > 38
+    beforeDot + nonZeroAfterDot > 38
     || effectivePower < -129
     || effectivePower > 126
   ) {

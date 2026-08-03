@@ -1,3 +1,5 @@
+import type { JsonValue } from "./sql-parameter-types.js";
+
 const SENSITIVE_FLAGS = [
   "--password",
   "--password-file",
@@ -53,6 +55,38 @@ export function redactText(input: string, extraRedactions: string[] = []): strin
   output = output.replace(/(password|token|secret|private[_-]?key)=([^ \n\t]+)/gi, "$1=<redacted>");
   output = output.replace(/(PASSWORD|TOKEN|SECRET)=([^ \n\t]+)/g, "$1=<redacted>");
   return output;
+}
+
+export function redactJsonValue(value: JsonValue, redactions: string[]): JsonValue {
+  if (typeof value === "string") {
+    return redactText(value, redactions);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactJsonValue(item, redactions));
+  }
+  if (value !== null && typeof value === "object") {
+    const usedKeys = new Set<string>();
+    const nextSuffixByKey = new Map<string, number>();
+    const entries = Object.entries(value).map(([key, item]) => {
+      const redactedKey = redactText(key, redactions);
+      let retainedKey = redactedKey;
+      if (usedKeys.has(retainedKey)) {
+        let suffix = nextSuffixByKey.get(redactedKey) ?? 2;
+        do {
+          retainedKey = `${redactedKey}#${suffix}`;
+          suffix += 1;
+        } while (usedKeys.has(retainedKey));
+        nextSuffixByKey.set(redactedKey, suffix);
+      }
+      usedKeys.add(retainedKey);
+      return [
+        retainedKey,
+        redactJsonValue(item, redactions),
+      ] as const;
+    });
+    return Object.fromEntries(entries);
+  }
+  return value;
 }
 
 export function redactCommand(command: string, extraRedactions: string[] = []): string {

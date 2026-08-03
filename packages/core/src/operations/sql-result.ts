@@ -1,6 +1,6 @@
 import { types as utilTypes } from "node:util";
 import { StatusIds_StatusCode } from "@ydbjs/api/operation";
-import { redactText } from "../auth.js";
+import { redactJsonValue, redactText } from "../auth.js";
 import type { JsonValue } from "../sql-parameter-types.js";
 import type {
   QueryServiceExecutionResult,
@@ -586,38 +586,6 @@ function redactIssuePosition(
     ...position,
     file: redactText(position.file, redactions),
   };
-}
-
-function redactJsonValue(value: JsonValue, redactions: string[]): JsonValue {
-  if (typeof value === "string") {
-    return redactText(value, redactions);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => redactJsonValue(item, redactions));
-  }
-  if (value !== null && typeof value === "object") {
-    const usedKeys = new Set<string>();
-    const nextSuffixByKey = new Map<string, number>();
-    const entries = Object.entries(value).map(([key, item]) => {
-      const redactedKey = redactText(key, redactions);
-      let retainedKey = redactedKey;
-      if (usedKeys.has(retainedKey)) {
-        let suffix = nextSuffixByKey.get(redactedKey) ?? 2;
-        do {
-          retainedKey = `${redactedKey}#${suffix}`;
-          suffix += 1;
-        } while (usedKeys.has(retainedKey));
-        nextSuffixByKey.set(redactedKey, suffix);
-      }
-      usedKeys.add(retainedKey);
-      return [
-        retainedKey,
-        redactJsonValue(item, redactions),
-      ] as const;
-    });
-    return Object.fromEntries(entries);
-  }
-  return value;
 }
 
 function isSafeInteger(value: unknown): value is number {

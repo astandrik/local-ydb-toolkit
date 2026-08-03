@@ -10,6 +10,7 @@ import {
   decodeYdbValue as decodeValue,
   encodeSqlParameterValue,
 } from "./sql-value-codec.js";
+import { requireWellFormedUnicodeString } from "./sql-scalar-codec.js";
 
 export const MAX_SQL_PARAMETERS = 100;
 export const MAX_SQL_PARAMETER_DEPTH = 16;
@@ -77,6 +78,7 @@ export function renderYqlType(type: SqlParameterType): string {
         if (typeof field.name !== "string" || field.name.length === 0) {
           throw new Error("struct field names must be non-empty strings");
         }
+        requireWellFormedUnicodeString(field.name, "Struct field name");
         if (seen.has(field.name)) {
           throw new Error(`duplicate struct field: ${field.name}`);
         }

@@ -25,7 +25,7 @@ import {
 import type { ToolkitContext } from "./operations/types.js";
 import type { JsonValue } from "./sql-parameter-types.js";
 import { decodeYdbValue } from "./sql-parameters.js";
-import { redactText } from "./auth.js";
+import { redactJsonValue, redactText } from "./auth.js";
 
 const CLEANUP_TIMEOUT_MS = 5_000;
 const MAX_CAPTURED_ISSUE_DEPTH = 32;
@@ -337,6 +337,7 @@ export async function executeQueryServiceWithSdk(
             part.resultSet,
             request.maxRows,
             request.maxOutputBytes - capturedBytes,
+            payloadRedactions,
           );
           capturedBytes += captured.bytes;
           if (captured.limitReached !== undefined) {
@@ -506,6 +507,7 @@ function captureResultSetPart(
   part: ResultSet,
   maxRows: number,
   remainingBytes: number,
+  redactions: string[],
 ): {
   bytes: number;
   limitReached?: Extract<QueryServiceTruncationReason, "rowLimit" | "byteLimit">;
@@ -557,7 +559,7 @@ function captureResultSetPart(
     captures.set(index, capture);
   }
   if (part.columns.length > 0) {
-    const columns = part.columns.map((column) => {
+    const columnMetadata = part.columns.map((column) => {
       if (!column.type) {
         throw new Error("Query Service returned a column without a type");
       }
@@ -566,9 +568,13 @@ function captureResultSetPart(
         type: renderYdbType(column.type),
       };
     });
+    const columns = columnMetadata.map((column) => ({
+      name: redactText(column.name, redactions),
+      type: redactText(column.type, redactions),
+    }));
     if (capture.types.length === 0) {
       capture.types = part.columns.map((column) => column.type!);
-      capture.columnMetadata = columns;
+      capture.columnMetadata = columnMetadata;
       const columnBytes = jsonBytes(columns);
       if (columnBytes <= remainingBytes) {
         capture.output.columns = columns;
@@ -579,7 +585,7 @@ function captureResultSetPart(
         limitReached = "byteLimit";
       }
     } else if (
-      JSON.stringify(capture.columnMetadata) !== JSON.stringify(columns)
+      JSON.stringify(capture.columnMetadata) !== JSON.stringify(columnMetadata)
     ) {
       throw new Error("Query Service changed result-set columns between parts");
     }
@@ -601,13 +607,16 @@ function captureResultSetPart(
     }
     const decoded = row.items.map((value, columnIndex) =>
       decodeYdbValue(capture.types[columnIndex], value));
-    const rowBytes = jsonBytes(decoded);
+    const retained = redactions.length === 0
+      ? decoded
+      : redactJsonValue(decoded, redactions) as JsonValue[];
+    const rowBytes = jsonBytes(retained);
     if (rowBytes > remainingBytes) {
       addTruncationReason(capture.output, "byteLimit");
       limitReached = "byteLimit";
       break;
     }
-    capture.output.rows.push(decoded);
+    capture.output.rows.push(retained);
     capturedBytes += rowBytes;
     remainingBytes -= rowBytes;
   }

@@ -1270,6 +1270,42 @@ describe("managed SQL operation", () => {
     expect(serialized).not.toContain("serializedBytes");
   });
 
+  it("redacts configured credential paths from returned parameter type metadata", async () => {
+    // Production break caught: Struct field names are rendered into public
+    // parameterTypes metadata and can expose configured credential paths.
+    const sql = await loadSql();
+    const rootPasswordFile = "/private/root.password";
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({
+      profiles: {
+        default: {
+          rootPasswordFile,
+        },
+      },
+    }));
+    const response = await sql(ctx, {
+      script: "SELECT $record;",
+      parameters: {
+        record: {
+          type: {
+            kind: "struct",
+            fields: [{
+              name: rootPasswordFile,
+              type: { kind: "primitive", name: "Utf8" },
+            }],
+          },
+          value: {
+            [rootPasswordFile]: "safe-value",
+          },
+        },
+      },
+    }, async () => successfulResult());
+
+    expect(response.parameterTypes).toEqual({
+      record: "Struct<`<redacted>`:Utf8>",
+    });
+    expect(JSON.stringify(response)).not.toContain(rootPasswordFile);
+  });
+
   it("redacts configured credential paths from returned textual payloads", async () => {
     // Production break caught: backend diagnostics, plans, ASTs, and nested
     // issues can reveal configured auth, password, token, or SSH identity paths.

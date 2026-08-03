@@ -107,6 +107,37 @@ describe("SQL parameter descriptors", () => {
     expect((decoded as Record<string, unknown>).__proto__).toBe("kept");
   });
 
+  it("rejects ill-formed Unicode in struct field names before encoding", () => {
+    // Production break caught: protobuf replaces lone UTF-16 surrogates in the
+    // DECLARE text with U+FFFD while response metadata retains the original name.
+    for (const name of ["\ud800", "\udc00", `left\ud800right`]) {
+      expect(() => prepareSqlParameters({
+        record: {
+          type: {
+            kind: "struct",
+            fields: [
+              { name, type: { kind: "primitive", name: "Utf8" } },
+            ],
+          },
+          value: { [name]: "value" },
+        },
+      })).toThrow(/well-formed Unicode/);
+    }
+
+    const validName = "valid \ud83d\ude80 pair";
+    expect(() => prepareSqlParameters({
+      record: {
+        type: {
+          kind: "struct",
+          fields: [
+            { name: validName, type: { kind: "primitive", name: "Utf8" } },
+          ],
+        },
+        value: { [validName]: "value" },
+      },
+    })).not.toThrow();
+  });
+
   it("encodes primitive values with explicit YDB wire types", () => {
     // Production break caught: inferred JS types silently turn Uint64 into Int64,
     // lose 64-bit precision, or return byte arrays and bigint values that JSON cannot serialize.
@@ -827,9 +858,26 @@ describe("SQL parameter descriptors", () => {
       /canonical UUID/,
     );
     invalid({ kind: "primitive", name: "DyNumber" }, "1E127", /DyNumber/);
+    expect(() => prepareSqlParameters({
+      parameter: {
+        type: { kind: "primitive", name: "DyNumber" },
+        value: `0.${"1".repeat(38)}`,
+      },
+    })).not.toThrow();
     invalid(
       { kind: "primitive", name: "DyNumber" },
-      `0.${"0".repeat(39)}1`,
+      `0.${"1".repeat(39)}`,
+      /DyNumber/,
+    );
+    expect(() => prepareSqlParameters({
+      parameter: {
+        type: { kind: "primitive", name: "DyNumber" },
+        value: `0.${"0".repeat(129)}1`,
+      },
+    })).not.toThrow();
+    invalid(
+      { kind: "primitive", name: "DyNumber" },
+      `0.${"0".repeat(130)}1`,
       /DyNumber/,
     );
     invalid(
