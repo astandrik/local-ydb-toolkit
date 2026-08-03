@@ -198,7 +198,12 @@ describe("mcp tools", () => {
       $defs?: Record<string, {
         oneOf?: Array<{
           required?: string[];
-          properties?: Record<string, { const?: string; enum?: string[]; $ref?: string }>;
+          properties?: Record<string, {
+            const?: string;
+            enum?: string[];
+            $ref?: string;
+            description?: string;
+          }>;
           additionalProperties?: boolean;
         }>;
       }>;
@@ -228,6 +233,9 @@ describe("mcp tools", () => {
     expect(schema?.properties?.maxRows).toMatchObject({
       type: "integer", minimum: 1, maximum: 10_000, default: 100,
     });
+    expect(schema?.properties?.maxRows?.description).toContain(
+      "The first limit hit stops all further result capture",
+    );
     expect(schema?.properties?.maxOutputBytes).toMatchObject({
       type: "integer", minimum: 1, maximum: 1_048_576, default: 65_536,
     });

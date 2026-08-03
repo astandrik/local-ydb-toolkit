@@ -273,7 +273,7 @@ export function sqlSchema(): Tool["inputSchema"] {
         maximum: 10_000,
         default: 100,
         description:
-          "Maximum retained rows per result set.",
+          "Maximum retained rows per result set. The first limit hit stops all further result capture: read-only execution is cancelled, while confirmed NoTx execution drains without capturing later output.",
       },
       maxOutputBytes: {
         type: "integer",

@@ -103,7 +103,7 @@ Expected:
 - `execute` always performs mandatory EXPLAIN first. Without `confirm=true` it returns `outcome=planned`; with confirmation it sends one NoTx execution and performs no retries.
 - Invalid confirmed YQL is blocked by failed preflight with `executed=false` and `confirmationConsumed=false`.
 - Parameter names are bare names, declarations are generated deterministically, and response metadata contains canonical parameter types but does not echo supplied parameter values. Selected result rows can still contain those values.
-- `maxRows` truncates each result set only between complete rows; `maxOutputBytes` is shared across captured issues, plan/AST, metadata, and rows.
+- `maxRows` truncates a result set only between complete rows; the first row-limit hit stops all further result capture (read-only execution cancels, confirmed `NoTx` drains). `maxOutputBytes` is shared across captured issues, plan/AST, metadata, and rows.
 - The byte-limit call's placeholder is documentation only; replace it with an actual value of at least 4096 characters, or an equivalent fixture that reliably exceeds the 256-byte capture budget.
 - Result rows are arrays aligned with `columns`; inspect `outcome`, truncation flags, and `outputBytes` rather than treating partial output as success.
 - Cleanup drops `managed_sql_smoke` even when an earlier check fails.
