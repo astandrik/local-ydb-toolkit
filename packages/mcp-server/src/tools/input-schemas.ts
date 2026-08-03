@@ -293,7 +293,7 @@ export function sqlSchema(): Tool["inputSchema"] {
           $ref: "#/$defs/sqlParameter",
         },
         description:
-          "Typed YQL parameters keyed by bare name. The request is limited to 100 parameters, 1,000 descriptor nodes, 10,000 value nodes, and 1 MiB of serialized parameter data. Values use the documented JSON representation and are never echoed in response metadata.",
+          "Typed YQL parameters keyed by bare name. The request is limited to 100 parameters, 1,000 descriptor nodes, 10,000 value nodes, and 1 MiB of serialized parameter data. Values use the documented JSON representation and are never echoed in response metadata. Json/JsonDocument integer values must be JavaScript safe integers; larger parsed integers are rejected to prevent silent rounding.",
       },
       confirm: {
         type: "boolean",

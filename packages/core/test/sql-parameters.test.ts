@@ -617,6 +617,34 @@ describe("SQL parameter descriptors", () => {
     });
   });
 
+  it("rejects unsafe integers recursively in JSON parameters", () => {
+    const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
+    expect(() => prepareSqlParameters({
+      json: {
+        type: { kind: "primitive", name: "Json" },
+        value: { nested: [{ value: unsafeInteger }] },
+      },
+    })).toThrow(/Json values must contain only safe integers/);
+
+    expect(() => prepareSqlParameters({
+      jsonDocument: {
+        type: { kind: "primitive", name: "JsonDocument" },
+        value: [Number.MIN_SAFE_INTEGER - 1],
+      },
+    })).toThrow(/JsonDocument values must contain only safe integers/);
+
+    expect(() => prepareSqlParameters({
+      json: {
+        type: { kind: "primitive", name: "Json" },
+        value: { minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER },
+      },
+      double: {
+        type: { kind: "primitive", name: "Double" },
+        value: unsafeInteger,
+      },
+    })).not.toThrow();
+  });
+
   it("rejects out-of-range primitives and non-canonical scalar encodings", () => {
     // Production break caught: protobuf constructors accept truncated/out-of-range
     // numerics and Node's base64/UUID parsing is deliberately permissive.

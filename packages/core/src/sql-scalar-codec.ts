@@ -149,6 +149,7 @@ export function encodePrimitive(name: SqlPrimitiveName, value: JsonValue): Typed
       break;
     case "Json":
     case "JsonDocument":
+      requireSafeJsonNumbers(value, name);
       encoded = primitive(type, "textValue", JSON.stringify(value));
       break;
     case "DyNumber":
@@ -467,6 +468,30 @@ function requireFiniteNumber(value: JsonValue, label: string): number {
     throw new Error(`${label} value must be a finite number`);
   }
   return value;
+}
+
+function requireSafeJsonNumbers(value: JsonValue, label: "Json" | "JsonDocument"): void {
+  const pending: JsonValue[] = [value];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) {
+        throw new Error(`${label} values must contain only finite numbers`);
+      }
+      if (Number.isInteger(current) && !Number.isSafeInteger(current)) {
+        throw new Error(`${label} values must contain only safe integers`);
+      }
+    } else if (Array.isArray(current)) {
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        pending.push(current[index]!);
+      }
+    } else if (current !== null && typeof current === "object") {
+      const values = Object.values(current);
+      for (let index = values.length - 1; index >= 0; index -= 1) {
+        pending.push(values[index]!);
+      }
+    }
+  }
 }
 
 function parseLosslessJson(text: string): JsonValue {
