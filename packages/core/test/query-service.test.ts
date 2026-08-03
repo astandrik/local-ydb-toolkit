@@ -314,6 +314,56 @@ describe("low-level Query Service adapter", () => {
     expect(JSON.stringify(result)).not.toContain(rootPassword);
   });
 
+  it("redacts the root password from issue position files before retention", async () => {
+    // Production break caught: issue messages used the authentication-secret
+    // redactions while position.file and endPosition.file bypassed them.
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const rootPassword = "do-not-leak-position";
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      rootPassword,
+      script: "EXPLAIN SELECT 1;",
+      parameters: {},
+      mode: "explain",
+      maxRows: 10,
+      maxOutputBytes: 1_024,
+    }, {
+      createDriver: () => driverForParts([{
+        status: SUCCESS,
+        issues: [{
+          message: "optimizer warning",
+          issueCode: 42,
+          severity: 2,
+          position: { row: 1, column: 2, file: rootPassword },
+          endPosition: {
+            row: 1,
+            column: 20,
+            file: `prefix-${rootPassword}-suffix`,
+          },
+          issues: [],
+        }],
+        resultSetIndex: 0n,
+      }]) as never,
+    });
+
+    expect(result.issues).toEqual([{
+      message: "optimizer warning",
+      issueCode: 42,
+      severity: 2,
+      position: { row: 1, column: 2, file: "<redacted>" },
+      endPosition: {
+        row: 1,
+        column: 20,
+        file: "prefix-<redacted>-suffix",
+      },
+      issues: [],
+    }]);
+    expect(JSON.stringify(result)).not.toContain(rootPassword);
+  });
+
   it("accounts repeated plan and AST parts while retaining only the latest values", async () => {
     // Compatibility evidence: Task 3 charges every received metadata value but
     // overwrites the public plan/AST fields, so captured bytes can legitimately

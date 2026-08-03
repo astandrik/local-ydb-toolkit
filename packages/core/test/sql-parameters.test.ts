@@ -277,6 +277,24 @@ describe("SQL parameter descriptors", () => {
     });
   });
 
+  it("encodes YDB Decimal special values accepted by the result decoder", () => {
+    // Production break caught: Decimal results decode reserved values to these
+    // strings, but parameter encoding previously rejected them as non-finite.
+    for (const expected of ["nan", "inf", "-inf"]) {
+      const prepared = prepareSqlParameters({
+        special: {
+          type: { kind: "decimal", precision: 10, scale: 2 },
+          value: expected,
+        },
+      });
+
+      expect(decodeYdbValue(
+        prepared.typedValues.$special.type!,
+        prepared.typedValues.$special.value!,
+      )).toBe(expected);
+    }
+  });
+
   it("encodes YDB ISO date, time, timezone, and interval inputs with extended wire ranges", () => {
     // Production break caught: JS Date truncates microseconds and cannot represent
     // the full Date32/Datetime64/Timestamp64 domain; intervals need exact integer micros.

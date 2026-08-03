@@ -310,7 +310,7 @@ export function sqlSchema(): Tool["inputSchema"] {
             type: typeRef,
             value: {
               description:
-                "JSON value matching the declared YDB type; 64-bit integers, Decimal, and DyNumber use strings, while String/Yson use canonical base64.",
+                "JSON value matching the declared YDB type; 64-bit integers, Decimal, and DyNumber use strings, Decimal also accepts canonical nan/inf/-inf, while String/Yson use canonical base64.",
             },
           },
           additionalProperties: false,

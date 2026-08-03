@@ -752,10 +752,12 @@ function captureBoundedIssueNode(
   }
   const position = captureBoundedIssuePosition(
     issue.position,
+    redactions,
     remainingBytes,
   );
   const endPosition = captureBoundedIssuePosition(
     issue.endPosition,
+    redactions,
     remainingBytes,
   );
   if (
@@ -786,6 +788,7 @@ function captureBoundedIssueNode(
 
 function captureBoundedIssuePosition(
   value: unknown,
+  redactions: string[],
   remainingBytes: number,
 ): QueryServiceIssuePosition | null | undefined {
   if (value === undefined) {
@@ -802,11 +805,13 @@ function captureBoundedIssuePosition(
     typeof row !== "number"
     || typeof column !== "number"
     || typeof file !== "string"
-    || file.length > remainingBytes
   ) {
     return null;
   }
-  return { row, column, file };
+  const redactedFile = redactText(file, redactions);
+  return redactedFile.length <= remainingBytes
+    ? { row, column, file: redactedFile }
+    : null;
 }
 
 function addTruncationReason(

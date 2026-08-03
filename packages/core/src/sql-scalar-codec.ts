@@ -236,20 +236,29 @@ export function encodeDecimal(
   if (typeof value !== "string") {
     throw new Error("Decimal value must be a string");
   }
-  const match = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/.exec(value);
-  if (!match) {
-    throw new Error("Decimal value must use canonical base-10 notation");
+  let scaled: bigint;
+  if (value === "inf") {
+    scaled = YDB_DECIMAL_INFINITY;
+  } else if (value === "-inf") {
+    scaled = -YDB_DECIMAL_INFINITY;
+  } else if (value === "nan") {
+    scaled = YDB_DECIMAL_NAN;
+  } else {
+    const match = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/.exec(value);
+    if (!match) {
+      throw new Error("Decimal value must use canonical base-10 notation");
+    }
+    const fraction = match[3] ?? "";
+    if (fraction.length > scale) {
+      throw new Error(`Decimal value has more than ${scale} fractional digits`);
+    }
+    const magnitude = BigInt(match[2]) * 10n ** BigInt(scale)
+      + BigInt(fraction.padEnd(scale, "0") || "0");
+    if (magnitude > 10n ** BigInt(precision) - 1n) {
+      throw new Error(`Decimal value exceeds precision ${precision}`);
+    }
+    scaled = match[1] === "-" ? -magnitude : magnitude;
   }
-  const fraction = match[3] ?? "";
-  if (fraction.length > scale) {
-    throw new Error(`Decimal value has more than ${scale} fractional digits`);
-  }
-  const magnitude = BigInt(match[2]) * 10n ** BigInt(scale)
-    + BigInt(fraction.padEnd(scale, "0") || "0");
-  if (magnitude > 10n ** BigInt(precision) - 1n) {
-    throw new Error(`Decimal value exceeds precision ${precision}`);
-  }
-  const scaled = match[1] === "-" ? -magnitude : magnitude;
   const unsigned = scaled < 0 ? (1n << 128n) + scaled : scaled;
   const low128 = unsigned & ((1n << 64n) - 1n);
   const high128 = unsigned >> 64n;
