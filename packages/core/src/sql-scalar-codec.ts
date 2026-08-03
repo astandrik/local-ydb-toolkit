@@ -665,8 +665,8 @@ function requireDyNumber(value: JsonValue): string {
   let hasDot = false;
   let hasDigit = false;
   let beforeDot = 0;
-  let nonZeroAfterDot = 0;
-  let hasNonZeroAfterDot = false;
+  let significantDigits = 0;
+  let hasNonZero = false;
   let zeroAfterDot = 0;
   let trailingZeros = 0;
   let exponent = 0;
@@ -694,35 +694,32 @@ function requireDyNumber(value: JsonValue): string {
     }
     hasDigit = true;
     const isZero = character === "0";
-    if (!hasDot && isZero && beforeDot === 0) continue;
     if (!hasDot) {
+      if (!hasNonZero && isZero) continue;
       beforeDot += 1;
+    } else if (!hasNonZero && isZero) {
+      zeroAfterDot += 1;
+      continue;
+    }
+    if (isZero) {
+      trailingZeros += 1;
     } else {
-      if (!isZero) hasNonZeroAfterDot = true;
-      if (hasNonZeroAfterDot) {
-        if (isZero) {
-          trailingZeros += 1;
-        } else {
-          nonZeroAfterDot += trailingZeros + 1;
-          trailingZeros = 0;
-        }
-      } else {
-        zeroAfterDot += 1;
-        if (beforeDot > 0) trailingZeros += 1;
-      }
+      hasNonZero = true;
+      significantDigits += trailingZeros + 1;
+      trailingZeros = 0;
     }
   }
   if (!hasDigit) throw new Error("DyNumber value is invalid");
   let effectivePower = exponent;
   if (beforeDot > 0) {
     effectivePower += beforeDot;
-  } else if (hasNonZeroAfterDot) {
+  } else if (hasNonZero) {
     effectivePower -= zeroAfterDot;
   } else {
     return text;
   }
   if (
-    beforeDot + nonZeroAfterDot > 38
+    significantDigits > 38
     || effectivePower < -129
     || effectivePower > 126
   ) {

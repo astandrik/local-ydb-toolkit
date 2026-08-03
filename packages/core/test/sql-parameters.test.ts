@@ -138,6 +138,32 @@ describe("SQL parameter descriptors", () => {
     })).not.toThrow();
   });
 
+  it("does not expose duplicate struct field names in validation errors", () => {
+    // Production break caught: descriptor validation errors can be returned by
+    // MCP before configured credential-path redaction is available.
+    const sensitiveFieldName = "/private/root.password";
+    let message = "";
+    try {
+      prepareSqlParameters({
+        record: {
+          type: {
+            kind: "struct",
+            fields: [
+              { name: sensitiveFieldName, type: { kind: "primitive", name: "Int32" } },
+              { name: sensitiveFieldName, type: { kind: "primitive", name: "Int32" } },
+            ],
+          },
+          value: { [sensitiveFieldName]: 1 },
+        },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toBe("duplicate struct field");
+    expect(message).not.toContain(sensitiveFieldName);
+  });
+
   it("encodes primitive values with explicit YDB wire types", () => {
     // Production break caught: inferred JS types silently turn Uint64 into Int64,
     // lose 64-bit precision, or return byte arrays and bigint values that JSON cannot serialize.
@@ -920,6 +946,19 @@ describe("SQL parameter descriptors", () => {
     );
   });
 
+  it("accepts notation-equivalent DyNumber integer trailing zeros", () => {
+    // Production break caught: integer trailing zeros counted as significant,
+    // so 10^38 was rejected in plain notation while 1E38 was accepted.
+    for (const value of [`1${"0".repeat(38)}`, "1E38"]) {
+      expect(() => prepareSqlParameters({
+        parameter: {
+          type: { kind: "primitive", name: "DyNumber" },
+          value,
+        },
+      })).not.toThrow();
+    }
+  });
+
   it("accepts each exact global parameter bound", () => {
     const primitive: SqlParameterType = { kind: "primitive", name: "Int32" };
 
@@ -1052,7 +1091,7 @@ describe("SQL parameter descriptors", () => {
         },
         value: { id: 1 },
       },
-    })).toThrow(/duplicate struct field: id/);
+    })).toThrow(/duplicate struct field/);
     expect(() => prepareSqlParameters({
       dict: {
         type: { kind: "dict", key: primitive, value: primitive },
