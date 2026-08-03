@@ -232,7 +232,10 @@ function normalizeSqlBackendResultUnsafe(
       ) {
         return undefined;
       }
-      normalizedIssues.push(structuredClone(rawIssue) as QueryServiceIssue);
+      normalizedIssues.push(redactIssue(
+        structuredClone(rawIssue) as QueryServiceIssue,
+        options.diagnosticRedactions,
+      ));
     }
   }
 
@@ -503,6 +506,33 @@ function validateIssuePosition(value: unknown): boolean {
     && isSafeInteger(position.get("column"))
     && typeof position.get("file") === "string",
   );
+}
+
+function redactIssue(
+  issue: QueryServiceIssue,
+  redactions: string[],
+): QueryServiceIssue {
+  return {
+    ...issue,
+    message: redactText(issue.message, redactions),
+    ...(issue.position
+      ? { position: redactIssuePosition(issue.position, redactions) }
+      : {}),
+    ...(issue.endPosition
+      ? { endPosition: redactIssuePosition(issue.endPosition, redactions) }
+      : {}),
+    issues: issue.issues.map((child) => redactIssue(child, redactions)),
+  };
+}
+
+function redactIssuePosition(
+  position: QueryServiceIssuePosition,
+  redactions: string[],
+): QueryServiceIssuePosition {
+  return {
+    ...position,
+    file: redactText(position.file, redactions),
+  };
 }
 
 function isSafeInteger(value: unknown): value is number {

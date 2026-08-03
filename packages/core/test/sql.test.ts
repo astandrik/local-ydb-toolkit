@@ -1270,8 +1270,8 @@ describe("managed SQL operation", () => {
   });
 
   it("redacts configured credential paths from returned textual payloads", async () => {
-    // Production break caught: backend diagnostics, plans, and ASTs can reveal
-    // configured auth, password, token, or SSH identity file paths.
+    // Production break caught: backend diagnostics, plans, ASTs, and nested
+    // issues can reveal configured auth, password, token, or SSH identity paths.
     const sql = await loadSql();
     const credentialPaths = [
       "/private/auth.yaml",
@@ -1297,6 +1297,32 @@ describe("managed SQL operation", () => {
       diagnostics: credentialPaths.join(" "),
       queryPlan: `plan ${credentialPaths[0]} ${credentialPaths[1]}`,
       queryAst: `ast ${credentialPaths[2]} ${credentialPaths[3]}`,
+      issues: [{
+        message: `top ${credentialPaths[0]}`,
+        issueCode: 1,
+        severity: 2,
+        position: {
+          row: 1,
+          column: 2,
+          file: credentialPaths[1],
+        },
+        endPosition: {
+          row: 3,
+          column: 4,
+          file: credentialPaths[2],
+        },
+        issues: [{
+          message: `nested ${credentialPaths[3]}`,
+          issueCode: 5,
+          severity: 6,
+          position: {
+            row: 7,
+            column: 8,
+            file: credentialPaths[0],
+          },
+          issues: [],
+        }],
+      }],
     });
 
     const response = await sql(ctx, {
@@ -1312,6 +1338,32 @@ describe("managed SQL operation", () => {
     expect(response.execution?.queryAst).toBe(
       "ast <redacted> <redacted>",
     );
+    expect(response.execution?.issues).toEqual([{
+      message: "top <redacted>",
+      issueCode: 1,
+      severity: 2,
+      position: {
+        row: 1,
+        column: 2,
+        file: "<redacted>",
+      },
+      endPosition: {
+        row: 3,
+        column: 4,
+        file: "<redacted>",
+      },
+      issues: [{
+        message: "nested <redacted>",
+        issueCode: 5,
+        severity: 6,
+        position: {
+          row: 7,
+          column: 8,
+          file: "<redacted>",
+        },
+        issues: [],
+      }],
+    }]);
     for (const path of credentialPaths) {
       expect(JSON.stringify(response)).not.toContain(path);
     }
