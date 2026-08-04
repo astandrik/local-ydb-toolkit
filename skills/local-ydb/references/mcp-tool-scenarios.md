@@ -135,10 +135,12 @@ Optional install path on supported apt-based hosts:
 
 Expected:
 
-- the check reports whether `docker`, `curl`, and `ruby` are available
+- `ready=true` only when every prerequisite is usable
+- the check reports Docker CLI availability separately from the `dockerDaemon` service check
+- absent CLI/files appear in `missing`; a present CLI with an unreachable daemon appears in `unavailable`
 - auth-enabled profiles also report whether `rootPasswordFile` exists
 - plan-only output includes `apt-get` install commands only for supported auto-install packages
-- `docker` may appear in `missing`, but it remains a manual prerequisite
+- Docker installation and daemon startup remain manual; `confirm=true` never starts Docker
 
 Avoid:
 
@@ -165,14 +167,16 @@ Calls:
 
 Expected:
 
-- `inventory` returns the profile shape and current container list.
+- successful `inventory` returns `ok=true`, `docker.cliAvailable=true`, `docker.daemonReachable=true`, and the current containers/volumes.
+- Docker CLI, daemon, or inventory failures return `ok=false` with a reason and omit inventory arrays; never interpret that response as an empty host.
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
-- `status_report` returns a structured snapshot, including healthcheck output, even when the stack is not yet healthy.
+- `status_report` preserves a structured inventory failure as `docker=unavailable` and continues other available read-only checks.
 - `healthcheck` returns the YDB `selfCheckResult`, issue counts, issue types, capped raw output, and truncated `issue_log` entries when present.
 - `scheme` and `permissions` default to the tenant root for read-only schema and ACL inspection.
 
 Avoid:
 
+- Accessing `inventory.containers` before checking `inventory.ok`.
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
 
 ## Scenario 1A: Schema Generate and Apply
@@ -305,6 +309,32 @@ Avoid:
 
 - using the tenant bootstrap tool when the task only needs `/local`
 - treating a missing configured tenant as a root database failure
+
+## Scenario 2A: Restart a Compatible Stopped Static Container
+
+Goal: verify bootstrap reuses a task-owned stopped static container only when its stored configuration remains compatible.
+
+Precondition:
+bootstrap a disposable profile, then stop only that profile's static container.
+
+Calls:
+
+```json
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "<disposable-profile>", "confirm": true } }
+{ "tool": "local_ydb_healthcheck", "arguments": { "profile": "<disposable-profile>", "databasePath": "/local" } }
+```
+
+Expected:
+
+- bootstrap reads stored `HostConfig.PortBindings` before starting the stopped container and never relies on `docker port`
+- required gRPC bindings remain exactly loopback bindings; a missing or wildcard binding blocks start
+- tenant bootstrap also requires the stored GraphShard feature flag before start
+- a compatible static container starts exactly once and the root healthcheck succeeds
+
+Avoid:
+
+- stopping or reusing a persisted `/local` stack owned by another workflow
+- starting a container whose stored bindings or GraphShard requirements do not match the selected operation
 
 ## Scenario 3: Fresh Bootstrap on an Isolated GHCR Stack
 

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 
 import { LocalYdbApiClient, type CommandResult } from "../api-client.js";
 import { ConfigSchema, sanitizeTenantName, type ResolvedLocalYdbProfile } from "../validation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
-import { inventory } from "./checks.js";
+import { requireInventory } from "./checks.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { assertPositiveInteger, extraDynamicNodeTarget } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
@@ -198,7 +198,7 @@ export async function upgradeVersion(
   const authReapplyPlanned = requiresAuthReapply(ctx.profile);
   const dumpName = options.dumpName ?? buildUpgradeDumpName(ctx.profile, sourceImage, version);
   const profileImageUpdate = plannedProfileImageUpdate(ctx.configPath, ctx.profile.name, sourceImage, targetImage);
-  const inventoryState = await inventory(ctx);
+  const inventoryState = await requireInventory(ctx);
   const extraDynamicNodes = inventoryState.containers
     .map((container) => extraDynamicNodeTarget(ctx.profile, container.names))
     .filter((target): target is NonNullable<typeof target> => Boolean(target))
@@ -673,7 +673,7 @@ async function verifyProfileImages(
   mismatches: string[];
   result: CommandResult;
 }> {
-  const inv = await inventory(ctx);
+  const inv = await requireInventory(ctx);
   const targetNames = [
     ctx.profile.staticContainer,
     ctx.profile.dynamicContainer,

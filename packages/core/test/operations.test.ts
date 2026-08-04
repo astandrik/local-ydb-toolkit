@@ -16,6 +16,7 @@ import {
   destroyStack,
   dumpTenant,
   healthcheck,
+  inventory,
   listDumps,
   nodesCheck,
   prepareAuthConfig,
@@ -100,6 +101,137 @@ class ScriptRewritingShellExecutor implements CommandExecutor {
 }
 
 describe("read-only checks", () => {
+  it("reports a missing Docker CLI without probing the daemon", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return {
+        command,
+        exitCode: 127,
+        stdout: "",
+        stderr: "docker: command not found",
+        ok: false,
+        timedOut: false
+      };
+    };
+
+    const response = await inventory(ctx);
+
+    expect(response).toMatchObject({
+      ok: false,
+      docker: {
+        cliAvailable: false,
+        daemonReachable: false
+      },
+      reason: "docker-cli-missing"
+    });
+    expect("containers" in response).toBe(false);
+    expect(executor.commands.some((command) => command.includes("docker info"))).toBe(false);
+    expect(JSON.stringify(response)).not.toContain("command not found");
+  });
+
+  it("reports an unavailable Docker daemon instead of an empty inventory", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("command -v docker")) {
+        return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+      }
+      return {
+        command,
+        exitCode: 1,
+        stdout: "",
+        stderr: "daemon details must not be returned",
+        ok: false,
+        timedOut: false
+      };
+    };
+
+    const response = await inventory(ctx);
+
+    expect(response).toMatchObject({
+      ok: false,
+      docker: {
+        cliAvailable: true,
+        daemonReachable: false
+      },
+      reason: "docker-daemon-unavailable"
+    });
+    expect("containers" in response).toBe(false);
+    expect("volumes" in response).toBe(false);
+    expect("inspect" in response).toBe(false);
+    expect(executor.commands.some((command) => command.includes("docker ps"))).toBe(false);
+  });
+
+  it("reports an inventory command failure after a successful Docker probe", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("command -v docker") || command.includes("docker info")) {
+        return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+      }
+      return {
+        command,
+        exitCode: 1,
+        stdout: "",
+        stderr: "inventory details must not be returned",
+        ok: false,
+        timedOut: false
+      };
+    };
+
+    const response = await inventory(ctx);
+
+    expect(response).toMatchObject({
+      ok: false,
+      docker: {
+        cliAvailable: true,
+        daemonReachable: true
+      },
+      reason: "docker-inventory-failed"
+    });
+    expect("containers" in response).toBe(false);
+    expect(response.summary).not.toContain("inventory details");
+  });
+
+  it("returns a successful inventory only after a reachable daemon probe", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      const stdout = command.includes("docker ps")
+        ? `${JSON.stringify({ ID: "1", Image: "img", Names: "ydb-local", State: "exited", Status: "Exited" })}\n`
+        : command.includes("docker volume ls")
+          ? "ydb-local-data\n"
+          : command.includes("docker inspect ydb-local")
+            ? `${JSON.stringify([{ Name: "/ydb-local" }])}\n`
+            : "";
+      return { command, exitCode: 0, stdout, stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await inventory(ctx);
+
+    expect(response).toMatchObject({
+      ok: true,
+      docker: {
+        cliAvailable: true,
+        daemonReachable: true
+      },
+      containers: [{ names: "ydb-local", state: "exited" }],
+      volumes: ["ydb-local-data"],
+      inspect: [{ Name: "/ydb-local" }]
+    });
+    expect(executor.commands.filter((command) => command.includes("docker inspect"))).toHaveLength(1);
+    expect(executor.commands.some((command) => command.includes("ydb-dyn-example"))).toBe(false);
+  });
+
   it("uses retrying YDB CLI command for tenant metadata checks", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -403,16 +535,156 @@ describe("read-only checks", () => {
 
     const response = await statusReport(ctx);
 
-    expect(response.summary).toBe("Status report for default: tenant=ok, nodes=ok, health=GOOD.");
+    expect(response.summary).toBe("Status report for default: docker=ok, tenant=ok, nodes=ok, health=GOOD.");
     expect(response.nodes).toMatchObject({
       summary: "Tenant /local/example reports 1 alive node; viewer nodelist returned 0 nodes.",
       ok: true,
       warning: "Viewer nodelist returned no nodes; tenantinfo confirmed alive tenant nodes.",
     });
   });
+
+  it("continues read-only status checks when Docker inventory is unavailable", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker info")) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "private daemon error",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: command.includes("monitoring healthcheck")
+          ? JSON.stringify({ self_check_result: "GOOD" })
+          : "",
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
+    };
+    ctx.client.viewerGet = async (path) => path.includes("tenantinfo")
+      ? { status: "ok", data: { TenantInfo: [{ AliveNodes: 1, NodeIds: [50000] }] } }
+      : { status: "ok", data: [{ NodeId: 50000 }] };
+
+    const response = await statusReport(ctx);
+
+    expect(response.summary).toBe(
+      "Status report for default: docker=unavailable, tenant=ok, nodes=ok, health=GOOD."
+    );
+    expect(response.inventory).toMatchObject({
+      ok: false,
+      reason: "docker-daemon-unavailable"
+    });
+    expect(response.tenant.ok).toBe(true);
+    expect(response.nodes.ok).toBe(true);
+    expect(response.healthcheck.healthy).toBe(true);
+    expect(JSON.stringify(response.inventory)).not.toContain("private daemon error");
+  });
 });
 
 describe("mutating operations", () => {
+  it("keeps a missing Docker CLI in missing rather than unavailable prerequisites", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("command -v docker")) {
+        return {
+          command,
+          exitCode: 127,
+          stdout: "",
+          stderr: "docker: command not found",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await checkPrerequisites(ctx, {});
+
+    expect(response.ready).toBe(false);
+    expect(response.missing).toEqual(["docker"]);
+    expect(response.unavailable).toEqual([]);
+    expect(response.checks).toContainEqual({
+      name: "dockerDaemon",
+      kind: "service",
+      ok: false,
+      detail: "Docker daemon was not checked because Docker CLI is missing."
+    });
+    expect(executor.commands.some((command) => command.includes("docker info"))).toBe(false);
+  });
+
+  it("distinguishes an unavailable Docker daemon from a missing Docker CLI", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker info")) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "daemon details must not be returned",
+          ok: false,
+          timedOut: false
+        };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await checkPrerequisites(ctx, {});
+
+    expect(response.ready).toBe(false);
+    expect(response.missing).toEqual([]);
+    expect(response.unavailable).toEqual(["dockerDaemon"]);
+    expect(response.checks).toContainEqual({
+      name: "dockerDaemon",
+      kind: "service",
+      ok: false,
+      detail: "Docker CLI is available, but the Docker daemon is unavailable or inaccessible."
+    });
+    expect(response.manualActions).toContain(
+      "Start or configure Docker on the selected target and ensure the current user can access its daemon."
+    );
+    expect((response.results ?? []).some((result) => result.stderr.includes("daemon details"))).toBe(false);
+  });
+
+  it("blocks inventory-backed mutation planning when Docker is unavailable", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("command -v docker")) {
+        return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+      }
+      return {
+        command,
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+        ok: false,
+        timedOut: false
+      };
+    };
+
+    await expect(destroyStack(ctx, {})).rejects.toThrow(
+      "Docker inventory is unavailable for profile default: Docker CLI is available, but the Docker daemon is unavailable or inaccessible."
+    );
+    expect(executor.commands.some((command) => command.includes("docker rm"))).toBe(false);
+  });
+
   it("does not execute bootstrap without confirm=true", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -424,8 +696,10 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.some((command) => command.includes("docker network"))).toBe(true);
     expect(plan).toContain("-p 127.0.0.1:2136:2136");
     expect(plan).toContain("-p 127.0.0.1:2137:2137");
-    expect(plan).toContain("docker port ydb-local 2136/tcp");
-    expect(plan).toContain("docker port ydb-local 2137/tcp");
+    expect(plan).toContain(".HostConfig.PortBindings");
+    expect(plan).toContain("2136/tcp");
+    expect(plan).toContain("2137/tcp");
+    expect(plan).not.toContain("docker port");
   });
 
   it("plans root database bootstrap without tenant or dynamic-node commands", async () => {
@@ -437,9 +711,11 @@ describe("mutating operations", () => {
     expect(executor.commands).toEqual([]);
     expect(plan).toContain("scheme ls /local");
     expect(plan).toContain("-p 127.0.0.1:2136:2136");
-    expect(plan).toContain("docker port ydb-local 2136/tcp");
+    expect(plan).toContain(".HostConfig.PortBindings");
+    expect(plan).toContain("2136/tcp");
     expect(plan).not.toContain("-p 127.0.0.1:2137:2137");
-    expect(plan).not.toContain("docker port ydb-local 2137/tcp");
+    expect(plan).not.toContain("2137/tcp");
+    expect(plan).not.toContain("docker port");
     expect(plan).not.toContain("admin database");
     expect(plan).not.toContain("ydb-dyn-example");
     expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
@@ -1663,11 +1939,9 @@ describe("mutating operations", () => {
         }
       }
     }));
-    let commandIndex = 0;
     executor.run = async (_profile, spec) => {
       const command = executor.display(_profile, spec);
       executor.commands.push(command);
-      commandIndex += 1;
       if (command.includes("docker ps -a --format")) {
         return {
           command,
@@ -1685,7 +1959,7 @@ describe("mutating operations", () => {
       if (command.includes("docker volume ls")) {
         return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
       }
-      if (commandIndex === 4 && command.includes("admin database /local/example remove --force")) {
+      if (command.includes("admin database /local/example remove --force")) {
         return {
           command,
           exitCode: 1,

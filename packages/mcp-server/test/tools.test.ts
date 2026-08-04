@@ -497,6 +497,67 @@ describe("mcp tools", () => {
     }
   });
 
+  it("round-trips structured Docker inventory failure losslessly in JSON and TOON", async () => {
+    for (const responseContentFormat of ["json", "toon"] as const) {
+      const executor = new RecordingExecutor();
+      executor.run = async (profile, spec) => {
+        const command = executor.display(profile, spec);
+        executor.commands.push(command);
+        if (command.includes("command -v docker")) {
+          return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+        }
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "private daemon error",
+          ok: false,
+          timedOut: false,
+        };
+      };
+      const server = createLocalYdbMcpServer({
+        config: ConfigSchema.parse({}),
+        executor,
+        responseContentFormat,
+      }) as unknown as {
+        _requestHandlers: Map<string, (
+          request: unknown,
+          extra: { signal: AbortSignal },
+        ) => Promise<ToolResultForTest>>;
+      };
+      const handler = server._requestHandlers.get("tools/call");
+      if (!handler) {
+        throw new Error("Expected tools/call handler to be registered");
+      }
+
+      const result = await handler({
+        method: "tools/call",
+        params: {
+          name: "local_ydb_inventory",
+          arguments: {},
+        },
+      }, { signal: new AbortController().signal });
+      const jsonModel = JSON.parse(JSON.stringify(result.structuredContent)) as unknown;
+      const formatted = result.content[1]?.text ?? "";
+
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        docker: {
+          cliAvailable: true,
+          daemonReachable: false,
+        },
+        reason: "docker-daemon-unavailable",
+      });
+      expect(result.structuredContent).not.toHaveProperty("containers");
+      expect(JSON.stringify(result.structuredContent)).not.toContain("private daemon error");
+      expect(
+        responseContentFormat === "json"
+          ? JSON.parse(formatted)
+          : decode(formatted),
+      ).toEqual(jsonModel);
+    }
+  });
+
   it("teaches agents the managed SQL safety and untrusted-data contract", () => {
     // Production break caught: discovery exposes the mixed-action tool without
     // explaining SnapshotRO, EXPLAIN/confirm, bounds, or prompt-injection safety.

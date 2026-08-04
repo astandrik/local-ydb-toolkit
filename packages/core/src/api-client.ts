@@ -324,7 +324,8 @@ export class LocalYdbApiClient {
       allowFailure: true,
       description: "List Docker containers"
     }));
-    if (!result.ok || !result.stdout.trim()) {
+    assertDockerCommandSucceeded(result, "List Docker containers");
+    if (!result.stdout.trim()) {
       return [];
     }
     return parseDockerPsJsonLines(result.stdout);
@@ -335,15 +336,20 @@ export class LocalYdbApiClient {
       allowFailure: true,
       description: "List Docker volumes"
     }));
-    return result.ok ? parseDockerVolumeLines(result.stdout) : [];
+    assertDockerCommandSucceeded(result, "List Docker volumes");
+    return parseDockerVolumeLines(result.stdout);
   }
 
   async dockerInspect(names: string[]): Promise<unknown[]> {
+    if (names.length === 0) {
+      return [];
+    }
     const result = await this.run(this.docker(["inspect", ...names], {
       allowFailure: true,
       description: "Inspect local-ydb containers"
     }));
-    if (!result.ok || !result.stdout.trim()) {
+    assertDockerCommandSucceeded(result, "Inspect local-ydb containers");
+    if (!result.stdout.trim()) {
       return [];
     }
     return JSON.parse(result.stdout) as unknown[];
@@ -372,6 +378,12 @@ export class LocalYdbApiClient {
     }));
     const code = Number(result.stdout.trim());
     return Number.isFinite(code) ? code : null;
+  }
+}
+
+function assertDockerCommandSucceeded(result: CommandResult, operation: string): void {
+  if (!result.ok) {
+    throw new Error(`${operation} failed.`);
   }
 }
 

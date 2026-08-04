@@ -176,7 +176,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_inventory",
     description:
-      "Read-only Docker inventory for a local-ydb target profile. Returns the public profile, Docker containers and volumes visible on the selected target, and inspect data for the configured static and primary dynamic containers; use before mutating tools to capture current stack state.",
+      "Read-only Docker inventory for a local-ydb target profile. Success returns ok=true, Docker CLI/daemon state, containers, volumes, and inspect data for configured containers that actually exist; Docker CLI, daemon, or inventory failures return ok=false with a reason and omit inventory arrays so failure cannot be mistaken for an empty host.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => inventory(context)),
@@ -216,7 +216,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_status_report",
     description:
-      "Read-only aggregate report for quick diagnosis. Runs local_ydb_inventory, local_ydb_auth_check, local_ydb_tenant_check, local_ydb_nodes_check, and local_ydb_healthcheck, returning each result; use this first for broad stack health, then run focused checks for database status, GraphShard, storage, or logs.",
+      "Read-only aggregate report for quick diagnosis. Runs local_ydb_inventory, local_ydb_auth_check, local_ydb_tenant_check, local_ydb_nodes_check, and local_ydb_healthcheck, returning each result; when Docker is unavailable it preserves the structured inventory failure and continues other read-only checks.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => statusReport(context)),
@@ -452,7 +452,7 @@ export const toolDefinitions = [
     instructionOrder: 0,
     name: "local_ydb_check_prerequisites",
     description:
-      "Check target-host prerequisites for Docker, curl, ruby, and the configured rootPasswordFile when present. Without confirm=true it returns checks, missing items, manual actions, and any apt-get install plan; with confirm=true it may install only supported curl/ruby packages and never installs Docker.",
+      "Check target-host prerequisites for the Docker CLI and daemon, curl, ruby, and the configured rootPasswordFile when present. Without confirm=true it returns ready, missing CLI/files, unavailable services, checks, manual actions, and any apt-get install plan; confirm=true may install only supported curl/ruby packages and never starts or installs Docker.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>

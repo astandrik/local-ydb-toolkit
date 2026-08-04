@@ -1,4 +1,6 @@
+import type { DockerContainerSummary } from "../api-client.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin, ydbRootCli } from "./commands.js";
+import { probeDockerRuntime } from "./docker-runtime.js";
 import { collectGraphShardTabletIds, publicProfile, readPath } from "./helpers.js";
 import { capText, normalizeMaxOutputBytes } from "./output.js";
 import type { HealthcheckOptions, HealthcheckResponse, ToolkitContext } from "./types.js";
@@ -8,17 +10,94 @@ const MAX_HEALTHCHECK_TIMEOUT_MS = 600_000;
 const HEALTHCHECK_PROCESS_TIMEOUT_GRACE_MS = 5_000;
 const DEFAULT_MAX_HEALTHCHECK_ISSUES = 100;
 
-export async function inventory(ctx: ToolkitContext) {
-  const containers = await ctx.client.dockerPs();
-  const volumes = await ctx.client.dockerVolumes();
-  const inspect = await ctx.client.dockerInspect([ctx.profile.staticContainer, ctx.profile.dynamicContainer]);
-  return {
-    summary: `Found ${containers.length} Docker containers and ${volumes.length} Docker volumes for profile ${ctx.profile.name}.`,
-    profile: publicProfile(ctx.profile),
-    containers,
-    volumes,
-    inspect
+export type InventoryFailureReason =
+  | "docker-cli-missing"
+  | "docker-daemon-unavailable"
+  | "docker-inventory-failed";
+
+type PublicProfile = ReturnType<typeof publicProfile>;
+
+interface InventoryBase {
+  summary: string;
+  profile: PublicProfile;
+  docker: {
+    cliAvailable: boolean;
+    daemonReachable: boolean;
   };
+}
+
+export interface InventorySuccess extends InventoryBase {
+  ok: true;
+  containers: DockerContainerSummary[];
+  volumes: string[];
+  inspect: unknown[];
+}
+
+export interface InventoryFailure extends InventoryBase {
+  ok: false;
+  reason: InventoryFailureReason;
+}
+
+export type InventoryResponse = InventorySuccess | InventoryFailure;
+
+export async function inventory(ctx: ToolkitContext): Promise<InventoryResponse> {
+  const probe = await probeDockerRuntime(ctx);
+  const docker = {
+    cliAvailable: probe.cliAvailable,
+    daemonReachable: probe.daemonReachable
+  };
+  if (!probe.cliAvailable) {
+    return {
+      summary: `Docker inventory is unavailable for profile ${ctx.profile.name}: ${probe.detail}`,
+      ok: false,
+      profile: publicProfile(ctx.profile),
+      docker,
+      reason: "docker-cli-missing"
+    };
+  }
+  if (!probe.daemonReachable) {
+    return {
+      summary: `Docker inventory is unavailable for profile ${ctx.profile.name}: ${probe.detail}`,
+      ok: false,
+      profile: publicProfile(ctx.profile),
+      docker,
+      reason: "docker-daemon-unavailable"
+    };
+  }
+
+  try {
+    const containers = await ctx.client.dockerPs();
+    const volumes = await ctx.client.dockerVolumes();
+    const existingContainerNames = new Set(containers.map((container) => container.names));
+    const inspectNames = [ctx.profile.staticContainer, ctx.profile.dynamicContainer]
+      .filter((name) => existingContainerNames.has(name));
+    const inspect = await ctx.client.dockerInspect(inspectNames);
+    return {
+      summary: `Found ${containers.length} Docker containers and ${volumes.length} Docker volumes for profile ${ctx.profile.name}.`,
+      ok: true,
+      profile: publicProfile(ctx.profile),
+      docker,
+      containers,
+      volumes,
+      inspect
+    };
+  } catch {
+    return {
+      summary: `Docker inventory failed for profile ${ctx.profile.name} after the Docker daemon became reachable.`,
+      ok: false,
+      profile: publicProfile(ctx.profile),
+      docker,
+      reason: "docker-inventory-failed"
+    };
+  }
+}
+
+export async function requireInventory(ctx: ToolkitContext): Promise<InventorySuccess> {
+  const result = await inventory(ctx);
+  if (!result.ok) {
+    throw new Error(result.summary);
+  }
+  return result;
 }
 
 export async function statusReport(ctx: ToolkitContext) {
@@ -28,7 +107,7 @@ export async function statusReport(ctx: ToolkitContext) {
   const nodes = await nodesCheck(ctx);
   const health = await healthcheck(ctx);
   return {
-    summary: `Status report for ${ctx.profile.name}: tenant=${tenant.ok ? "ok" : "not-ok"}, nodes=${nodes.ok ? "ok" : "not-ok"}, health=${health.selfCheckResult ?? "unavailable"}.`,
+    summary: `Status report for ${ctx.profile.name}: docker=${inv.ok ? "ok" : "unavailable"}, tenant=${tenant.ok ? "ok" : "not-ok"}, nodes=${nodes.ok ? "ok" : "not-ok"}, health=${health.selfCheckResult ?? "unavailable"}.`,
     inventory: inv,
     auth: authStatus,
     tenant,

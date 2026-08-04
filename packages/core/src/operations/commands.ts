@@ -60,13 +60,16 @@ export function commandForStaticEnsureRun(
       ]
     : [];
   const requirePublishedGrpcLines = requiredPublishedGrpcPorts(profile, publishDynamicGrpc)
-    .flatMap((port) => [
-      `  if ! docker port ${container} ${shellQuote(`${port}/tcp`)} 2>/dev/null | grep -qx ${shellQuote(`127.0.0.1:${port}`)}; then`,
-      `    printf '%s\\n' ${shellQuote(`Existing static container ${profile.staticContainer} does not publish required gRPC port 127.0.0.1:${port}.`)} >&2`,
-      `    printf '%s\\n' ${shellQuote(`Recreate it with local_ydb_destroy_stack or docker rm -f ${profile.staticContainer}, then rerun local_ydb_bootstrap.`)} >&2`,
-      "    exit 1",
-      "  fi"
-    ]);
+    .flatMap((port) => {
+      const template = `{{range (index .HostConfig.PortBindings "${port}/tcp")}}{{printf "%s:%s\\n" .HostIp .HostPort}}{{end}}`;
+      return [
+        `  if ! docker inspect --type container --format ${shellQuote(template)} ${container} 2>/dev/null | grep -qx ${shellQuote(`127.0.0.1:${port}`)}; then`,
+        `    printf '%s\\n' ${shellQuote(`Existing static container ${profile.staticContainer} does not publish required gRPC port 127.0.0.1:${port}.`)} >&2`,
+        `    printf '%s\\n' ${shellQuote(`Recreate it with local_ydb_destroy_stack or docker rm -f ${profile.staticContainer}, then rerun local_ydb_bootstrap.`)} >&2`,
+        "    exit 1",
+        "  fi"
+      ];
+    });
 
   return [
     "set -euo pipefail",
