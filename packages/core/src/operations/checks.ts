@@ -46,7 +46,7 @@ export async function inventory(ctx: ToolkitContext): Promise<InventoryResponse>
     cliAvailable: probe.cliAvailable,
     daemonReachable: probe.daemonReachable
   };
-  if (!probe.cliAvailable) {
+  if (probe.status === "cli-missing") {
     return {
       summary: `Docker inventory is unavailable for profile ${ctx.profile.name}: ${probe.detail}`,
       ok: false,
@@ -55,13 +55,22 @@ export async function inventory(ctx: ToolkitContext): Promise<InventoryResponse>
       reason: "docker-cli-missing"
     };
   }
-  if (!probe.daemonReachable) {
+  if (probe.status === "daemon-unavailable") {
     return {
       summary: `Docker inventory is unavailable for profile ${ctx.profile.name}: ${probe.detail}`,
       ok: false,
       profile: publicProfile(ctx.profile),
       docker,
       reason: "docker-daemon-unavailable"
+    };
+  }
+  if (probe.status === "target-unreachable" || probe.status === "probe-failed") {
+    return {
+      summary: `Docker inventory is unavailable for profile ${ctx.profile.name}: ${probe.detail}`,
+      ok: false,
+      profile: publicProfile(ctx.profile),
+      docker,
+      reason: "docker-inventory-failed"
     };
   }
 
@@ -101,11 +110,26 @@ export async function requireInventory(ctx: ToolkitContext): Promise<InventorySu
 }
 
 export async function statusReport(ctx: ToolkitContext) {
-  const inv = await inventory(ctx);
-  const authStatus = await authCheck(ctx);
-  const tenant = await tenantCheck(ctx);
-  const nodes = await nodesCheck(ctx);
-  const health = await healthcheck(ctx);
+  const inv = await safeStatusComponent(
+    () => inventory(ctx),
+    () => inventoryFallback(ctx)
+  );
+  const authStatus = await safeStatusComponent(
+    () => authCheck(ctx),
+    authFallback
+  );
+  const tenant = await safeStatusComponent(
+    () => tenantCheck(ctx),
+    tenantFallback
+  );
+  const nodes = await safeStatusComponent(
+    () => nodesCheck(ctx),
+    nodesFallback
+  );
+  const health = await safeStatusComponent(
+    () => healthcheck(ctx),
+    () => healthcheckFallback(ctx)
+  );
   return {
     summary: `Status report for ${ctx.profile.name}: docker=${inv.ok ? "ok" : "unavailable"}, tenant=${tenant.ok ? "ok" : "not-ok"}, nodes=${nodes.ok ? "ok" : "not-ok"}, health=${health.selfCheckResult ?? "unavailable"}.`,
     inventory: inv,
@@ -113,6 +137,83 @@ export async function statusReport(ctx: ToolkitContext) {
     tenant,
     nodes,
     healthcheck: health
+  };
+}
+
+async function safeStatusComponent<T>(run: () => Promise<T>, fallback: () => T): Promise<T> {
+  try {
+    return await run();
+  } catch {
+    return fallback();
+  }
+}
+
+function inventoryFallback(ctx: ToolkitContext): InventoryFailure {
+  return {
+    summary: `Docker inventory could not be determined for profile ${ctx.profile.name}.`,
+    ok: false,
+    profile: publicProfile(ctx.profile),
+    docker: {
+      cliAvailable: false,
+      daemonReachable: false
+    },
+    reason: "docker-inventory-failed"
+  };
+}
+
+function authFallback() {
+  return {
+    summary: "Auth check is unavailable.",
+    viewerWhoamiStatus: null,
+    anonymousCliOk: false,
+    anonymousCliCommand: "",
+    anonymousCliStderr: ""
+  };
+}
+
+function tenantFallback() {
+  return {
+    summary: "Tenant check is unavailable.",
+    ok: false,
+    command: "",
+    stdout: "",
+    stderr: ""
+  };
+}
+
+function nodesFallback() {
+  return {
+    summary: "Node check is unavailable.",
+    ok: false,
+    nodes: [],
+    tenantAliveNodes: 0,
+    tenantNodeIds: [],
+    warning: undefined,
+    error: "Node check could not be executed."
+  };
+}
+
+function healthcheckFallback(ctx: ToolkitContext): HealthcheckResponse {
+  return {
+    summary: "YDB healthcheck is unavailable.",
+    ok: false,
+    commandOk: false,
+    healthy: false,
+    databasePath: ctx.profile.tenantPath,
+    command: "",
+    issueCount: 0,
+    issueStatusCounts: {},
+    issueTypes: [],
+    issues: [],
+    issuesTruncated: false,
+    stdout: "",
+    stderr: "",
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    maxOutputBytes: normalizeMaxOutputBytes(undefined),
+    maxIssues: DEFAULT_MAX_HEALTHCHECK_ISSUES
   };
 }
 

@@ -176,7 +176,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_inventory",
     description:
-      "Read-only Docker inventory for a local-ydb target profile. Success returns ok=true, Docker CLI/daemon state, containers, volumes, and inspect data for configured containers that actually exist; Docker CLI, daemon, or inventory failures return ok=false with a reason and omit inventory arrays so failure cannot be mistaken for an empty host.",
+      "Read-only Docker inventory for a local-ydb target profile. Success returns ok=true, Docker CLI/daemon state, containers, volumes, and inspect data for configured containers that actually exist; Docker CLI, daemon, or inventory failures return ok=false with a reason and omit inventory arrays so failure cannot be mistaken for an empty host. SSH target or probe failures use docker-inventory-failed with conservative Docker availability flags.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => inventory(context)),
@@ -216,7 +216,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_status_report",
     description:
-      "Read-only aggregate report for quick diagnosis. Runs local_ydb_inventory, local_ydb_auth_check, local_ydb_tenant_check, local_ydb_nodes_check, and local_ydb_healthcheck, returning each result; when Docker is unavailable it preserves the structured inventory failure and continues other read-only checks.",
+      "Read-only aggregate report for quick diagnosis. Runs local_ydb_inventory, local_ydb_auth_check, local_ydb_tenant_check, local_ydb_nodes_check, and local_ydb_healthcheck, returning each result; every component is isolated so an unexpected failure produces a safe component-shaped fallback and does not stop the remaining checks.",
     inputSchema: profileSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(ProfileArgs, (context) => statusReport(context)),
@@ -428,7 +428,7 @@ export const toolDefinitions = [
     instructionOrder: 1,
     name: "local_ydb_bootstrap_root_database",
     description:
-      "Bootstrap a plain local YDB database at /local with only a static node. Use for generic local database requests that do not need a CMS tenant, GraphShard, or dynamic nodes; without confirm=true this returns the image preflight, Docker network/storage/static-node, and verification plan without executing it.",
+      "Bootstrap a plain local YDB database at /local with only a static node. Use for generic local database requests that do not need a CMS tenant, GraphShard, or dynamic nodes; an existing running or stopped static container is reused only when its image, network, data mount, complete port bindings, required environment, restart policy, and disabled healthcheck match the profile. Without confirm=true this returns the plan without executing it.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -440,7 +440,7 @@ export const toolDefinitions = [
     instructionOrder: 2,
     name: "local_ydb_bootstrap",
     description:
-      "Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and primary dynamic tenant node. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
+      "Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and primary dynamic tenant node. An existing running or stopped static container is reused only after the full profile compatibility check, including GraphShard and static/dynamic gRPC bindings. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -452,7 +452,7 @@ export const toolDefinitions = [
     instructionOrder: 0,
     name: "local_ydb_check_prerequisites",
     description:
-      "Check target-host prerequisites for the Docker CLI and daemon, curl, ruby, and the configured rootPasswordFile when present. Without confirm=true it returns ready, missing CLI/files, unavailable services, checks, manual actions, and any apt-get install plan; confirm=true may install only supported curl/ruby packages and never starts or installs Docker.",
+      "Check target-host prerequisites for the Docker CLI and daemon, curl, ruby, and the configured rootPasswordFile when present. An unreachable SSH target returns unavailable=[target] without claiming tools are missing or proposing installation. Without confirm=true it returns the current snapshot and any apt-get plan; confirm=true may install only supported curl/ruby packages, then returns a refreshed post-install snapshot, and never starts or installs Docker.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -522,7 +522,7 @@ export const toolDefinitions = [
     instructionOrder: 8,
     name: "local_ydb_upgrade_version",
     description:
-      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; it preflights source and target images, dumps, rebuilds, restores, reapplies auth when configured, recreates extra nodes, verifies container images, and persists the profile image after successful confirmed execution.",
+      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; it preflights source and target images, dumps, rebuilds, restores, reapplies auth when configured, recreates extra nodes, and performs final image verification. A verified mismatch leaves the profile unchanged; if final inventory is unavailable after successful rebuild phases, the response keeps command history, reports partial verification, and persists the target profile image.",
     inputSchema: upgradeVersionSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: async (args, options) => {

@@ -1,4 +1,4 @@
-import { bash, shellQuote, type CommandResult } from "../api-client.js";
+import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
 import { probeDockerRuntime } from "./docker-runtime.js";
 import { runMutating } from "./execution.js";
 import type {
@@ -12,6 +12,17 @@ type InstallTarget = {
   packageName: string;
 };
 
+interface PrerequisiteSnapshot {
+  checks: PrerequisiteCheck[];
+  results: CommandResult[];
+  ready: boolean;
+  missing: string[];
+  unavailable: string[];
+  installablePackages: string[];
+  packageManager?: string;
+  manualActions: string[];
+}
+
 const INSTALLABLE_COMMANDS: InstallTarget[] = [
   { check: "curl", packageName: "curl" },
   { check: "ruby", packageName: "ruby" }
@@ -21,73 +32,147 @@ export async function checkPrerequisites(
   ctx: ToolkitContext,
   options: { confirm?: boolean } = {}
 ): Promise<CheckPrerequisitesResponse> {
-  const checks: PrerequisiteCheck[] = [];
-  const results: CommandResult[] = [];
+  const initial = await collectPrerequisiteSnapshot(ctx);
 
+  if (!options.confirm || initial.installablePackages.length === 0) {
+    return snapshotResponse(ctx, initial, {
+      summarySuffix: prerequisiteSummarySuffix(options.confirm, initial.installablePackages.length),
+      plannedCommands: initial.installablePackages.length && initial.packageManager === "apt-get"
+        ? installSpecs(initial.installablePackages).map((spec) => ctx.client.display(spec))
+        : [],
+      rollback: initial.installablePackages.length
+        ? ["Remove installed packages manually if you need to revert host dependencies."]
+        : ["No changes."],
+      verification: failedCheckVerification(initial.checks)
+    });
+  }
+
+  if (initial.packageManager !== "apt-get") {
+    return snapshotResponse(ctx, {
+      ...initial,
+      manualActions: [...initial.manualActions, "Install missing host packages manually on the target machine."]
+    }, {
+      summarySuffix: ", but no supported package manager was detected for auto-installation.",
+      plannedCommands: [],
+      rollback: ["No changes."],
+      verification: []
+    });
+  }
+
+  const installPlan = {
+    summary: `Install ${initial.installablePackages.length} prerequisite package(s) for ${ctx.profile.name}.`,
+    risk: "high" as const,
+    specs: installSpecs(initial.installablePackages),
+    rollback: ["Remove installed packages manually if you need to revert host dependencies."],
+    verification: initial.installablePackages.map((packageName) => `${packageName} installation completes successfully`)
+  };
+
+  const installResponse = await runMutating(ctx, installPlan, { confirm: true });
+  const finalSnapshot = await collectPrerequisiteSnapshot(ctx);
+  return {
+    ...installResponse,
+    summary: `${installResponse.summary} ${snapshotSummary(ctx, finalSnapshot)}`,
+    results: [...(installResponse.results ?? []), ...finalSnapshot.results],
+    checks: finalSnapshot.checks,
+    ready: finalSnapshot.ready,
+    missing: finalSnapshot.missing,
+    unavailable: finalSnapshot.unavailable,
+    installablePackages: finalSnapshot.installablePackages,
+    packageManager: finalSnapshot.packageManager,
+    manualActions: finalSnapshot.manualActions
+  };
+}
+
+async function collectPrerequisiteSnapshot(ctx: ToolkitContext): Promise<PrerequisiteSnapshot> {
   const docker = await probeDockerRuntime(ctx);
-  results.push(...docker.results);
-  checks.push({
-    name: "docker",
-    kind: "command",
-    ok: docker.cliAvailable,
-    detail: docker.cliAvailable ? "docker is available." : "docker is missing."
-  });
-  checks.push({
-    name: "dockerDaemon",
-    kind: "service",
-    ok: docker.daemonReachable,
-    detail: docker.cliAvailable
-      ? docker.detail
-      : "Docker daemon was not checked because Docker CLI is missing."
-  });
+  if (docker.status === "target-unreachable" || docker.status === "probe-failed") {
+    return unavailableTargetSnapshot(ctx, docker.results);
+  }
+
+  const checks: PrerequisiteCheck[] = [
+    {
+      name: "docker",
+      kind: "command",
+      ok: docker.cliAvailable,
+      detail: docker.cliAvailable ? "docker is available." : "docker is missing."
+    },
+    {
+      name: "dockerDaemon",
+      kind: "service",
+      ok: docker.daemonReachable,
+      detail: docker.cliAvailable
+        ? docker.detail
+        : "Docker daemon was not checked because Docker CLI is missing."
+    }
+  ];
+  const results = [...docker.results];
 
   for (const command of ["curl", "ruby"]) {
-    const result = await ctx.client.run(bash(`command -v ${command} >/dev/null 2>&1`, {
-      allowFailure: true,
-      description: `Check ${command} availability`
-    }));
-    results.push(result);
+    const probe = await runPrerequisiteProbe(
+      ctx,
+      bash(`command -v ${command} >/dev/null 2>&1`, {
+        allowFailure: true,
+        description: `Check ${command} availability`
+      }),
+      `Check ${command} availability`
+    );
+    results.push(probe.result);
+    if (probe.targetUnavailable) {
+      return unavailableTargetSnapshot(ctx, results);
+    }
     checks.push({
       name: command,
       kind: "command",
-      ok: result.ok,
-      detail: result.ok ? `${command} is available.` : `${command} is missing.`
+      ok: probe.result.ok,
+      detail: probe.result.ok ? `${command} is available.` : `${command} is missing.`
     });
   }
 
   if (ctx.profile.rootPasswordFile) {
-    const result = await ctx.client.run(bash(`[ -f ${shellQuote(ctx.profile.rootPasswordFile)} ]`, {
-      allowFailure: true,
-      description: `Check ${ctx.profile.rootPasswordFile} presence`
-    }));
-    results.push(result);
+    const probe = await runPrerequisiteProbe(
+      ctx,
+      bash(`[ -f ${shellQuote(ctx.profile.rootPasswordFile)} ]`, {
+        allowFailure: true,
+        description: "Check root password file presence"
+      }),
+      "Check root password file presence"
+    );
+    results.push(probe.result);
+    if (probe.targetUnavailable) {
+      return unavailableTargetSnapshot(ctx, results);
+    }
     checks.push({
       name: "rootPasswordFile",
       kind: "file",
-      ok: result.ok,
-      detail: result.ok
-        ? `${ctx.profile.rootPasswordFile} exists.`
-        : `${ctx.profile.rootPasswordFile} is missing.`
+      ok: probe.result.ok,
+      detail: probe.result.ok
+        ? "The configured root password file exists."
+        : "The configured root password file is missing."
     });
   }
 
   const missing = checks
     .filter((check) => check.kind !== "service" && !check.ok)
     .map((check) => check.name);
-  const unavailable = docker.cliAvailable && !docker.daemonReachable ? ["dockerDaemon"] : [];
-  const ready = checks.every((check) => check.ok);
+  const unavailable = docker.status === "daemon-unavailable" ? ["dockerDaemon"] : [];
   const installablePackages = INSTALLABLE_COMMANDS
     .filter((target) => missing.includes(target.check))
     .map((target) => target.packageName);
 
-  const packageManagerResult = await ctx.client.run(bash("command -v apt-get >/dev/null 2>&1", {
-    allowFailure: true,
-    description: "Check apt-get availability"
-  }));
-  results.push(packageManagerResult);
-  const packageManager = packageManagerResult.ok ? "apt-get" : undefined;
+  const packageManagerProbe = await runPrerequisiteProbe(
+    ctx,
+    bash("command -v apt-get >/dev/null 2>&1", {
+      allowFailure: true,
+      description: "Check apt-get availability"
+    }),
+    "Check apt-get availability"
+  );
+  results.push(packageManagerProbe.result);
+  if (packageManagerProbe.targetUnavailable) {
+    return unavailableTargetSnapshot(ctx, results);
+  }
 
-  const manualActions = [];
+  const manualActions: string[] = [];
   if (missing.includes("docker")) {
     manualActions.push("Install and configure Docker manually; the toolkit does not auto-install Docker.");
   }
@@ -98,79 +183,145 @@ export async function checkPrerequisites(
     manualActions.push("Run local_ydb_prepare_auth_config or point rootPasswordFile at an existing host-side password file.");
   }
 
-  if (!options.confirm || installablePackages.length === 0) {
-    return {
-      summary: `Checked prerequisites for ${ctx.profile.name}. Ready=${ready}; missing ${missing.length} item(s); unavailable ${unavailable.length} item(s)${installablePackages.length ? "; install plan prepared." : "."}${options.confirm && installablePackages.length === 0 ? " No installable packages were queued." : ""}`,
-      executed: false,
-      risk: "medium",
-      plannedCommands: installablePackages.length && packageManager === "apt-get"
-        ? [
-            ctx.client.display(bash("sudo -n apt-get update", { allowFailure: true, description: "Update apt package index" })),
-            ctx.client.display(bash(`sudo -n apt-get install -y ${installablePackages.join(" ")}`, { allowFailure: true, description: "Install missing prerequisite packages" }))
-          ]
-        : [],
-      rollback: installablePackages.length ? ["Remove installed packages manually if you need to revert host dependencies."] : ["No changes."],
-      verification: checks.filter((check) => !check.ok).length
-        ? checks.filter((check) => !check.ok).map((check) => `${check.name} becomes available`)
-        : ["No additional verification needed."],
-      results,
-      checks,
-      ready,
-      missing,
-      unavailable,
-      installablePackages,
-      packageManager,
-      manualActions
-    };
-  }
-
-  if (packageManager !== "apt-get") {
-    return {
-      summary: `Checked prerequisites for ${ctx.profile.name}. Ready=${ready}; missing ${missing.length} item(s); unavailable ${unavailable.length} item(s), but no supported package manager was detected for auto-installation.`,
-      executed: false,
-      risk: "medium",
-      plannedCommands: [],
-      rollback: ["No changes."],
-      verification: [],
-      results,
-      checks,
-      ready,
-      missing,
-      unavailable,
-      installablePackages,
-      packageManager,
-      manualActions: [...manualActions, "Install missing host packages manually on the target machine."]
-    };
-  }
-
-  const installPlan = {
-    summary: `Install ${installablePackages.length} prerequisite package(s) for ${ctx.profile.name}.`,
-    risk: "high" as const,
-    specs: [
-      bash("sudo -n apt-get update", {
-        allowFailure: true,
-        timeoutMs: 300_000,
-        description: "Update apt package index"
-      }),
-      bash(`sudo -n apt-get install -y ${installablePackages.join(" ")}`, {
-        allowFailure: true,
-        timeoutMs: 300_000,
-        description: "Install missing prerequisite packages"
-      })
-    ],
-    rollback: ["Remove installed packages manually if you need to revert host dependencies."],
-    verification: installablePackages.map((packageName) => `${packageName} installation completes successfully`)
-  };
-
-  const installResponse = await runMutating(ctx, installPlan, { confirm: true });
   return {
-    ...installResponse,
     checks,
-    ready,
+    results,
+    ready: checks.every((check) => check.ok),
     missing,
     unavailable,
     installablePackages,
-    packageManager,
+    packageManager: packageManagerProbe.result.ok ? "apt-get" : undefined,
     manualActions
   };
+}
+
+function unavailableTargetSnapshot(ctx: ToolkitContext, results: CommandResult[]): PrerequisiteSnapshot {
+  const checks: PrerequisiteCheck[] = [
+    { name: "docker", kind: "command", ok: false, detail: "Docker state was not determined because the selected target is unavailable." },
+    { name: "dockerDaemon", kind: "service", ok: false, detail: "Docker daemon state was not determined because the selected target is unavailable." },
+    { name: "curl", kind: "command", ok: false, detail: "Not checked because the selected target is unavailable." },
+    { name: "ruby", kind: "command", ok: false, detail: "Not checked because the selected target is unavailable." }
+  ];
+  if (ctx.profile.rootPasswordFile) {
+    checks.push({
+      name: "rootPasswordFile",
+      kind: "file",
+      ok: false,
+      detail: "Not checked because the selected target is unavailable."
+    });
+  }
+  return {
+    checks,
+    results,
+    ready: false,
+    missing: [],
+    unavailable: ["target"],
+    installablePackages: [],
+    packageManager: undefined,
+    manualActions: ["Restore access to the selected target, then rerun prerequisite checks."]
+  };
+}
+
+async function runPrerequisiteProbe(
+  ctx: ToolkitContext,
+  spec: CommandSpec,
+  safeCommand: string
+): Promise<{ result: CommandResult; targetUnavailable: boolean }> {
+  let result: CommandResult;
+  try {
+    result = await ctx.client.run(spec);
+  } catch {
+    return {
+      result: failedProbeResult(safeCommand),
+      targetUnavailable: true
+    };
+  }
+  const targetUnavailable = result.timedOut
+    || (ctx.profile.mode === "ssh" && result.exitCode === 255)
+    || (ctx.profile.mode === "ssh" && !result.ok && result.exitCode !== 1);
+  return {
+    result: safeProbeResult(result, safeCommand),
+    targetUnavailable
+  };
+}
+
+function safeProbeResult(result: CommandResult, command: string): CommandResult {
+  return {
+    ...result,
+    command,
+    stdout: "",
+    stderr: ""
+  };
+}
+
+function failedProbeResult(command: string): CommandResult {
+  return {
+    command,
+    exitCode: null,
+    stdout: "",
+    stderr: "",
+    ok: false,
+    timedOut: false
+  };
+}
+
+function installSpecs(packages: string[]): CommandSpec[] {
+  return [
+    bash("sudo -n apt-get update", {
+      allowFailure: true,
+      timeoutMs: 300_000,
+      description: "Update apt package index"
+    }),
+    bash(`sudo -n apt-get install -y ${packages.join(" ")}`, {
+      allowFailure: true,
+      timeoutMs: 300_000,
+      description: "Install missing prerequisite packages"
+    })
+  ];
+}
+
+function snapshotResponse(
+  ctx: ToolkitContext,
+  snapshot: PrerequisiteSnapshot,
+  plan: {
+    summarySuffix: string;
+    plannedCommands: string[];
+    rollback: string[];
+    verification: string[];
+  }
+): CheckPrerequisitesResponse {
+  return {
+    summary: `${snapshotSummary(ctx, snapshot)}${plan.summarySuffix}`,
+    executed: false,
+    risk: "medium",
+    plannedCommands: plan.plannedCommands,
+    rollback: plan.rollback,
+    verification: plan.verification,
+    results: snapshot.results,
+    checks: snapshot.checks,
+    ready: snapshot.ready,
+    missing: snapshot.missing,
+    unavailable: snapshot.unavailable,
+    installablePackages: snapshot.installablePackages,
+    packageManager: snapshot.packageManager,
+    manualActions: snapshot.manualActions
+  };
+}
+
+function snapshotSummary(ctx: ToolkitContext, snapshot: PrerequisiteSnapshot): string {
+  return `Checked prerequisites for ${ctx.profile.name}. Ready=${snapshot.ready}; missing ${snapshot.missing.length} item(s); unavailable ${snapshot.unavailable.length} item(s)`;
+}
+
+function prerequisiteSummarySuffix(confirm: boolean | undefined, installablePackageCount: number): string {
+  if (confirm && installablePackageCount === 0) {
+    return ". No installable packages were queued.";
+  }
+  return installablePackageCount > 0 ? "; install plan prepared." : ".";
+}
+
+function failedCheckVerification(checks: PrerequisiteCheck[]): string[] {
+  const failed = checks.filter((check) => !check.ok);
+  return failed.length
+    ? failed.map((check) => `${check.name} becomes available`)
+    : ["No additional verification needed."];
 }

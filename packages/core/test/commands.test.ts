@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -120,104 +120,256 @@ describe("waitForCommand", () => {
   });
 });
 
-describe("commandForStaticEnsureRun", () => {
-  it("starts a compatible stopped container from its stored port bindings", async () => {
-    const tempDir = createTempDir();
-    try {
-      const dockerLog = join(tempDir.path, "docker.log");
-      const dockerPath = join(tempDir.path, "docker");
-      writeFileSync(dockerPath, `#!/bin/bash
-set -euo pipefail
+interface StaticContainerFixture {
+  state: string;
+  imageReference: string;
+  imageId: string;
+  containerImageId: string;
+  network: string;
+  mount: string;
+  portCount: string;
+  staticGrpcBinding: string;
+  dynamicGrpcBinding: string;
+  monitoringBinding: string;
+  environment: string;
+  restartPolicy: string;
+  healthcheck: string;
+  failAspect: string;
+}
+
+const DEFAULT_TENANT_ENVIRONMENT = [
+  "GRPC_PORT=2136",
+  "MON_PORT=8765",
+  "GRPC_TLS_PORT=",
+  "YDB_GRPC_ENABLE_TLS=0",
+  "YDB_ANONYMOUS_CREDENTIALS=1",
+  "YDB_LOCAL_SURVIVE_RESTART=1",
+  "YDB_FEATURE_FLAGS=enable_graph_shard"
+];
+
+const STATIC_MISMATCH_CASES: Array<[string, Partial<StaticContainerFixture>]> = [
+  ["image reference", { imageReference: "ghcr.io/ydb-platform/local-ydb:stale" }],
+  ["image ID", { containerImageId: "sha256:stale-image" }],
+  ["data mount", { mount: "volume|stale-ydb-data|/ydb_data|true" }],
+  ["data mount", { mount: "bind|ydb-local-data|/ydb_data|true" }],
+  ["data mount", { mount: "volume|ydb-local-data|/ydb_data|false" }],
+  ["network", { network: "stale-network" }],
+  ["published ports", { portCount: "4" }],
+  ["published ports", { staticGrpcBinding: "0.0.0.0:2136" }],
+  ["published ports", { staticGrpcBinding: "127.0.0.1:2136\n127.0.0.1:9999" }],
+  ["published ports", { monitoringBinding: "127.0.0.1:9999" }],
+  ["environment", { environment: "MON_PORT=8765" }],
+  ["environment", { environment: [...DEFAULT_TENANT_ENVIRONMENT, "GRPC_PORT=9999"].join("\n") }],
+  ["restart policy", { restartPolicy: "no" }],
+  ["healthcheck", { healthcheck: "CMD" }]
+];
+
+async function runStaticEnsureCase(options: {
+  fixture?: Partial<StaticContainerFixture>;
+  profileOverrides?: Record<string, unknown>;
+} = {}) {
+  const tempDir = createTempDir();
+  try {
+    const dockerLog = join(tempDir.path, "docker.log");
+    const injectionMarker = join(tempDir.path, "inspect-output-was-executed");
+    const profile = resolveProfile(ConfigSchema.parse({
+      profiles: { default: options.profileOverrides ?? {} }
+    }));
+    const fixture: StaticContainerFixture = {
+      state: "false",
+      imageReference: profile.image,
+      imageId: "sha256:current-image",
+      containerImageId: "sha256:current-image",
+      network: profile.network,
+      mount: profile.bindMountPath
+        ? `bind|${profile.bindMountPath}|/ydb_data|true`
+        : `volume|${profile.volume}|/ydb_data|true`,
+      portCount: "3",
+      staticGrpcBinding: `127.0.0.1:${profile.ports.staticGrpc}`,
+      dynamicGrpcBinding: `127.0.0.1:${profile.ports.dynamicGrpc}`,
+      monitoringBinding: `127.0.0.1:${profile.ports.monitoring}`,
+      environment: [
+        `GRPC_PORT=${profile.ports.staticGrpc}`,
+        "MON_PORT=8765",
+        "GRPC_TLS_PORT=",
+        "YDB_GRPC_ENABLE_TLS=0",
+        "YDB_ANONYMOUS_CREDENTIALS=1",
+        "YDB_LOCAL_SURVIVE_RESTART=1",
+        "YDB_FEATURE_FLAGS=enable_graph_shard"
+      ].join("\n"),
+      restartPolicy: "unless-stopped",
+      healthcheck: "NONE",
+      failAspect: "",
+      ...options.fixture
+    };
+    fixture.mount = fixture.mount.replace("<INJECTION_MARKER>", injectionMarker);
+    const fixtureExports = Object.entries(fixture)
+      .map(([name, value]) => `export FAKE_${name.replace(/[A-Z]/g, (letter) => `_${letter}`).toUpperCase()}=${shellQuote(value)}`);
+    const dockerFunction = `docker() {
 printf '%s\\n' "$*" >> ${shellQuote(dockerLog)}
-if [ "$1" = "inspect" ] && [[ "$*" == *".State.Running"* ]]; then
-  printf '%s\\n' false
-  exit 0
+if [ "$1" = "ps" ]; then
+  [ "$FAKE_FAIL_ASPECT" != "container inspection" ] || return 1
+  printf '%s\\n' ydb-local
+  return 0
 fi
-if [ "$1" = "inspect" ] && [[ "$*" == *"HostConfig.PortBindings"* ]]; then
-  printf '%s\\n' '127.0.0.1:2136'
-  exit 0
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  [ "$FAKE_FAIL_ASPECT" != "image ID" ] || return 1
+  printf '%s\\n' "$FAKE_IMAGE_ID"
+  return 0
 fi
 if [ "$1" = "inspect" ]; then
-  exit 0
-fi
-if [ "$1" = "port" ]; then
-  printf '%s\\n' 'No public port is available for a stopped container' >&2
-  exit 1
+  if [[ "$*" == *"{{.Config.Image}}"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "image reference" ] || return 1
+    printf '%s\\n' "$FAKE_IMAGE_REFERENCE"
+  elif [[ "$*" == *"{{.Image}}"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "image ID" ] || return 1
+    printf '%s\\n' "$FAKE_CONTAINER_IMAGE_ID"
+  elif [[ "$*" == *"NetworkMode"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "network" ] || return 1
+    printf '%s\\n' "$FAKE_NETWORK"
+  elif [[ "$*" == *".Mounts"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "data mount" ] || return 1
+    printf '%s\\n' "$FAKE_MOUNT"
+  elif [[ "$*" == *"len .HostConfig.PortBindings"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "published ports" ] || return 1
+    printf '%s\\n' "$FAKE_PORT_COUNT"
+  elif [[ "$*" == *'PortBindings "2136/tcp"'* ]]; then
+    printf '%s\\n' "$FAKE_STATIC_GRPC_BINDING"
+  elif [[ "$*" == *'PortBindings "2137/tcp"'* ]]; then
+    printf '%s\\n' "$FAKE_DYNAMIC_GRPC_BINDING"
+  elif [[ "$*" == *'PortBindings "8765/tcp"'* ]]; then
+    printf '%s\\n' "$FAKE_MONITORING_BINDING"
+  elif [[ "$*" == *".Config.Env"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "environment" ] || return 1
+    printf '%s\\n' "$FAKE_ENVIRONMENT"
+  elif [[ "$*" == *"RestartPolicy.Name"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "restart policy" ] || return 1
+    printf '%s\\n' "$FAKE_RESTART_POLICY"
+  elif [[ "$*" == *".Config.Healthcheck"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "healthcheck" ] || return 1
+    printf '%s\\n' "$FAKE_HEALTHCHECK"
+  elif [[ "$*" == *".State.Running"* ]]; then
+    [ "$FAKE_FAIL_ASPECT" != "running state" ] || return 1
+    printf '%s\\n' "$FAKE_STATE"
+  else
+    printf '%s\\n' "unexpected inspect invocation: $*" >&2
+    return 97
+  fi
+  return 0
 fi
 if [ "$1" = "start" ] && [ "$2" = "ydb-local" ]; then
-  exit 0
+  return 0
 fi
 printf '%s\\n' "unexpected docker invocation: $*" >&2
-exit 99
-`, "utf8");
-      chmodSync(dockerPath, 0o755);
+return 99
+}`;
 
-      const profile = resolveProfile(ConfigSchema.parse({}));
-      const executor = new ShellCommandExecutor();
-      const script = [
-        `export PATH=${shellQuote(tempDir.path)}:$PATH`,
-        commandForStaticEnsureRun(profile, { enableGraphShard: false })
-      ].join("\n");
+    const executor = new ShellCommandExecutor();
+    const script = [
+      ...fixtureExports,
+      dockerFunction,
+      commandForStaticEnsureRun(profile, {
+        enableGraphShard: true,
+        requireGraphShard: true,
+        publishDynamicGrpc: true
+      })
+    ].join("\n");
+    const result = await executor.run(profile, bash(script));
+    const invocations = readFileSync(dockerLog, "utf8").trim().split("\n");
+    return {
+      result,
+      invocations,
+      injectionMarkerCreated: existsSync(injectionMarker)
+    };
+  } finally {
+    tempDir.cleanup();
+  }
+}
 
-      const result = await executor.run(profile, bash(script));
+describe("commandForStaticEnsureRun", () => {
+  it.each([
+    ["running", "true", false],
+    ["stopped", "false", true]
+  ])("reuses a compatible %s container", async (_label, state, starts) => {
+    const response = await runStaticEnsureCase({ fixture: { state } });
 
-      expect(result.ok).toBe(true);
-      expect(readFileSync(dockerLog, "utf8").trim().split("\n")).toEqual([
-        "inspect -f {{.State.Running}} ydb-local",
-        "inspect ydb-local",
-        "inspect --type container --format {{range (index .HostConfig.PortBindings \"2136/tcp\")}}{{printf \"%s:%s\\n\" .HostIp .HostPort}}{{end}} ydb-local",
-        "start ydb-local"
-      ]);
-    } finally {
-      tempDir.cleanup();
+    expect(response.result.ok).toBe(true);
+    expect(response.invocations.some((invocation) => invocation.startsWith("start "))).toBe(starts);
+  });
+
+  it.each(STATIC_MISMATCH_CASES)(
+    "rejects a stopped container with mismatched %s",
+    async (aspect, fixture) => {
+      const response = await runStaticEnsureCase({ fixture });
+
+      expect(response.result.ok).toBe(false);
+      expect(response.result.stderr).toContain(`does not match profile ${aspect}`);
+      expect(response.result.stderr).toContain("Recreate it with local_ydb_destroy_stack");
+      expect(response.invocations.some((invocation) => invocation.startsWith("start "))).toBe(false);
+    }
+  );
+
+  it("validates bind mount source, type, and RW state", async () => {
+    const response = await runStaticEnsureCase({
+      profileOverrides: { bindMountPath: "/srv/local-ydb-data" },
+      fixture: { mount: "bind|/srv/other-data|/ydb_data|true" }
+    });
+
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain("does not match profile data mount");
+    expect(response.invocations.some((invocation) => invocation.startsWith("start "))).toBe(false);
+  });
+
+  it("requires GraphShard for tenant bootstrap reuse", async () => {
+    const response = await runStaticEnsureCase({
+      fixture: {
+        environment: [
+          "GRPC_PORT=2136",
+          "MON_PORT=8765",
+          "GRPC_TLS_PORT=",
+          "YDB_GRPC_ENABLE_TLS=0",
+          "YDB_ANONYMOUS_CREDENTIALS=1",
+          "YDB_LOCAL_SURVIVE_RESTART=1"
+        ].join("\n")
+      }
+    });
+
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain("does not match profile GraphShard environment");
+  });
+
+  it("checks every required static environment value", () => {
+    const profile = resolveProfile(ConfigSchema.parse({}));
+    const script = commandForStaticEnsureRun(profile, {
+      enableGraphShard: true,
+      requireGraphShard: true,
+      publishDynamicGrpc: true
+    });
+
+    for (const entry of DEFAULT_TENANT_ENVIRONMENT) {
+      expect(script).toContain(entry);
     }
   });
 
-  it("does not start a stopped container with a non-loopback stored port binding", async () => {
-    const tempDir = createTempDir();
-    try {
-      const dockerLog = join(tempDir.path, "docker.log");
-      const dockerPath = join(tempDir.path, "docker");
-      writeFileSync(dockerPath, `#!/bin/bash
-set -euo pipefail
-printf '%s\\n' "$*" >> ${shellQuote(dockerLog)}
-if [ "$1" = "inspect" ] && [[ "$*" == *".State.Running"* ]]; then
-  printf '%s\\n' false
-  exit 0
-fi
-if [ "$1" = "inspect" ] && [[ "$*" == *"HostConfig.PortBindings"* ]]; then
-  printf '%s\\n' '0.0.0.0:2136'
-  exit 0
-fi
-if [ "$1" = "inspect" ]; then
-  exit 0
-fi
-if [ "$1" = "start" ]; then
-  printf '%s\\n' 'incompatible container must not be started' >&2
-  exit 99
-fi
-printf '%s\\n' "unexpected docker invocation: $*" >&2
-exit 98
-`, "utf8");
-      chmodSync(dockerPath, 0o755);
+  it.each([
+    "container inspection",
+    "image ID",
+    "data mount"
+  ])("fails closed when %s inspection fails", async (aspect) => {
+    const response = await runStaticEnsureCase({ fixture: { failAspect: aspect } });
 
-      const profile = resolveProfile(ConfigSchema.parse({}));
-      const executor = new ShellCommandExecutor();
-      const script = [
-        `export PATH=${shellQuote(tempDir.path)}:$PATH`,
-        commandForStaticEnsureRun(profile, { enableGraphShard: false })
-      ].join("\n");
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain(`does not match profile ${aspect}`);
+    expect(response.invocations.some((invocation) => invocation.startsWith("start "))).toBe(false);
+  });
 
-      const result = await executor.run(profile, bash(script));
-      const invocations = readFileSync(dockerLog, "utf8").trim().split("\n");
+  it("does not execute data returned by docker inspect", async () => {
+    const response = await runStaticEnsureCase({
+      fixture: { mount: "volume|$(touch <INJECTION_MARKER>)|/ydb_data|true" }
+    });
 
-      expect(result.ok).toBe(false);
-      expect(result.stderr).toContain(
-        "Existing static container ydb-local does not publish required gRPC port 127.0.0.1:2136."
-      );
-      expect(invocations.some((invocation) => invocation.startsWith("start "))).toBe(false);
-    } finally {
-      tempDir.cleanup();
-    }
+    expect(response.result.ok).toBe(false);
+    expect(response.injectionMarkerCreated).toBe(false);
+    expect(response.result.stderr).not.toContain("touch");
   });
 });

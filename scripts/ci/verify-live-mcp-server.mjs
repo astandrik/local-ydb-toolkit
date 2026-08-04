@@ -35,6 +35,7 @@ const lifecyclePrefix = `${containerPrefix}-lifecycle-restart`;
 const lifecycleStaticContainer = `${lifecyclePrefix}-static`;
 const lifecycleDynamicContainer = `${lifecyclePrefix}-dynamic`;
 const lifecycleVolume = `${lifecyclePrefix}-data`;
+const lifecycleMismatchedVolume = `${lifecyclePrefix}-mismatched-data`;
 const lifecycleNetwork = `${lifecyclePrefix}-net`;
 const [
   lifecycleStaticGrpcPort,
@@ -691,6 +692,34 @@ async function verifyStoppedStaticRestart(client) {
         `disposable static container did not stop cleanly: ${stoppedState.stderr || stoppedState.stdout}`,
       );
 
+      config.profiles[lifecycleProfileName].volume = lifecycleMismatchedVolume;
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      try {
+        const incompatibleBootstrap = await callTool(client, "local_ydb_bootstrap_root_database", {
+          profile: lifecycleProfileName,
+          confirm: true,
+        });
+        assert(incompatibleBootstrap.executed === true, "incompatible disposable root bootstrap did not execute checks.");
+        const incompatibility = incompatibleBootstrap.results?.find((result) => result.ok === false);
+        assert(
+          incompatibility?.stderr?.includes("does not match profile data mount"),
+          "stopped container with a mismatched profile volume was not rejected.",
+        );
+        const stillStoppedState = await runCommand("docker", [
+          "inspect",
+          "--format",
+          "{{.State.Running}}",
+          lifecycleStaticContainer,
+        ]);
+        assert(
+          stillStoppedState.exitCode === 0 && stillStoppedState.stdout.trim() === "false",
+          "incompatible stopped container was started despite the volume mismatch.",
+        );
+      } finally {
+        config.profiles[lifecycleProfileName].volume = lifecycleVolume;
+        await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      }
+
       const repeatedBootstrap = await callTool(client, "local_ydb_bootstrap_root_database", {
         profile: lifecycleProfileName,
         confirm: true,
@@ -768,6 +797,7 @@ async function cleanupLifecycleArtifacts() {
   ]);
   await runCommand("docker", ["network", "rm", lifecycleNetwork]);
   await runCommand("docker", ["volume", "rm", lifecycleVolume]);
+  await runCommand("docker", ["volume", "rm", lifecycleMismatchedVolume]);
 }
 
 async function assertLifecycleArtifactsAbsent() {
@@ -776,6 +806,7 @@ async function assertLifecycleArtifactsAbsent() {
     ["dynamic container", ["inspect", lifecycleDynamicContainer]],
     ["network", ["network", "inspect", lifecycleNetwork]],
     ["volume", ["volume", "inspect", lifecycleVolume]],
+    ["mismatched volume", ["volume", "inspect", lifecycleMismatchedVolume]],
   ]) {
     const result = await runCommand("docker", args);
     assert(result.exitCode !== 0, `Disposable lifecycle ${kind} still exists after cleanup.`);

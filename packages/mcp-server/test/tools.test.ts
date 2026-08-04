@@ -558,6 +558,79 @@ describe("mcp tools", () => {
     }
   });
 
+  it("round-trips safe SSH target-unavailable prerequisites in JSON and TOON", async () => {
+    for (const responseContentFormat of ["json", "toon"] as const) {
+      const executor = new RecordingExecutor();
+      executor.run = async (profile, spec) => {
+        const command = executor.display(profile, spec);
+        executor.commands.push(command);
+        return {
+          command: `ssh -i /private/ssh/id_mcp private-target.example ${command}`,
+          exitCode: 255,
+          stdout: "",
+          stderr: "private SSH transport error",
+          ok: false,
+          timedOut: false,
+        };
+      };
+      const config = ConfigSchema.parse({
+        profiles: {
+          default: {
+            mode: "ssh",
+            ssh: {
+              host: "private-target.example",
+              identityFile: "/private/ssh/id_mcp",
+            },
+            rootPasswordFile: "/private/auth/root.password",
+          },
+        },
+      });
+      const server = createLocalYdbMcpServer({
+        config,
+        executor,
+        responseContentFormat,
+      }) as unknown as {
+        _requestHandlers: Map<string, (
+          request: unknown,
+          extra: { signal: AbortSignal },
+        ) => Promise<ToolResultForTest>>;
+      };
+      const handler = server._requestHandlers.get("tools/call");
+      if (!handler) {
+        throw new Error("Expected tools/call handler to be registered");
+      }
+
+      const result = await handler({
+        method: "tools/call",
+        params: {
+          name: "local_ydb_check_prerequisites",
+          arguments: {},
+        },
+      }, { signal: new AbortController().signal });
+      const jsonModel = JSON.parse(JSON.stringify(result.structuredContent)) as unknown;
+      const formatted = result.content[1]?.text ?? "";
+
+      expect(result.structuredContent).toMatchObject({
+        ready: false,
+        missing: [],
+        unavailable: ["target"],
+        installablePackages: [],
+        plannedCommands: [],
+      });
+      const serialized = JSON.stringify(result.structuredContent);
+      expect(serialized).not.toContain("private SSH transport error");
+      expect(serialized).not.toContain("/private/ssh/id_mcp");
+      expect(serialized).not.toContain("/private/auth/root.password");
+      expect(serialized).not.toContain("Install and configure Docker");
+      expect(executor.commands.some((command) => command.includes("command -v curl"))).toBe(false);
+      expect(
+        responseContentFormat === "json"
+          ? JSON.parse(formatted)
+          : decode(formatted),
+      ).toEqual(jsonModel);
+    }
+  });
+
   it("teaches agents the managed SQL safety and untrusted-data contract", () => {
     // Production break caught: discovery exposes the mixed-action tool without
     // explaining SnapshotRO, EXPLAIN/confirm, bounds, or prompt-injection safety.

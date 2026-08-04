@@ -138,13 +138,16 @@ Expected:
 - `ready=true` only when every prerequisite is usable
 - the check reports Docker CLI availability separately from the `dockerDaemon` service check
 - absent CLI/files appear in `missing`; a present CLI with an unreachable daemon appears in `unavailable`
+- an unreachable SSH target reports `ready=false`, `missing=[]`, `unavailable=["target"]`, no installable packages, and no install plan; it does not infer that Docker, curl, ruby, or the password file is missing
 - auth-enabled profiles also report whether `rootPasswordFile` exists
 - plan-only output includes `apt-get` install commands only for supported auto-install packages
+- after any confirmed `apt-get` attempt, `checks`, `ready`, `missing`, `unavailable`, package-manager fields, and manual actions describe a fresh post-install snapshot; `results` contains the install attempt followed by those final probes
 - Docker installation and daemon startup remain manual; `confirm=true` never starts Docker
 
 Avoid:
 
 - treating `inventory = 0 containers` as proof that Docker is installed on a remote host
+- proposing Docker or helper installation when the SSH target itself is unavailable
 - using `confirm: true` blindly on a host where `apt-get` should not be touched
 
 ## Scenario 1: Preflight Read-Only Coverage
@@ -170,7 +173,8 @@ Expected:
 - successful `inventory` returns `ok=true`, `docker.cliAvailable=true`, `docker.daemonReachable=true`, and the current containers/volumes.
 - Docker CLI, daemon, or inventory failures return `ok=false` with a reason and omit inventory arrays; never interpret that response as an empty host.
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
-- `status_report` preserves a structured inventory failure as `docker=unavailable` and continues other available read-only checks.
+- `status_report` contains every component independently: inventory, auth, tenant, nodes, or health rejection produces the existing component-shaped safe fallback and does not prevent later checks.
+- fallback diagnostics contain fixed summaries and empty command/output fields rather than raw exceptions, SSH/Docker stderr, credential paths, or `ENOENT` details.
 - `healthcheck` returns the YDB `selfCheckResult`, issue counts, issue types, capped raw output, and truncated `issue_log` entries when present.
 - `scheme` and `permissions` default to the tenant root for read-only schema and ACL inspection.
 
@@ -326,15 +330,16 @@ Calls:
 
 Expected:
 
-- bootstrap reads stored `HostConfig.PortBindings` before starting the stopped container and never relies on `docker port`
-- required gRPC bindings remain exactly loopback bindings; a missing or wildcard binding blocks start
-- tenant bootstrap also requires the stored GraphShard feature flag before start
+- bootstrap applies the same compatibility checks to running and stopped containers and never relies on `docker port`
+- the exact image reference and current image ID, selected network, `/ydb_data` volume or bind source/type/RW, complete loopback gRPC and monitoring bindings without extras, required environment, `unless-stopped` policy, and disabled healthcheck must all match
+- tenant bootstrap additionally requires the GraphShard feature flag and both static and dynamic gRPC bindings
+- an inspect failure or mismatch returns only the incompatible aspect plus recreation guidance and leaves the container stopped; changing the profile volume is a useful live negative control
 - a compatible static container starts exactly once and the root healthcheck succeeds
 
 Avoid:
 
 - stopping or reusing a persisted `/local` stack owned by another workflow
-- starting a container whose stored bindings or GraphShard requirements do not match the selected operation
+- starting, removing, or automatically recreating a container whose stored configuration does not match the selected operation
 
 ## Scenario 3: Fresh Bootstrap on an Isolated GHCR Stack
 
@@ -816,7 +821,9 @@ Expected:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
-- final verification checks tenant metadata, the recreated containers' image tags, and persists `profiles.<name>.image` in the file-backed config
+- successful final inventory verifies the recreated containers' image tags and then persists `profiles.<name>.image` in the file-backed config
+- a verified image mismatch returns the accumulated history and leaves the profile image unchanged
+- if final inventory is unavailable only after dump/rebuild/restore/auth/node phases succeed, the response appends a safe failed verification result, omits `imageVerification`, preserves the full history, and persists the target profile image for subsequent operations
 
 Avoid:
 
