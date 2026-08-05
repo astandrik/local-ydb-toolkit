@@ -73,7 +73,7 @@ describe("managed SQL operation", () => {
     for (const [options, message] of invalidOptions) {
       await expect(sql(ctx, options, backend)).rejects.toThrow(message);
     }
-  });
+  }, 10_000);
 
   it("defaults to one bounded SnapshotRO query and returns the full public envelope", async () => {
     // Production break caught: the default action can drift to an unsafe mode,

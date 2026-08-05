@@ -1,0 +1,9 @@
+FROM docker:28.5.1-cli@sha256:9190b0613792e658a7783cf14b2d5ace5941bb68ede7276922ea36ee457d76ad
+
+RUN apk add --no-cache bash openssh-server \
+    && passwd -d root \
+    && mkdir -p /run/sshd /root/.ssh \
+    && chmod 0700 /root/.ssh
+
+ENTRYPOINT ["/bin/sh", "-ec"]
+CMD ["ssh-keygen -A && exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config"]

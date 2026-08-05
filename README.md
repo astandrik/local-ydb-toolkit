@@ -286,6 +286,7 @@ If omitted, the server uses `defaultProfile`. A profile can use:
 - `mode: "ssh"` for commands executed through `ssh -o BatchMode=yes -o ConnectTimeout=10`.
 
 SSH profiles use existing SSH agent/key/known_hosts configuration. The toolkit does not store SSH passwords.
+On Linux Docker Engine, SDK-backed tools such as `local_ydb_sql` and `local_ydb_apply_schema` can reach gRPC ports that remain Docker-internal: the toolkit inspects the selected container, resolves its IPv4 address in `profile.network` (including a dynamic node using `network_mode=container:<static>`), and forwards the local SSH tunnel to that address. It verifies the tunnel with an authenticated YDB discovery request before sending the operation. Docker Desktop and rootless Docker fallbacks are not supported by this path; a target-resolution or readiness failure is reported with a fixed phase-specific diagnostic without exposing container addresses, SSH output, credentials, or paths.
 
 ### Operations
 

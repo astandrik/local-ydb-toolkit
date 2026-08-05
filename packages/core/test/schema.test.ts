@@ -177,6 +177,31 @@ describe("schema application", () => {
     expect(calls.map((call) => call.mode)).toEqual(["validate", "execute"]);
   });
 
+  it("shares one absolute timeout across schema validation and execution", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const calls: SchemaSdkExecuteRequest[] = [];
+    const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));
+    try {
+      await applySchema(ctx, {
+        action: "apply",
+        confirm: true,
+        timeoutMs: 1_000,
+        script: "CREATE TABLE users (id Uint64, PRIMARY KEY (id));",
+        sdkExecutor: async (request) => {
+          calls.push(request);
+          if (request.mode === "validate") {
+            now.mockReturnValue(10_250);
+          }
+          return { ok: true, status: "SUCCESS", issues: "" };
+        },
+      });
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(calls.map((call) => call.timeoutMs)).toEqual([1_000, 750]);
+  });
+
   it("does not execute apply when SDK validation reports YDB issues", async () => {
     const calls: SchemaSdkExecuteRequest[] = [];
     const ctx = createContext(undefined, undefined, ConfigSchema.parse({}));

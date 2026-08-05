@@ -12,7 +12,13 @@ import { AnonymousCredentialsProvider } from "@ydbjs/auth/anonymous";
 import { StaticCredentialsProvider } from "@ydbjs/auth/static";
 import { YDBError } from "@ydbjs/error";
 import { capText, normalizeMaxOutputBytes } from "./output.js";
-import { normalizeSdkDatabasePath, normalizeSdkTimeoutMs, withSdkConnection } from "./sdk-connection.js";
+import {
+  createSdkOperationDeadline,
+  normalizeSdkDatabasePath,
+  normalizeSdkTimeoutMs,
+  remainingSdkOperationTimeoutMs,
+  withSdkConnection,
+} from "./sdk-connection.js";
 import type {
   ApplySchemaOptions,
   ApplySchemaResponse,
@@ -38,6 +44,7 @@ export async function applySchema(
   const script = validateScript(options.script);
   const databasePath = normalizeSdkDatabasePath(ctx, options.databasePath);
   const timeoutMs = normalizeSdkTimeoutMs(options.timeoutMs);
+  const deadline = createSdkOperationDeadline(timeoutMs);
   const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes);
   const schemaAnalysis = analyzeSchemaScript(script);
   const statements = {
@@ -56,9 +63,15 @@ export async function applySchema(
     timeoutMs,
     useSshTunnel: sdkExecutor === executeSchemaWithSdk,
     operationLabel: "YDB schema operation",
+    deadline,
   }, async (baseRequest) => {
     const validation = normalizeSchemaResult(
-      await sdkExecutor({ ...baseRequest, mode: "validate", script }),
+      await sdkExecutor({
+        ...baseRequest,
+        timeoutMs: remainingSdkOperationTimeoutMs(deadline),
+        mode: "validate",
+        script,
+      }),
       maxOutputBytes,
     );
     if (action === "validate") {
@@ -100,7 +113,12 @@ export async function applySchema(
     }
 
     const execution = normalizeSchemaResult(
-      await sdkExecutor({ ...baseRequest, mode: "execute", script }),
+      await sdkExecutor({
+        ...baseRequest,
+        timeoutMs: remainingSdkOperationTimeoutMs(deadline),
+        mode: "execute",
+        script,
+      }),
       maxOutputBytes,
     );
     return {
