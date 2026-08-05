@@ -135,14 +135,19 @@ Optional install path on supported apt-based hosts:
 
 Expected:
 
-- the check reports whether `docker`, `curl`, and `ruby` are available
+- `ready=true` only when every prerequisite is usable
+- the check reports Docker CLI availability separately from the `dockerDaemon` service check
+- absent CLI/files appear in `missing`; a present CLI with an unreachable daemon appears in `unavailable`
+- an unreachable SSH target reports `ready=false`, `missing=[]`, `unavailable=["target"]`, no installable packages, and no install plan; it does not infer that Docker, curl, ruby, or the password file is missing
 - auth-enabled profiles also report whether `rootPasswordFile` exists
 - plan-only output includes `apt-get` install commands only for supported auto-install packages
-- `docker` may appear in `missing`, but it remains a manual prerequisite
+- after any confirmed `apt-get` attempt, `checks`, `ready`, `missing`, `unavailable`, package-manager fields, and manual actions describe a fresh post-install snapshot; `results` contains the install attempt followed by those final probes
+- Docker installation and daemon startup remain manual; `confirm=true` never starts Docker
 
 Avoid:
 
 - treating `inventory = 0 containers` as proof that Docker is installed on a remote host
+- proposing Docker or helper installation when the SSH target itself is unavailable
 - using `confirm: true` blindly on a host where `apt-get` should not be touched
 
 ## Scenario 1: Preflight Read-Only Coverage
@@ -165,14 +170,17 @@ Calls:
 
 Expected:
 
-- `inventory` returns the profile shape and current container list.
+- successful `inventory` returns `ok=true`, `docker.cliAvailable=true`, `docker.daemonReachable=true`, and the current containers/volumes.
+- Docker CLI, daemon, or inventory failures return `ok=false` with a reason and omit inventory arrays; never interpret that response as an empty host.
 - `storage_leftovers` reports candidate volumes/paths without mutating them.
-- `status_report` returns a structured snapshot, including healthcheck output, even when the stack is not yet healthy.
+- `status_report` contains every component independently: inventory, auth, tenant, nodes, or health rejection produces the existing component-shaped safe fallback and does not prevent later checks.
+- fallback diagnostics contain fixed summaries and empty command/output fields rather than raw exceptions, SSH/Docker stderr, credential paths, or `ENOENT` details.
 - `healthcheck` returns the YDB `selfCheckResult`, issue counts, issue types, capped raw output, and truncated `issue_log` entries when present.
 - `scheme` and `permissions` default to the tenant root for read-only schema and ACL inspection.
 
 Avoid:
 
+- Accessing `inventory.containers` before checking `inventory.ok`.
 - Treating `status_report.tenant=not-ok` as a transport failure. It often just means the stack is not bootstrapped yet.
 
 ## Scenario 1A: Schema Generate and Apply
@@ -305,6 +313,33 @@ Avoid:
 
 - using the tenant bootstrap tool when the task only needs `/local`
 - treating a missing configured tenant as a root database failure
+
+## Scenario 2A: Restart a Compatible Stopped Static Container
+
+Goal: verify bootstrap reuses a task-owned stopped static container only when its stored configuration remains compatible.
+
+Precondition:
+bootstrap a disposable profile, then stop only that profile's static container.
+
+Calls:
+
+```json
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "<disposable-profile>", "confirm": true } }
+{ "tool": "local_ydb_healthcheck", "arguments": { "profile": "<disposable-profile>", "databasePath": "/local" } }
+```
+
+Expected:
+
+- bootstrap applies the same compatibility checks to running and stopped containers and never relies on `docker port`
+- the exact image reference and current image ID, selected network, `/ydb_data` volume or bind source/type/RW, complete loopback gRPC and monitoring bindings without extras, required environment, `unless-stopped` policy, and disabled healthcheck must all match
+- tenant bootstrap additionally requires the GraphShard feature flag and both static and dynamic gRPC bindings
+- an inspect failure or mismatch returns only the incompatible aspect plus recreation guidance and leaves the container stopped; changing the profile volume is a useful live negative control
+- a compatible static container starts exactly once and the root healthcheck succeeds
+
+Avoid:
+
+- stopping or reusing a persisted `/local` stack owned by another workflow
+- starting, removing, or automatically recreating a container whose stored configuration does not match the selected operation
 
 ## Scenario 3: Fresh Bootstrap on an Isolated GHCR Stack
 
@@ -786,7 +821,9 @@ Expected:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
-- final verification checks tenant metadata, the recreated containers' image tags, and persists `profiles.<name>.image` in the file-backed config
+- successful final inventory verifies the recreated containers' image tags and then persists `profiles.<name>.image` in the file-backed config
+- a verified image mismatch returns the accumulated history and leaves the profile image unchanged
+- if final inventory is unavailable only after dump/rebuild/restore/auth/node phases succeed, the response appends a safe failed verification result, omits `imageVerification`, preserves the full history, and persists the target profile image for subsequent operations
 
 Avoid:
 

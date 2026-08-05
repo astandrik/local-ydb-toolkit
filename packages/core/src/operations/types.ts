@@ -395,14 +395,16 @@ export interface DestroyStackResponse extends OperationResponse {
 
 export interface PrerequisiteCheck {
   name: string;
-  kind: "command" | "file";
+  kind: "command" | "file" | "service";
   ok: boolean;
   detail: string;
 }
 
 export interface CheckPrerequisitesResponse extends OperationResponse {
   checks: PrerequisiteCheck[];
+  ready: boolean;
   missing: string[];
+  unavailable: string[];
   installablePackages: string[];
   packageManager?: string;
   manualActions: string[];

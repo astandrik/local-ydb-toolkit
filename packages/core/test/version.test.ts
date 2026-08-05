@@ -75,20 +75,39 @@ function writeTempConfig(rawConfig: unknown): { configPath: string; cleanup: () 
   };
 }
 
-function stubUpgradeExecutor(executor: RecordingExecutor, inventoryImage: string): void {
+function stubUpgradeExecutor(
+  executor: RecordingExecutor,
+  inventoryImage: string,
+  options: { failDockerPsCall?: number; containerNames?: string[] } = {}
+): void {
+  let dockerPsCalls = 0;
   executor.run = async (_profile, spec) => {
     const command = executor.display(_profile, spec);
     executor.commands.push(command);
 
-    if (command.includes("docker ps -a --format")) {
+    if (spec.command === "docker" && spec.args?.[0] === "ps") {
+      dockerPsCalls += 1;
+      if (dockerPsCalls === options.failDockerPsCall) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "private final inventory failure",
+          ok: false,
+          timedOut: false
+        };
+      }
+      const containerNames = options.containerNames ?? [
+        "ydb-dyn-example-2",
+        "ydb-dyn-example",
+        "ydb-local"
+      ];
       return {
         command,
         exitCode: 0,
-        stdout: [
-          JSON.stringify({ Names: "ydb-dyn-example-2", Image: inventoryImage }),
-          JSON.stringify({ Names: "ydb-dyn-example", Image: inventoryImage }),
-          JSON.stringify({ Names: "ydb-local", Image: inventoryImage })
-        ].join("\n"),
+        stdout: containerNames
+          .map((Names) => JSON.stringify({ Names, Image: inventoryImage }))
+          .join("\n"),
         stderr: "",
         ok: true,
         timedOut: false
@@ -245,7 +264,6 @@ describe("version operations", () => {
         version: "26.1.2.0",
         dumpName: "upgrade-smoke"
       });
-
       expect(response.executed).toBe(true);
       expect(response.targetImage).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
       expect(response.dumpName).toBe("upgrade-smoke");
@@ -262,6 +280,7 @@ describe("version operations", () => {
         executed: true,
         ok: true
       });
+      expect(response.summary).toContain("Final image verification succeeded");
       const updatedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
       expect(updatedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
 
@@ -333,6 +352,115 @@ describe("version operations", () => {
       ok: false,
       exitCode: 1
     });
+  });
+
+  it("does not update the profile when final image verification finds a mismatch", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.1.6", {
+        containerNames: ["ydb-dyn-example", "ydb-local"]
+      });
+
+      const response = await upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-smoke"
+      });
+
+      expect(response.imageVerification).toEqual({
+        expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        missing: [],
+        mismatches: [
+          "ydb-local -> ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+          "ydb-dyn-example -> ghcr.io/ydb-platform/local-ydb:26.1.1.6"
+        ]
+      });
+      expect(response.profileImageUpdate).toMatchObject({ executed: false, ok: false });
+      expect(response.summary).toContain("Final image verification found a mismatch");
+      const unchangedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
+      expect(unchangedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.1.6");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("persists the target image and returns history when final inventory is unavailable", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        failDockerPsCall: 4,
+        containerNames: ["ydb-dyn-example", "ydb-local"]
+      });
+
+      const response = await upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-smoke"
+      });
+      expect(response.executed).toBe(true);
+      expect(response.imageVerification).toBeUndefined();
+      expect(response.profileImageUpdate).toMatchObject({
+        targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        executed: true,
+        ok: true
+      });
+      expect(response.summary).toContain("could not be verified");
+      expect(response.results?.at(-2)).toMatchObject({ ok: false, exitCode: 1 });
+      expect(response.results?.at(-2)?.stderr).not.toContain("private final inventory failure");
+      expect(response.results?.at(-1)).toMatchObject({ ok: true, exitCode: 0 });
+      const updatedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
+      expect(updatedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reports a structured config write failure after unavailable final verification", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined
+    });
+    const configPath = join(tmpdir(), `local-ydb-unavailable-${Date.now()}`, "local-ydb.config.json");
+    const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+    stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+      failDockerPsCall: 4,
+      containerNames: ["ydb-dyn-example", "ydb-local"]
+    });
+
+    const response = await upgradeVersion(ctx, {
+      confirm: true,
+      version: "26.1.2.0",
+      dumpName: "upgrade-smoke"
+    });
+
+    expect(response.imageVerification).toBeUndefined();
+    expect(response.profileImageUpdate).toMatchObject({
+      executed: true,
+      ok: false,
+      targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0"
+    });
+    expect(response.summary).toContain("could not be verified");
+    expect(response.results?.at(-2)).toMatchObject({ ok: false, exitCode: 1 });
+    expect(response.results?.at(-1)).toMatchObject({ ok: false, exitCode: 1 });
   });
 
   it("rejects digest-pinned profile images for upgrade", async () => {

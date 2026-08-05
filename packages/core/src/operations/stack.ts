@@ -1,5 +1,5 @@
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
-import { inventory } from "./checks.js";
+import { requireInventory } from "./checks.js";
 import {
   commandForDynamicEnsureRun,
   commandForStaticEnsureRun,
@@ -88,7 +88,7 @@ export async function startDynamicNode(ctx: ToolkitContext, options: MutatingOpt
 }
 
 export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOptions = {}): Promise<DestroyStackResponse> {
-  const inventoryState = await inventory(ctx);
+  const inventoryState = await requireInventory(ctx);
   const extraDynamicNodes = findExtraDynamicContainers(ctx.profile, inventoryState.containers.map((container) => container.names));
   const specs: CommandSpec[] = [
     removeTenantIfPresentSpec(ctx.profile),

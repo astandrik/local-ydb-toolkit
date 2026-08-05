@@ -9,7 +9,7 @@ import {
 } from "../api-client.js";
 import { sanitizeTenantName } from "../validation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
-import { inventory } from "./checks.js";
+import { requireInventory } from "./checks.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { runMutating } from "./execution.js";
@@ -158,7 +158,7 @@ export async function reduceStorageGroups(
   const authReapplyPlanned = requiresAuthReapply(ctx);
   const dumpName = options.dumpName ?? `shrink-${sanitizeTenantName(ctx.profile.tenantPath)}-${pool.numGroups}-to-${targetNumGroups}`;
   const rebuildCtx = rebuildContext(ctx, targetNumGroups);
-  const inventoryState = await inventory(ctx);
+  const inventoryState = await requireInventory(ctx);
   const extraDynamicNodes = inventoryState.containers
     .map((container) => extraDynamicNodeTarget(ctx.profile, container.names))
     .filter((target): target is NonNullable<typeof target> => Boolean(target))

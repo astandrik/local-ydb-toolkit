@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -29,6 +30,18 @@ const dynamicContainer = `${containerPrefix}-dynamic`;
 const staticGrpcPort = endpointPort(staticEndpoint, "LOCAL_YDB_STATIC_ENDPOINT");
 const dynamicGrpcPort = endpointPort(dynamicEndpoint, "LOCAL_YDB_ENDPOINT");
 const monitoringPort = endpointPort(monitoringUrl, "LOCAL_YDB_MONITORING_URL");
+const lifecycleProfileName = "ci-lifecycle-restart";
+const lifecyclePrefix = `${containerPrefix}-lifecycle-restart`;
+const lifecycleStaticContainer = `${lifecyclePrefix}-static`;
+const lifecycleDynamicContainer = `${lifecyclePrefix}-dynamic`;
+const lifecycleVolume = `${lifecyclePrefix}-data`;
+const lifecycleMismatchedVolume = `${lifecyclePrefix}-mismatched-data`;
+const lifecycleNetwork = `${lifecyclePrefix}-net`;
+const [
+  lifecycleStaticGrpcPort,
+  lifecycleDynamicGrpcPort,
+  lifecycleMonitoringPort,
+] = await allocateOpenPorts(3);
 
 const config = {
   defaultProfile: profileName,
@@ -49,6 +62,22 @@ const config = {
         monitoring: monitoringPort,
       },
       ...(rootPasswordFile ? { rootUser, rootPasswordFile } : {}),
+    },
+    [lifecycleProfileName]: {
+      mode: "local",
+      image,
+      staticContainer: lifecycleStaticContainer,
+      dynamicContainer: lifecycleDynamicContainer,
+      tenantPath: "/local/lifecycle-restart",
+      volume: lifecycleVolume,
+      network: lifecycleNetwork,
+      monitoringBaseUrl: `http://127.0.0.1:${lifecycleMonitoringPort}`,
+      dumpHostPath: join(tempDir, "lifecycle-dumps"),
+      ports: {
+        staticGrpc: lifecycleStaticGrpcPort,
+        dynamicGrpc: lifecycleDynamicGrpcPort,
+        monitoring: lifecycleMonitoringPort,
+      },
     },
   },
 };
@@ -87,6 +116,7 @@ try {
   await verifyToolRegistry(client);
   await verifyPromptRegistry(client);
   await verifyLiveTools(client);
+  await verifyStoppedStaticRestart(client);
 
   console.log("Live local-ydb MCP stdio server integration passed.");
 } finally {
@@ -106,6 +136,7 @@ async function verifyToolRegistry(client) {
     assertLiveToolRegistry(result);
     const tools = new Map(result.tools.map((tool) => [tool.name, tool]));
     const expectedTools = [
+      "local_ydb_check_prerequisites",
       "local_ydb_status_report",
       "local_ydb_inventory",
       "local_ydb_database_status",
@@ -132,6 +163,7 @@ async function verifyToolRegistry(client) {
     }
 
     const expectedMutatingTools = new Set([
+      "local_ydb_check_prerequisites",
       "local_ydb_apply_schema",
       "local_ydb_sql",
       "local_ydb_permissions",
@@ -194,11 +226,30 @@ async function verifyPromptRegistry(client) {
 
 async function verifyLiveTools(client) {
   const profile = profileName;
+  const prerequisites = await callTool(client, "local_ydb_check_prerequisites", {
+    profile,
+    confirm: false,
+  });
+  assert(prerequisites.ready === true, "prerequisites did not report ready=true.");
+  assert(
+    Array.isArray(prerequisites.unavailable) && prerequisites.unavailable.length === 0,
+    "prerequisites reported unavailable services.",
+  );
+  assert(
+    prerequisites.checks?.some(
+      (check) => check.name === "dockerDaemon" && check.kind === "service" && check.ok === true,
+    ),
+    "prerequisites did not confirm Docker daemon reachability.",
+  );
+
   const statusReport = await callTool(client, "local_ydb_status_report", { profile });
   assert(statusReport.tenant?.ok === true, statusReport.tenant?.stderr || "tenant check failed");
   assert(statusReport.nodes?.ok === true, statusReport.nodes?.error || "node check failed");
 
   const inventory = await callTool(client, "local_ydb_inventory", { profile });
+  assert(inventory.ok === true, inventory.summary || "inventory did not report ok=true.");
+  assert(inventory.docker?.cliAvailable === true, "inventory did not confirm Docker CLI availability.");
+  assert(inventory.docker?.daemonReachable === true, "inventory did not confirm Docker daemon reachability.");
   assert(Array.isArray(inventory.containers), "inventory did not return containers.");
   assert(Array.isArray(inventory.volumes), "inventory did not return volumes.");
   assert(
@@ -614,6 +665,154 @@ function ydbCliDockerArgs(args) {
   ];
 }
 
+async function verifyStoppedStaticRestart(client) {
+  console.log("::group::lifecycle stopped-static restart");
+  const failures = [];
+  try {
+    try {
+      const initialBootstrap = await callTool(client, "local_ydb_bootstrap_root_database", {
+        profile: lifecycleProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(initialBootstrap, "initial disposable root bootstrap");
+
+      const stopResult = await runCommand("docker", ["stop", lifecycleStaticContainer]);
+      assert(
+        stopResult.exitCode === 0,
+        `failed to stop disposable static container: ${stopResult.stderr || stopResult.stdout}`,
+      );
+      const stoppedState = await runCommand("docker", [
+        "inspect",
+        "--format",
+        "{{.State.Running}}",
+        lifecycleStaticContainer,
+      ]);
+      assert(
+        stoppedState.exitCode === 0 && stoppedState.stdout.trim() === "false",
+        `disposable static container did not stop cleanly: ${stoppedState.stderr || stoppedState.stdout}`,
+      );
+
+      config.profiles[lifecycleProfileName].volume = lifecycleMismatchedVolume;
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      try {
+        const incompatibleBootstrap = await callTool(client, "local_ydb_bootstrap_root_database", {
+          profile: lifecycleProfileName,
+          confirm: true,
+        });
+        assert(incompatibleBootstrap.executed === true, "incompatible disposable root bootstrap did not execute checks.");
+        const incompatibility = incompatibleBootstrap.results?.find((result) => result.ok === false);
+        assert(
+          incompatibility?.stderr?.includes("does not match profile data mount"),
+          "stopped container with a mismatched profile volume was not rejected.",
+        );
+        const stillStoppedState = await runCommand("docker", [
+          "inspect",
+          "--format",
+          "{{.State.Running}}",
+          lifecycleStaticContainer,
+        ]);
+        assert(
+          stillStoppedState.exitCode === 0 && stillStoppedState.stdout.trim() === "false",
+          "incompatible stopped container was started despite the volume mismatch.",
+        );
+      } finally {
+        config.profiles[lifecycleProfileName].volume = lifecycleVolume;
+        await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      }
+
+      const repeatedBootstrap = await callTool(client, "local_ydb_bootstrap_root_database", {
+        profile: lifecycleProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(repeatedBootstrap, "repeated disposable root bootstrap");
+      const restartCommand = repeatedBootstrap.results?.find(
+        (result) => typeof result.command === "string" && result.command.includes("docker start"),
+      );
+      assert(restartCommand?.ok === true, "repeated bootstrap did not execute the stopped-container start path.");
+      assert(
+        restartCommand.command.includes("HostConfig.PortBindings"),
+        "repeated bootstrap did not validate stored port bindings before start.",
+      );
+      assert(
+        !restartCommand.command.includes("docker port"),
+        "repeated bootstrap still relies on docker port for a stopped container.",
+      );
+
+      const healthcheck = await callTool(client, "local_ydb_healthcheck", {
+        profile: lifecycleProfileName,
+        databasePath: "/local",
+      });
+      assert(
+        healthcheck.ok === true && healthcheck.healthy === true,
+        healthcheck.stderr || healthcheck.summary || "disposable root healthcheck failed",
+      );
+    } catch (error) {
+      failures.push(error);
+    }
+
+    try {
+      const cleanup = await callTool(client, "local_ydb_destroy_stack", {
+        profile: lifecycleProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(cleanup, "disposable lifecycle cleanup");
+    } catch (error) {
+      failures.push(error);
+    }
+
+    try {
+      await cleanupLifecycleArtifacts();
+      await assertLifecycleArtifactsAbsent();
+    } catch (error) {
+      failures.push(error);
+    }
+
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Disposable stopped-static restart or cleanup failed.");
+    }
+    console.log("Disposable stopped-static restart and cleanup passed.");
+  } finally {
+    console.log("::endgroup::");
+  }
+}
+
+function assertSuccessfulMutation(result, description) {
+  assert(result.executed === true, `${description} did not execute.`);
+  assert(
+    Array.isArray(result.results) && result.results.length > 0,
+    `${description} returned no command results.`,
+  );
+  assert(
+    result.results.every((commandResult) => commandResult.ok === true),
+    `${description} returned a failed command result.`,
+  );
+}
+
+async function cleanupLifecycleArtifacts() {
+  await runCommand("docker", [
+    "rm",
+    "-f",
+    lifecycleDynamicContainer,
+    lifecycleStaticContainer,
+  ]);
+  await runCommand("docker", ["network", "rm", lifecycleNetwork]);
+  await runCommand("docker", ["volume", "rm", lifecycleVolume]);
+  await runCommand("docker", ["volume", "rm", lifecycleMismatchedVolume]);
+}
+
+async function assertLifecycleArtifactsAbsent() {
+  for (const [kind, args] of [
+    ["container", ["inspect", lifecycleStaticContainer]],
+    ["dynamic container", ["inspect", lifecycleDynamicContainer]],
+    ["network", ["network", "inspect", lifecycleNetwork]],
+    ["volume", ["volume", "inspect", lifecycleVolume]],
+    ["mismatched volume", ["volume", "inspect", lifecycleMismatchedVolume]],
+  ]) {
+    const result = await runCommand("docker", args);
+    assert(result.exitCode !== 0, `Disposable lifecycle ${kind} still exists after cleanup.`);
+  }
+}
+
 async function runCommand(command, args, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
@@ -726,6 +925,37 @@ function endpointPort(value, name) {
     throw new Error(`${name} must include a valid port: ${value}`);
   }
   return port;
+}
+
+async function allocateOpenPorts(count) {
+  const ports = new Set();
+  while (ports.size < count) {
+    ports.add(await allocateOpenPort());
+  }
+  return [...ports];
+}
+
+async function allocateOpenPort() {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const server = createServer();
+    server.unref();
+    server.on("error", rejectPromise);
+    server.listen({ host: "127.0.0.1", port: 0 }, () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        rejectPromise(new Error("Could not allocate an open TCP port."));
+        return;
+      }
+      server.close((error) => {
+        if (error) {
+          rejectPromise(error);
+          return;
+        }
+        resolvePromise(address.port);
+      });
+    });
+  });
 }
 
 function stringEnv(env) {

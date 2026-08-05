@@ -15,6 +15,49 @@ import { pathRedactions } from "../src/redactions.js";
 import { ConfigSchema, resolveProfile } from "../src/validation.js";
 
 describe("api client helpers", () => {
+  it("fails Docker list helpers instead of returning empty data", async () => {
+    const profile = resolveProfile(ConfigSchema.parse({}));
+    const executor: CommandExecutor = {
+      display: (_profile, spec) => [spec.command, ...(spec.args ?? [])].join(" "),
+      run: async (_profile, spec) => ({
+        command: [spec.command, ...(spec.args ?? [])].join(" "),
+        exitCode: 1,
+        stdout: "",
+        stderr: "daemon failure",
+        ok: false,
+        timedOut: false
+      })
+    };
+    const client = new LocalYdbApiClient(profile, executor);
+
+    await expect(client.dockerPs()).rejects.toThrow("List Docker containers failed.");
+    await expect(client.dockerVolumes()).rejects.toThrow("List Docker volumes failed.");
+    await expect(client.dockerInspect(["ydb-local"])).rejects.toThrow("Inspect local-ydb containers failed.");
+  });
+
+  it("skips Docker inspect when there are no container names", async () => {
+    const profile = resolveProfile(ConfigSchema.parse({}));
+    let calls = 0;
+    const executor: CommandExecutor = {
+      display: (_profile, spec) => [spec.command, ...(spec.args ?? [])].join(" "),
+      run: async (_profile, spec) => {
+        calls += 1;
+        return {
+          command: [spec.command, ...(spec.args ?? [])].join(" "),
+          exitCode: 99,
+          stdout: "",
+          stderr: "must not run",
+          ok: false,
+          timedOut: false
+        };
+      }
+    };
+    const client = new LocalYdbApiClient(profile, executor);
+
+    await expect(client.dockerInspect([])).resolves.toEqual([]);
+    expect(calls).toBe(0);
+  });
+
   it("parses docker ps JSON lines", () => {
     const containers = parseDockerPsJsonLines([
       JSON.stringify({ ID: "1", Image: "img", Names: "ydb-local", State: "running", Status: "Up", Ports: "8765/tcp" }),

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 
 import { LocalYdbApiClient, type CommandResult } from "../api-client.js";
 import { ConfigSchema, sanitizeTenantName, type ResolvedLocalYdbProfile } from "../validation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
-import { inventory } from "./checks.js";
+import { inventory, requireInventory } from "./checks.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { assertPositiveInteger, extraDynamicNodeTarget } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
@@ -39,6 +39,11 @@ interface RegistryChallenge {
 }
 
 type ProfileImageUpdate = NonNullable<UpgradeVersionResponse["profileImageUpdate"]>;
+type ImageVerificationData = NonNullable<UpgradeVersionResponse["imageVerification"]>;
+type ImageVerificationOutcome =
+  | { kind: "verified"; verification: ImageVerificationData; result: CommandResult }
+  | { kind: "mismatch"; verification: ImageVerificationData; result: CommandResult }
+  | { kind: "unavailable"; result: CommandResult };
 
 export function parseImageReference(image: string): ParsedImageReference {
   const input = image.trim();
@@ -198,7 +203,7 @@ export async function upgradeVersion(
   const authReapplyPlanned = requiresAuthReapply(ctx.profile);
   const dumpName = options.dumpName ?? buildUpgradeDumpName(ctx.profile, sourceImage, version);
   const profileImageUpdate = plannedProfileImageUpdate(ctx.configPath, ctx.profile.name, sourceImage, targetImage);
-  const inventoryState = await inventory(ctx);
+  const inventoryState = await requireInventory(ctx);
   const extraDynamicNodes = inventoryState.containers
     .map((container) => extraDynamicNodeTarget(ctx.profile, container.names))
     .filter((target): target is NonNullable<typeof target> => Boolean(target))
@@ -347,17 +352,34 @@ export async function upgradeVersion(
   }
 
   const imageVerification = await verifyProfileImages(finalCtx, targetImage, extraDynamicNodes.map((node) => node.container));
-  const { result: imageVerificationResult, ...imageVerificationData } = imageVerification;
-  results.push(imageVerificationResult);
-  if (!imageVerificationResult.ok) {
+  results.push(imageVerification.result);
+  if (imageVerification.kind === "mismatch") {
     return upgradeVersionResponse(
       sourceImage,
       targetImage,
       dumpName,
       authReapplyPlanned,
       extraDynamicNodes,
-      imageVerificationData,
+      imageVerification.verification,
       profileImageUpdate,
+      plannedCommands,
+      rollback,
+      verification,
+      results
+    );
+  }
+
+  if (imageVerification.kind === "unavailable") {
+    const executedProfileImageUpdate = updateProfileImage(ctx.configPath, ctx.profile.name, sourceImage, targetImage);
+    results.push(profileImageUpdateResult(executedProfileImageUpdate));
+    return upgradeVersionResponse(
+      sourceImage,
+      targetImage,
+      dumpName,
+      authReapplyPlanned,
+      extraDynamicNodes,
+      undefined,
+      executedProfileImageUpdate,
       plannedCommands,
       rollback,
       verification,
@@ -374,7 +396,7 @@ export async function upgradeVersion(
     dumpName,
     authReapplyPlanned,
     extraDynamicNodes,
-    imageVerificationData,
+    imageVerification.verification,
     executedProfileImageUpdate,
     plannedCommands,
     rollback,
@@ -667,13 +689,21 @@ async function verifyProfileImages(
   ctx: ToolkitContext,
   expectedImage: string,
   extraDynamicContainers: string[]
-): Promise<{
-  expectedImage: string;
-  missing: string[];
-  mismatches: string[];
-  result: CommandResult;
-}> {
+): Promise<ImageVerificationOutcome> {
   const inv = await inventory(ctx);
+  if (!inv.ok) {
+    return {
+      kind: "unavailable",
+      result: {
+        command: `verify profile containers use image ${expectedImage}`,
+        exitCode: 1,
+        stdout: "",
+        stderr: "Docker inventory was unavailable during final image verification.",
+        ok: false,
+        timedOut: false
+      }
+    };
+  }
   const targetNames = [
     ctx.profile.staticContainer,
     ctx.profile.dynamicContainer,
@@ -691,10 +721,10 @@ async function verifyProfileImages(
     .map((item) => `${item.name} -> ${item.image}`);
   const ok = missing.length === 0 && mismatches.length === 0;
 
+  const verification = { expectedImage, missing, mismatches };
   return {
-    expectedImage,
-    missing,
-    mismatches,
+    kind: ok ? "verified" : "mismatch",
+    verification,
     result: {
       command: `verify profile containers use image ${expectedImage}`,
       exitCode: ok ? 0 : 1,
@@ -737,8 +767,11 @@ function upgradeVersionResponse(
   verification: string[],
   results: CommandResult[]
 ): UpgradeVersionResponse {
+  const completedCommands = results.filter((result) => result.ok).length;
+  const progress = `Upgrade to ${targetImage}. Executed ${completedCommands}/${results.length} commands.`;
+  const summary = upgradeVersionSummary(progress, imageVerification, profileImageUpdate);
   return {
-    summary: `Upgrade to ${targetImage}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
+    summary,
     executed: true,
     risk: "high",
     plannedCommands,
@@ -753,4 +786,24 @@ function upgradeVersionResponse(
     profileImageUpdate,
     imageVerification
   };
+}
+
+function upgradeVersionSummary(
+  progress: string,
+  imageVerification: ImageVerificationData | undefined,
+  profileImageUpdate: ProfileImageUpdate | undefined
+): string {
+  if (imageVerification) {
+    if (imageVerification.missing.length > 0 || imageVerification.mismatches.length > 0) {
+      return `${progress} Final image verification found a mismatch; the profile image was not updated.`;
+    }
+    if (profileImageUpdate?.executed) {
+      return `${progress} Final image verification succeeded; profile image update ${profileImageUpdate.ok ? "succeeded" : "failed"}.`;
+    }
+    return `${progress} Final image verification succeeded.`;
+  }
+  if (profileImageUpdate?.executed) {
+    return `${progress} Final container images could not be verified; the target profile image update ${profileImageUpdate.ok ? "succeeded" : "failed"}.`;
+  }
+  return `${progress} Final image verification was not reached.`;
 }

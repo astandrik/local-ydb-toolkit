@@ -25,7 +25,7 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - Read `references/mcp-tool-scenarios.md` when testing MCP tools, exercising the managed SQL safety matrix, planning structured schema generation/apply flows, or building reusable generate-then-validate-then-apply examples.
 - Read `references/history-and-non-goals.md` when cleaning docs, deciding what is reusable versus artifact noise, or reconciling stale hardening plans with final topology.
 - For exact-GHCR `26.1.1.6` local runs, combine `topology.md`, `auth-hardening.md`, and `verification.md`; they contain field-proven steps for fresh bootstrap, restore, auth rollout, and the nightly-vs-stable pitfalls we hit in practice.
-- Prefer the MCP read-only tools `local_ydb_status_report`, `local_ydb_healthcheck`, `local_ydb_database_status`, `local_ydb_container_logs`, and `local_ydb_storage_placement` over ad hoc shell diagnostics when they are available.
+- Prefer the MCP read-only tools `local_ydb_inventory`, `local_ydb_status_report`, `local_ydb_healthcheck`, `local_ydb_database_status`, `local_ydb_container_logs`, and `local_ydb_storage_placement` over ad hoc shell diagnostics when they are available.
 
 ## Core Rules
 
@@ -36,6 +36,8 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - When `local-ydb` behavior is unclear, search upstream `ydb-platform/ydb` source with `gh api search/code` and read matching files through `gh api repos/ydb-platform/ydb/contents/...`; use pinned commits from project docs when matching documented proto shapes.
 - Do not hardcode dynamic node IDs. Discover them through monitoring/node-list APIs.
 - For database-level diagnosis, run `local_ydb_status_report` first and then `local_ydb_healthcheck`; use `selfCheckResult`, issue types, and issue counts to decide whether to inspect storage, nodes, scheme, auth, or logs.
+- Check `local_ydb_inventory.ok` before reading inventory arrays. A Docker CLI, daemon, or inventory failure returns `ok=false` with a reason and is not evidence of an empty host; inventory-backed mutation planning must fail closed.
+- On a new target, use `local_ydb_check_prerequisites` to distinguish missing Docker CLI/files from an unavailable Docker daemon. The toolkit diagnoses daemon availability but never starts Docker automatically.
 - For new table schema DDL, prefer `local_ydb_generate_schema` with structured input, review/validate the generated script, then use `local_ydb_apply_schema`; applying still requires `confirm=true`.
 - Use `local_ydb_sql` only for managed YQL against the selected configured local-ydb profile. Keep the official `ydb-mcp` server as the general choice for arbitrary YDB endpoints.
 - Use `local_ydb_sql action=query` for reads: it always uses `SnapshotRO`, and `confirm=true` never turns it into a write path. Use `action=explain` for plan/AST inspection.

@@ -1,6 +1,6 @@
 import { bash, shellQuote, type CommandResult } from "../api-client.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
-import { nodesCheck } from "./checks.js";
+import { nodesCheck, requireInventory } from "./checks.js";
 import { dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
 import {
   assertPort,
@@ -164,7 +164,8 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
     throw new Error("count cannot be used with nodeIds");
   }
 
-  const containers = await ctx.client.dockerPs();
+  const inventoryState = await requireInventory(ctx);
+  const containers = inventoryState.containers;
   const available = containers
     .map((container) => extraDynamicNodeTarget(ctx.profile, container.names))
     .filter((target): target is DynamicNodeTarget => Boolean(target))

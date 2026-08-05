@@ -46,43 +46,110 @@ export function commandForStaticEnsureRun(
   const publishDynamicGrpc = options.publishDynamicGrpc ?? false;
   validatePublishedHostPorts(profile, publishDynamicGrpc);
   const container = shellQuote(profile.staticContainer);
-  const graphShardCheck = `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' ${container} 2>/dev/null | grep -qx 'YDB_FEATURE_FLAGS=enable_graph_shard'`;
-  const missingGraphShardHint = [
-    `printf '%s\\n' ${shellQuote(`Existing static container ${profile.staticContainer} is missing YDB_FEATURE_FLAGS=enable_graph_shard.`)} >&2`,
-    `printf '%s\\n' ${shellQuote(`Recreate it with local_ydb_destroy_stack or docker rm -f ${profile.staticContainer}, then rerun local_ydb_bootstrap.`)} >&2`
+  const grpcPorts = requiredPublishedGrpcPorts(profile, publishDynamicGrpc);
+  const expectedPortBindings = [
+    ...grpcPorts.map((port) => ({ containerPort: port, hostPort: port })),
+    { containerPort: 8765, hostPort: profile.ports.monitoring }
   ];
-  const requireGraphShardLines = requireGraphShard
-    ? [
-        `  if ! ${graphShardCheck}; then`,
-        ...missingGraphShardHint.map((line) => `    ${line}`),
-        "    exit 1",
-        "  fi"
-      ]
-    : [];
-  const requirePublishedGrpcLines = requiredPublishedGrpcPorts(profile, publishDynamicGrpc)
-    .flatMap((port) => [
-      `  if ! docker port ${container} ${shellQuote(`${port}/tcp`)} 2>/dev/null | grep -qx ${shellQuote(`127.0.0.1:${port}`)}; then`,
-      `    printf '%s\\n' ${shellQuote(`Existing static container ${profile.staticContainer} does not publish required gRPC port 127.0.0.1:${port}.`)} >&2`,
-      `    printf '%s\\n' ${shellQuote(`Recreate it with local_ydb_destroy_stack or docker rm -f ${profile.staticContainer}, then rerun local_ydb_bootstrap.`)} >&2`,
-      "    exit 1",
-      "  fi"
-    ]);
+  const mountTemplate = profile.bindMountPath
+    ? '{{range .Mounts}}{{if eq .Destination "/ydb_data"}}{{printf "%s|%s|%s|%t\\n" .Type .Source .Destination .RW}}{{end}}{{end}}'
+    : '{{range .Mounts}}{{if eq .Destination "/ydb_data"}}{{printf "%s|%s|%s|%t\\n" .Type .Name .Destination .RW}}{{end}}{{end}}';
+  const expectedMount = profile.bindMountPath
+    ? `bind|${profile.bindMountPath}|/ydb_data|true`
+    : `volume|${profile.volume}|/ydb_data|true`;
+  const requiredEnvironment = [
+    `GRPC_PORT=${profile.ports.staticGrpc}`,
+    "MON_PORT=8765",
+    "GRPC_TLS_PORT=",
+    "YDB_GRPC_ENABLE_TLS=0",
+    "YDB_ANONYMOUS_CREDENTIALS=1",
+    "YDB_LOCAL_SURVIVE_RESTART=1",
+    ...(requireGraphShard ? ["YDB_FEATURE_FLAGS=enable_graph_shard"] : [])
+  ];
+  const compatibilityLines = [
+    ...staticInspectValueCheck(profile, "{{.Config.Image}}", profile.image, "image reference"),
+    `if ! expected_image_id=$(docker image inspect --format ${shellQuote("{{.Id}}")} ${shellQuote(profile.image)} 2>/dev/null); then`,
+    ...staticContainerMismatchLines(profile, "image ID", "  "),
+    "fi",
+    `if ! observed=$(docker inspect --type container --format ${shellQuote("{{.Image}}")} ${container} 2>/dev/null); then`,
+    ...staticContainerMismatchLines(profile, "image ID", "  "),
+    "fi",
+    "if [ \"$observed\" != \"$expected_image_id\" ]; then",
+    ...staticContainerMismatchLines(profile, "image ID", "  "),
+    "fi",
+    ...staticInspectValueCheck(profile, "{{.HostConfig.NetworkMode}}", profile.network, "network"),
+    ...staticInspectValueCheck(profile, mountTemplate, expectedMount, "data mount"),
+    ...staticInspectValueCheck(profile, "{{len .HostConfig.PortBindings}}", String(expectedPortBindings.length), "published ports"),
+    ...expectedPortBindings.flatMap(({ containerPort, hostPort }) => {
+      const template = `{{range (index .HostConfig.PortBindings "${containerPort}/tcp")}}{{printf "%s:%s\\n" .HostIp .HostPort}}{{end}}`;
+      return staticInspectValueCheck(profile, template, `127.0.0.1:${hostPort}`, "published ports");
+    }),
+    `if ! container_env=$(docker inspect --type container --format ${shellQuote("{{range .Config.Env}}{{println .}}{{end}}")} ${container} 2>/dev/null); then`,
+    ...staticContainerMismatchLines(profile, "environment", "  "),
+    "fi",
+    ...requiredEnvironment.flatMap((entry) => {
+      const key = entry.slice(0, entry.indexOf("="));
+      return [
+        `if [ \"$(printf '%s\\n' \"$container_env\" | grep -Fxc ${shellQuote(entry)} || true)\" -ne 1 ] || [ \"$(printf '%s\\n' \"$container_env\" | grep -c ${shellQuote(`^${key}=`)} || true)\" -ne 1 ]; then`,
+        ...staticContainerMismatchLines(profile, requireGraphShard && key === "YDB_FEATURE_FLAGS" ? "GraphShard environment" : "environment", "  "),
+        "fi"
+      ];
+    }),
+    ...staticInspectValueCheck(profile, "{{.HostConfig.RestartPolicy.Name}}", "unless-stopped", "restart policy"),
+    ...staticInspectValueCheck(profile, "{{if .Config.Healthcheck}}{{index .Config.Healthcheck.Test 0}}{{end}}", "NONE", "healthcheck")
+  ];
 
   return [
     "set -euo pipefail",
-    `if docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null | grep -qx true; then`,
-    ...requireGraphShardLines,
-    ...requirePublishedGrpcLines,
+    `if ! existing_containers=$(docker ps -a --format ${shellQuote("{{.Names}}")} 2>/dev/null); then`,
+    ...staticContainerMismatchLines(profile, "container inspection", "  "),
+    "fi",
+    `if ! printf '%s\\n' \"$existing_containers\" | grep -Fxq ${shellQuote(profile.staticContainer)}; then`,
+    `  ${commandForStaticRun(profile, { enableGraphShard, publishDynamicGrpc })}`,
     "  exit 0",
     "fi",
-    `if docker inspect ${container} >/dev/null 2>&1; then`,
-    ...requireGraphShardLines,
-    ...requirePublishedGrpcLines,
-    `  docker start ${container} >/dev/null`,
+    ...compatibilityLines,
+    `if ! observed=$(docker inspect --type container --format ${shellQuote("{{.State.Running}}")} ${container} 2>/dev/null); then`,
+    ...staticContainerMismatchLines(profile, "running state", "  "),
+    "fi",
+    "if [ \"$observed\" = true ]; then",
     "  exit 0",
     "fi",
-    commandForStaticRun(profile, { enableGraphShard, publishDynamicGrpc })
+    "if [ \"$observed\" != false ]; then",
+    ...staticContainerMismatchLines(profile, "running state", "  "),
+    "fi",
+    `docker start ${container} >/dev/null`,
+    "exit 0"
   ].join("\n");
+}
+
+function staticInspectValueCheck(
+  profile: ResolvedLocalYdbProfile,
+  template: string,
+  expected: string,
+  aspect: string
+): string[] {
+  const container = shellQuote(profile.staticContainer);
+  return [
+    `if ! observed=$(docker inspect --type container --format ${shellQuote(template)} ${container} 2>/dev/null); then`,
+    ...staticContainerMismatchLines(profile, aspect, "  "),
+    "fi",
+    `if [ \"$observed\" != ${shellQuote(expected)} ]; then`,
+    ...staticContainerMismatchLines(profile, aspect, "  "),
+    "fi"
+  ];
+}
+
+function staticContainerMismatchLines(
+  profile: ResolvedLocalYdbProfile,
+  aspect: string,
+  indent = ""
+): string[] {
+  return [
+    `${indent}printf '%s\\n' ${shellQuote(`Existing static container ${profile.staticContainer} does not match profile ${aspect}.`)} >&2`,
+    `${indent}printf '%s\\n' ${shellQuote(`Recreate it with local_ydb_destroy_stack or docker rm -f ${profile.staticContainer}, then rerun local_ydb_bootstrap.`)} >&2`,
+    `${indent}exit 1`
+  ];
 }
 
 function requiredPublishedGrpcPorts(profile: ResolvedLocalYdbProfile, publishDynamicGrpc: boolean): number[] {
