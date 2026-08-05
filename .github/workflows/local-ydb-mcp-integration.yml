@@ -38,6 +38,7 @@ jobs:
         with:
           version: 26.1.1.6
           tenant: /local/test
+          auth: true
           container-prefix: local-ydb-toolkit-mcp-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Run MCP integration against live YDB
@@ -46,3 +47,10 @@ jobs:
           LOCAL_YDB_IMAGE: ${{ steps.ydb.outputs.image }}
           LOCAL_YDB_CONTAINER_PREFIX: local-ydb-toolkit-mcp-${{ github.run_id }}-${{ github.run_attempt }}
         run: node scripts/ci/verify-live-mcp-server.mjs
+
+      - name: Run authenticated SDK operations through SSH to Docker-internal gRPC
+        env:
+          LOCAL_YDB_STATIC_ENDPOINT: ${{ steps.ydb.outputs.static-endpoint }}
+          LOCAL_YDB_IMAGE: ${{ steps.ydb.outputs.image }}
+          LOCAL_YDB_CONTAINER_PREFIX: local-ydb-toolkit-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+        run: node scripts/ci/verify-ssh-internal-grpc.mjs

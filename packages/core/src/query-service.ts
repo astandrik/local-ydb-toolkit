@@ -22,6 +22,7 @@ import {
   withSdkConnection,
   type SdkConnectionRequest,
 } from "./operations/sdk-connection.js";
+import { sdkConnectionSetupDiagnostic } from "./operations/sdk-connection-errors.js";
 import type { ToolkitContext } from "./operations/types.js";
 import type { JsonValue } from "./sql-parameter-types.js";
 import { decodeYdbValue } from "./sql-parameters.js";
@@ -31,6 +32,20 @@ const CLEANUP_TIMEOUT_MS = 5_000;
 const MAX_CAPTURED_ISSUE_DEPTH = 32;
 const MAX_CAPTURED_ISSUE_NODES = 1_000;
 const queryServiceDispatchState = new WeakMap<object, boolean>();
+
+type QueryServicePhase = "sessionCreation" | "sessionAttach" | "queryExecution";
+
+const QUERY_SERVICE_PHASE_DIAGNOSTICS: Record<QueryServicePhase, string> = {
+  sessionCreation: "Query Service session creation failed.",
+  sessionAttach: "Query Service session attach failed.",
+  queryExecution: "Query execution failed.",
+};
+
+const QUERY_SERVICE_PHASE_CANCELLATION_DIAGNOSTICS: Record<QueryServicePhase, string> = {
+  sessionCreation: "Query Service request was cancelled during session creation.",
+  sessionAttach: "Query Service request was cancelled during session attach.",
+  queryExecution: "Query Service request was cancelled during query execution.",
+};
 
 export type QueryServiceMode = "explain" | "snapshotReadOnly" | "noTx";
 
@@ -189,16 +204,17 @@ export async function executeQueryService(
     return queryServiceRequestWasDispatched(result) === undefined
       ? withQueryServiceDispatchState(result, executorStarted)
       : result;
-  } catch {
+  } catch (error) {
     const cancelled = deadline.signal.aborted;
+    const setupDiagnostic = sdkConnectionSetupDiagnostic(error);
     return withQueryServiceDispatchState({
       completion: cancelled ? "cancelled" : "failed",
       resultSets: [],
       capturedBytes: 0,
       truncationReasons: [],
-      diagnostics: cancelled
+      diagnostics: setupDiagnostic ?? (cancelled
         ? "Query Service request was cancelled."
-        : "Query Service connection setup failed.",
+        : "Query Service connection setup failed."),
     }, executorStarted);
   }
 }
@@ -235,6 +251,7 @@ export async function executeQueryServiceWithSdk(
   let requestSent = false;
   let sessionMonitorFailed = false;
   let receivedPart = false;
+  let phase: QueryServicePhase = "sessionCreation";
   const payloadRedactions = request.rootPassword ? [request.rootPassword] : [];
 
   try {
@@ -252,6 +269,7 @@ export async function executeQueryServiceWithSdk(
     sessionId = created.sessionId;
     nodeClient = driver.createClient(QueryServiceDefinition, created.nodeId);
 
+    phase = "sessionAttach";
     const attachIterator = nodeClient.attachSession(
       { sessionId },
       { signal: operationSignal },
@@ -271,6 +289,7 @@ export async function executeQueryServiceWithSdk(
     );
 
     operationSignal.throwIfAborted();
+    phase = "queryExecution";
     const responseStream = nodeClient.executeQuery(
       buildExecuteRequest(request, sessionId),
       { signal: operationSignal },
@@ -417,7 +436,7 @@ export async function executeQueryServiceWithSdk(
     } else if (sentMutationCancelled) {
       diagnostics = "Mutation was sent but its final Query Service status was not received.";
     } else if (externallyCancelled) {
-      diagnostics = "Query Service request was cancelled.";
+      diagnostics = QUERY_SERVICE_PHASE_CANCELLATION_DIAGNOSTICS[phase];
     } else if (streamFailed && sessionMonitorFailed) {
       diagnostics = transportCompletion === "mutationStatusUnknown"
         ? "Mutation was sent but its attached session was lost before final status."
@@ -448,13 +467,13 @@ export async function executeQueryServiceWithSdk(
       && requestSent
       && externallyCancelled;
     let completion: QueryServiceExecutionResult["completion"] = "failed";
-    let diagnostics = "Query Service session setup failed.";
+    let diagnostics = QUERY_SERVICE_PHASE_DIAGNOSTICS[phase];
     if (sentMutationCancelled) {
       completion = "mutationStatusUnknown";
       diagnostics = "Mutation was sent but its final Query Service status was not received.";
     } else if (externallyCancelled) {
       completion = "cancelled";
-      diagnostics = "Query Service request was cancelled.";
+      diagnostics = QUERY_SERVICE_PHASE_CANCELLATION_DIAGNOSTICS[phase];
     }
     return withQueryServiceDispatchState({
       completion,

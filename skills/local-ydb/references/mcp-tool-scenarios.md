@@ -79,6 +79,7 @@ Preparation:
 - Create a disposable `managed_sql_smoke` table with `local_ydb_apply_schema`.
 - Run every cleanup step from a `finally` block, including after an assertion or preflight failure.
 - Never reuse a table that contains non-test data.
+- For the authenticated Linux SSH fixture, keep static and dynamic gRPC ports unpublished, set `profile.network` to the static container's user-defined bridge, let the dynamic node share the static container namespace, and expose the root password file only as a read-only remote secret.
 
 Calls:
 
@@ -111,6 +112,7 @@ Expected:
 - The byte-limit call's placeholder is documentation only; replace it with an actual value of at least 4096 characters, or an equivalent fixture that reliably exceeds the 256-byte capture budget.
 - All three lone-surrogate calls are rejected before Query Service execution: they probe an Utf8 parameter, a Struct field name, and the script itself. Replace the credential-path placeholder with the selected profile's exact configured path; the returned row string is `<redacted>`.
 - Result rows are arrays aligned with `columns`; their strings, nested object keys, and column names/types undergo recursive redaction for configured credential paths, the loaded root password, and recognized credential assignments. Colliding redacted keys retain every value through deterministic numeric suffixes, and redaction expansion remains charged to `outputBytes`. Inspect `outcome`, truncation flags, and `outputBytes` rather than treating partial output as success.
+- On an authenticated Linux SSH profile with Docker-internal gRPC, `query`, `explain`, plan-only `execute`, and `local_ydb_apply_schema action=validate` succeed without host port publication. Credential read, Docker target resolution, SSH listener setup, YDB readiness, session creation, session attach, and query execution failures return safe phase-specific diagnostics.
 - Cleanup drops `managed_sql_smoke` even when an earlier check fails.
 <!-- END MANAGED SQL SCENARIOS -->
 

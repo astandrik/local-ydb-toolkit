@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
@@ -19,6 +19,20 @@ const image = requiredEnv("LOCAL_YDB_IMAGE");
 const containerPrefix = requiredEnv("LOCAL_YDB_CONTAINER_PREFIX");
 const rootPasswordFile = process.env.LOCAL_YDB_PASSWORD_FILE || process.env.LOCAL_YDB_ROOT_PASSWORD_FILE;
 const rootUser = process.env.LOCAL_YDB_USER || "root";
+const dynamicNodeAuthTokenFile = rootPasswordFile
+  ? join(dirname(rootPasswordFile), "dynamic-node-auth.pb")
+  : undefined;
+if (dynamicNodeAuthTokenFile) {
+  let tokenStat;
+  try {
+    tokenStat = await stat(dynamicNodeAuthTokenFile);
+  } catch {
+    throw new Error("Authenticated live verification requires a dynamic-node auth token file.");
+  }
+  if (!tokenStat.isFile()) {
+    throw new Error("The dynamic-node auth token path is not a regular file.");
+  }
+}
 
 const tempDir = await mkdtemp(join(tmpdir(), "local-ydb-mcp-integration-"));
 const configPath = join(tempDir, "local-ydb.config.json");
@@ -61,7 +75,14 @@ const config = {
         dynamicGrpc: dynamicGrpcPort,
         monitoring: monitoringPort,
       },
-      ...(rootPasswordFile ? { rootUser, rootPasswordFile } : {}),
+      ...(rootPasswordFile
+        ? {
+            rootUser,
+            rootPasswordFile,
+            dynamicNodeAuthTokenFile,
+            dynamicNodeAuthSid: "root@builtin",
+          }
+        : {}),
     },
     [lifecycleProfileName]: {
       mode: "local",

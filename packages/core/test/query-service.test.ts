@@ -33,6 +33,7 @@ describe("low-level Query Service adapter", () => {
     expect(typeof core.executeQueryServiceWithSdk).toBe("function");
 
     const events: string[] = [];
+    let driverOptions: Record<string, unknown> | undefined;
     const baseClient = {
       async createSession() {
         events.push("create");
@@ -81,7 +82,10 @@ describe("low-level Query Service adapter", () => {
       maxRows: 10,
       maxOutputBytes: 1_024,
     }, {
-      createDriver: () => driver,
+      createDriver: (_connectionString: string, options: Record<string, unknown>) => {
+        driverOptions = options;
+        return driver;
+      },
     });
 
     expect(result.completion).toBe("success");
@@ -95,6 +99,9 @@ describe("low-level Query Service adapter", () => {
       "delete",
       "close",
     ]);
+    expect(driverOptions).toMatchObject({
+      "ydb.sdk.enable_discovery": false,
+    });
   });
 
   it("preserves a definitive query result when driver cleanup throws", async () => {
@@ -966,7 +973,9 @@ describe("low-level Query Service adapter", () => {
 
       expect(result.completion).toBe("cancelled");
       expect(result.resultSets[0]?.rows).toEqual([[1]]);
-      expect(result.diagnostics).toBe("Query Service request was cancelled.");
+      expect(result.diagnostics).toBe(
+        "Query Service request was cancelled during query execution.",
+      );
       expect(cleanupSignals).toHaveLength(1);
       expect(cleanupSignals[0]?.aborted).toBe(false);
     }
@@ -1083,7 +1092,7 @@ describe("low-level Query Service adapter", () => {
     expect(executeInvocations).toBe(0);
     expect(result).toMatchObject({
       completion: "cancelled",
-      diagnostics: "Query Service request was cancelled.",
+      diagnostics: "Query Service request was cancelled during session attach.",
     });
   });
 
@@ -1328,7 +1337,7 @@ describe("low-level Query Service adapter", () => {
     });
 
     expect(result.completion).toBe("cancelled");
-    expect(result.diagnostics).toBe("Query Service request was cancelled.");
+    expect(result.diagnostics).toBe("Remote YDB credential read failed.");
     expect(passwordCommandTimeoutMs).toBeGreaterThan(0);
     expect(passwordCommandTimeoutMs).toBeLessThanOrEqual(5);
     expect(queryCalls).toBe(0);
@@ -1387,7 +1396,7 @@ describe("low-level Query Service adapter", () => {
 
       expect(Date.now() - abortedAt).toBeLessThan(250);
       expect(result.completion).toBe("cancelled");
-      expect(result.diagnostics).toBe("Query Service request was cancelled.");
+      expect(result.diagnostics).toBe("Remote YDB credential read failed.");
       expect(queryCalls).toBe(0);
       expect(isProcessAlive(childPid)).toBe(false);
     } finally {
@@ -1451,12 +1460,76 @@ describe("low-level Query Service adapter", () => {
       resultSets: [],
       capturedBytes: 0,
       truncationReasons: [],
-      diagnostics: "Query Service session setup failed.",
+      diagnostics: "Query Service session creation failed.",
     });
     expect(executeCalls).toBe(0);
     expect(closed).toBe(true);
     expect(JSON.stringify(result)).not.toContain("credential path");
     expect(JSON.stringify(result)).not.toContain("test-only-value");
+  });
+
+  it.each([
+    {
+      label: "session attach",
+      expectedDiagnostics: "Query Service session attach failed.",
+      attachSession: () => (async function* attachFailure() {
+        throw new Error("private attach details");
+      })(),
+      executeQuery: () => (async function* emptyQuery() {})(),
+    },
+    {
+      label: "query execution",
+      expectedDiagnostics: "Query execution failed.",
+      attachSession: (signal?: AbortSignal) => stableAttach(signal),
+      executeQuery: () => {
+        throw new Error("private query details");
+      },
+    },
+  ])("reports a safe $label phase diagnostic", async ({
+    expectedDiagnostics,
+    attachSession,
+    executeQuery,
+  }) => {
+    const { executeQueryServiceWithSdk } = await import("../src/query-service.js");
+    const baseClient = {
+      async createSession() {
+        return { status: SUCCESS, issues: [], sessionId: "session-1", nodeId: 7n };
+      },
+    };
+    const nodeClient = {
+      attachSession(_request: unknown, options?: { signal?: AbortSignal }) {
+        return attachSession(options?.signal);
+      },
+      executeQuery,
+      async deleteSession() {
+        return { status: SUCCESS, issues: [] };
+      },
+    };
+    const result = await executeQueryServiceWithSdk({
+      connectionString: "grpc://127.0.0.1:2136/local",
+      databasePath: "/local",
+      endpoint: "grpc://127.0.0.1:2136",
+      timeoutMs: 1_000,
+      script: "SELECT 1;",
+      parameters: {},
+      mode: "explain",
+      maxRows: 10,
+      maxOutputBytes: 4_096,
+    }, {
+      createDriver: () => ({
+        async ready() {},
+        createClient(_definition: unknown, nodeId?: bigint) {
+          return nodeId === undefined ? baseClient : nodeClient;
+        },
+        close() {},
+      }) as never,
+    });
+
+    expect(result).toMatchObject({
+      completion: "failed",
+      diagnostics: expectedDiagnostics,
+    });
+    expect(JSON.stringify(result)).not.toContain("private");
   });
 
   it("does not treat an empty clean stream as a known mutation success", async () => {
