@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.1...mcp-server-v0.15.2) (2026-08-05)
+
+
+### Bug Fixes
+
+* Docker-internal YDB SDK tunnels over SSH ([cf5e1af](https://github.com/astandrik/local-ydb-toolkit/commit/cf5e1af9ee227e8861201db2122d7a7c581d6876))
+* support Docker-internal YDB SDK tunnels ([a5891ed](https://github.com/astandrik/local-ydb-toolkit/commit/a5891ed38a251ca31e5503c7332f52aaa30dc656)), closes [#120](https://github.com/astandrik/local-ydb-toolkit/issues/120)
+
 ## [0.15.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.0...mcp-server-v0.15.1) (2026-08-05)
 
 
