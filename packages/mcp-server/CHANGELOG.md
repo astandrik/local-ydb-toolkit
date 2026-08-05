@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.0...mcp-server-v0.15.1) (2026-08-05)
+
+
+### Bug Fixes
+
+* harden Docker lifecycle diagnostics ([#119](https://github.com/astandrik/local-ydb-toolkit/issues/119)) ([6a573a5](https://github.com/astandrik/local-ydb-toolkit/commit/6a573a5584cdc31f0a76209a3acbfd3c9baf5b4e))
+
 ## [0.15.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.14.1...mcp-server-v0.15.0) (2026-08-03)
 
 
