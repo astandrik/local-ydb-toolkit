@@ -49,6 +49,40 @@ describe("MCP publication workflow", () => {
     }
   });
 
+  it("restricts recovery publication to released tags on main", () => {
+    const recoveryJob = publishWorkflow.slice(
+      publishWorkflow.indexOf("  publish-existing-release:"),
+      publishWorkflow.indexOf("  dry-run:"),
+    );
+
+    expect(recoveryJob).toContain("github.ref == 'refs/heads/main'");
+    expect(recoveryJob).toContain(
+      "github.workflow_ref == format('{0}/.github/workflows/publish-mcp-server.yml@refs/heads/main', github.repository)",
+    );
+    expect(recoveryJob).toContain("ref: refs/tags/${{ inputs.publish_tag }}");
+    expect(recoveryJob).not.toContain("ref: ${{ inputs.publish_tag }}");
+
+    const installIndex = recoveryJob.indexOf("npm ci");
+    for (const guard of [
+      "github.ref == 'refs/heads/main'",
+      "github.workflow_ref == format(",
+      'git show-ref --verify --quiet "refs/tags/${PUBLISH_TAG}"',
+      "git merge-base --is-ancestor HEAD origin/main",
+      'if ! release_tag="$(gh api',
+      "select(.draft == false and .prerelease == false)",
+      'expected_tag="mcp-server-v${package_version}"',
+    ]) {
+      expect(recoveryJob.indexOf(guard)).toBeGreaterThan(-1);
+      expect(recoveryJob.indexOf(guard)).toBeLessThan(installIndex);
+    }
+
+    expect(recoveryJob.indexOf('if ! release_tag="$(gh api')).toBeLessThan(
+      recoveryJob.indexOf(
+        "publish_tag must identify a published, non-prerelease GitHub release",
+      ),
+    );
+  });
+
   it("documents the idempotent Registry recovery path", () => {
     expect(rootReadme).toContain("skips the npm publish step");
     expect(rootReadme).toContain("publishes only the missing MCP Registry record");

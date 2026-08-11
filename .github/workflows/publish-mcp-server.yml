@@ -115,7 +115,12 @@ jobs:
         run: node scripts/ci/verify-mcp-publication.mjs registry --wait-seconds 300
 
   publish-existing-release:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.publish_tag != '' }}
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.workflow_ref == format('{0}/.github/workflows/publish-mcp-server.yml@refs/heads/main', github.repository) &&
+      inputs.dry_run == false &&
+      inputs.publish_tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -123,7 +128,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.publish_tag }}
+          ref: refs/tags/${{ inputs.publish_tag }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
@@ -131,10 +137,29 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      - name: Verify tag matches package version
+      - name: Verify published release tag
         env:
+          GH_TOKEN: ${{ github.token }}
           PUBLISH_TAG: ${{ inputs.publish_tag }}
         run: |
+          git show-ref --verify --quiet "refs/tags/${PUBLISH_TAG}" || {
+            echo "publish_tag must identify an existing tag: ${PUBLISH_TAG}" >&2
+            exit 1
+          }
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "publish_tag must point to a commit contained in the main branch" >&2
+            exit 1
+          }
+          if ! release_tag="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${PUBLISH_TAG}" \
+            --jq 'select(.draft == false and .prerelease == false) | .tag_name')"; then
+            echo "publish_tag must identify a published, non-prerelease GitHub release" >&2
+            exit 1
+          fi
+          if [ "${release_tag}" != "${PUBLISH_TAG}" ]; then
+            echo "publish_tag must identify a published, non-prerelease GitHub release" >&2
+            exit 1
+          fi
           package_version="$(node -p "require('./packages/mcp-server/package.json').version")"
           expected_tag="mcp-server-v${package_version}"
           if [ "${PUBLISH_TAG}" != "${expected_tag}" ]; then
