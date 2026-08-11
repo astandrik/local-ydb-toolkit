@@ -55,15 +55,31 @@ describe("MCP publication workflow", () => {
       publishWorkflow.indexOf("  dry-run:"),
     );
 
-    expect(recoveryJob).toContain("ref: refs/tags/${{ inputs.publish_tag }}");
-    expect(recoveryJob).toContain('git show-ref --verify --quiet "refs/tags/${PUBLISH_TAG}"');
-    expect(recoveryJob).toContain("git merge-base --is-ancestor HEAD origin/main");
+    expect(recoveryJob).toContain("github.ref == 'refs/heads/main'");
     expect(recoveryJob).toContain(
-      '"repos/${GITHUB_REPOSITORY}/releases/tags/${PUBLISH_TAG}"',
+      "github.workflow_ref == format('{0}/.github/workflows/publish-mcp-server.yml@refs/heads/main', github.repository)",
     );
-    expect(recoveryJob).toContain("select(.draft == false and .prerelease == false)");
-    expect(recoveryJob.indexOf("Verify published release tag")).toBeLessThan(
-      recoveryJob.indexOf("npm ci"),
+    expect(recoveryJob).toContain("ref: refs/tags/${{ inputs.publish_tag }}");
+    expect(recoveryJob).not.toContain("ref: ${{ inputs.publish_tag }}");
+
+    const installIndex = recoveryJob.indexOf("npm ci");
+    for (const guard of [
+      "github.ref == 'refs/heads/main'",
+      "github.workflow_ref == format(",
+      'git show-ref --verify --quiet "refs/tags/${PUBLISH_TAG}"',
+      "git merge-base --is-ancestor HEAD origin/main",
+      'if ! release_tag="$(gh api',
+      "select(.draft == false and .prerelease == false)",
+      'expected_tag="mcp-server-v${package_version}"',
+    ]) {
+      expect(recoveryJob.indexOf(guard)).toBeGreaterThan(-1);
+      expect(recoveryJob.indexOf(guard)).toBeLessThan(installIndex);
+    }
+
+    expect(recoveryJob.indexOf('if ! release_tag="$(gh api')).toBeLessThan(
+      recoveryJob.indexOf(
+        "publish_tag must identify a published, non-prerelease GitHub release",
+      ),
     );
   });
 

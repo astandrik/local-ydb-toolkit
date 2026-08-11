@@ -115,7 +115,12 @@ jobs:
         run: node scripts/ci/verify-mcp-publication.mjs registry --wait-seconds 300
 
   publish-existing-release:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.publish_tag != '' }}
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.workflow_ref == format('{0}/.github/workflows/publish-mcp-server.yml@refs/heads/main', github.repository) &&
+      inputs.dry_run == false &&
+      inputs.publish_tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -145,9 +150,12 @@ jobs:
             echo "publish_tag must point to a commit contained in the main branch" >&2
             exit 1
           }
-          release_tag="$(gh api \
+          if ! release_tag="$(gh api \
             "repos/${GITHUB_REPOSITORY}/releases/tags/${PUBLISH_TAG}" \
-            --jq 'select(.draft == false and .prerelease == false) | .tag_name')"
+            --jq 'select(.draft == false and .prerelease == false) | .tag_name')"; then
+            echo "publish_tag must identify a published, non-prerelease GitHub release" >&2
+            exit 1
+          fi
           if [ "${release_tag}" != "${PUBLISH_TAG}" ]; then
             echo "publish_tag must identify a published, non-prerelease GitHub release" >&2
             exit 1

@@ -396,7 +396,7 @@ Normal release flow:
 3. Review and merge the release PR.
 4. The same workflow creates the GitHub release, publishes and readbacks the matching npm version when it is missing, validates `server.json` with the pinned official `mcp-publisher`, and then publishes and readbacks the exact version from the official MCP Registry.
 
-Publication is idempotent across partial failures. Before either publish action, the workflow checks the exact immutable version. If npm already contains the matching package, it skips the npm publish step. If that npm version exists but the Registry step did not complete, rerun the workflow manually with `dry_run: false` and the existing `publish_tag`; the recovery run accepts only a published, non-prerelease GitHub release tag whose commit is contained in `main`, publishes only the missing MCP Registry record, and verifies the final metadata. A Registry version that already exists with different metadata is never overwritten: correct `server.json` and release a new patch version instead.
+Publication is idempotent across partial failures. Before either publish action, the workflow checks the exact immutable version. If npm already contains the matching package, it skips the npm publish step. If that npm version exists but the Registry step did not complete, run the workflow manually from `main` with `dry_run: false` and the existing `publish_tag`; the recovery run accepts only a published, non-prerelease GitHub release tag whose commit is contained in `main`, publishes only the missing MCP Registry record, and verifies the final metadata. A Registry version that already exists with different metadata is never overwritten: correct `server.json` and release a new patch version instead.
 
 To run a non-publishing package check from GitHub Actions, start the workflow manually with `dry_run: true`. The dry run executes build, tests, typecheck, npm package inspection, and `mcp-publisher validate`, but does not log in or publish to npm or the MCP Registry.
 
@@ -405,8 +405,9 @@ The release-please workflow can use the default `GITHUB_TOKEN`. If release PRs m
 Branch protection is configured outside the repository files. The intended `main` rule is:
 
 - require a pull request before merging;
-- require one approving review;
-- require approval from code owners, with `.github/CODEOWNERS` assigning all paths to `@astandrik`;
-- require stale approvals to be refreshed after new commits.
+- apply the rule to administrators so direct pushes cannot bypass the pull request path;
+- require strict `build-test-typecheck`, `mcp-integration`, `smoke`, and `CodeQL` status checks;
+- require all review conversations to be resolved;
+- disallow force pushes and branch deletion.
 
-For this solo-maintainer repository, admin bypass is left enabled. GitHub does not count a pull request author's own approval toward required reviews, so enforcing the same rule on admins would require a second maintainer to merge PRs authored by `@astandrik`. If a second maintainer is added, enable "Do not allow bypassing the above settings" to make the PR-only rule strict for admins too.
+This is a solo-maintainer repository, so the rule requires zero approving reviews and does not require code-owner or last-push approval. Repository Actions default to read-only permissions and jobs declare narrower write permissions only where needed.
