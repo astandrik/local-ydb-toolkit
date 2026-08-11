@@ -219,6 +219,46 @@ describe("version operations", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("rejects untrusted registries before making a request", async () => {
+    let requested = false;
+    const fetchImpl: typeof fetch = async () => {
+      requested = true;
+      return jsonResponse({ tags: [] });
+    };
+
+    await expect(listVersions({
+      image: "127.0.0.1:5000/attacker/repo",
+      fetchImpl
+    })).rejects.toThrow("Version listing only supports trusted registries");
+    expect(requested).toBe(false);
+  });
+
+  it("rejects pagination links that leave the registry origin", async () => {
+    const fetchImpl: typeof fetch = async () => jsonResponse(
+      { tags: ["26.1.1.6"] },
+      { headers: { link: '<http://127.0.0.1/metadata>; rel="next"' } }
+    );
+
+    await expect(listVersions({
+      image: "ghcr.io/ydb-platform/local-ydb",
+      fetchImpl
+    })).rejects.toThrow("Registry pagination must remain on https://ghcr.io");
+  });
+
+  it("rejects Bearer challenge realms outside the registry trust boundary", async () => {
+    const fetchImpl: typeof fetch = async () => new Response("", {
+      status: 401,
+      headers: {
+        "www-authenticate": 'Bearer realm="http://127.0.0.1/token",service="ghcr.io"'
+      }
+    });
+
+    await expect(listVersions({
+      image: "ghcr.io/ydb-platform/local-ydb",
+      fetchImpl
+    })).rejects.toThrow("Registry authentication endpoint is not trusted: http://127.0.0.1");
+  });
+
   it("plans a version upgrade via pull, dump, rebuild, auth reapply, and extra-node recreation", async () => {
     const executor = new RecordingExecutor();
     const rawConfig = upgradeConfig();

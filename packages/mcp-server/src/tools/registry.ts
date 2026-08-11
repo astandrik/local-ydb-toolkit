@@ -379,7 +379,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_list_versions",
     description:
-      "List published registry tags for a local-ydb container image, with numeric version tags sorted newest first. Use before local_ydb_upgrade_version to choose a target tag; pageSize and maxPages bound registry pagination and the response reports truncation.",
+      "List published GHCR or Docker Hub tags for a local-ydb container image, with numeric version tags sorted newest first. Use before local_ydb_upgrade_version; registry pagination and authentication are restricted to trusted origins, and pageSize and maxPages bound pagination.",
     inputSchema: listVersionsSchema(),
     annotations: readOnlyAnnotations(),
     handler: async (args, options) => {

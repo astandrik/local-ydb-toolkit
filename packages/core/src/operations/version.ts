@@ -22,6 +22,10 @@ const DEFAULT_MAX_PAGES = 10;
 const DEFAULT_REGISTRY = "registry-1.docker.io";
 const DOCKER_HUB_LIBRARY_PREFIX = "library/";
 const VERSION_TAG_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
+const REGISTRY_AUTH_ORIGINS: Readonly<Record<string, readonly string[]>> = {
+  "ghcr.io": ["https://ghcr.io"],
+  "registry-1.docker.io": ["https://auth.docker.io"]
+};
 
 export interface ParsedImageReference {
   input: string;
@@ -137,16 +141,29 @@ export async function listVersions(options: ListVersionsOptions = {}): Promise<L
   }
 
   const parsed = parseImageReference(image);
+  const allowedAuthOrigins = REGISTRY_AUTH_ORIGINS[parsed.registry];
+  if (!allowedAuthOrigins) {
+    throw new Error(
+      `Version listing only supports trusted registries: ${Object.keys(REGISTRY_AUTH_ORIGINS).join(", ")}`
+    );
+  }
   const authScope = `repository:${parsed.repository}:pull`;
   const auth = { token: undefined as string | undefined };
   let nextUrl: URL | undefined = new URL(`https://${parsed.registry}/v2/${parsed.repository}/tags/list`);
+  const registryOrigin = nextUrl.origin;
   nextUrl.searchParams.set("n", String(pageSize));
   const tags: string[] = [];
   const seen = new Set<string>();
   let truncated = false;
 
   for (let page = 0; page < maxPages && nextUrl; page += 1) {
-    const { response, payload } = await fetchRegistryTagsPage(fetchImpl, nextUrl, auth, authScope);
+    const { response, payload } = await fetchRegistryTagsPage(
+      fetchImpl,
+      nextUrl,
+      auth,
+      authScope,
+      allowedAuthOrigins
+    );
     const pageTags = Array.isArray(payload.tags)
       ? payload.tags.filter((value): value is string => typeof value === "string")
       : [];
@@ -162,7 +179,11 @@ export async function listVersions(options: ListVersionsOptions = {}): Promise<L
       nextUrl = undefined;
       break;
     }
-    nextUrl = new URL(nextRef, nextUrl);
+    const candidateUrl: URL = new URL(nextRef, nextUrl);
+    if (candidateUrl.origin !== registryOrigin) {
+      throw new Error(`Registry pagination must remain on ${registryOrigin}`);
+    }
+    nextUrl = candidateUrl;
   }
 
   if (nextUrl) {
@@ -409,10 +430,12 @@ async function fetchRegistryTagsPage(
   fetchImpl: typeof fetch,
   url: URL,
   auth: { token?: string },
-  authScope: string
+  authScope: string,
+  allowedAuthOrigins: readonly string[]
 ): Promise<{ response: Response; payload: { tags?: unknown } }> {
   let response = await fetchImpl(url, {
-    headers: registryRequestHeaders(auth.token)
+    headers: registryRequestHeaders(auth.token),
+    redirect: "error"
   });
 
   if (response.status === 401) {
@@ -420,9 +443,10 @@ async function fetchRegistryTagsPage(
     if (!challenge) {
       throw new Error(`Registry ${url.origin} requires authentication but did not advertise a Bearer challenge`);
     }
-    auth.token = await fetchRegistryToken(fetchImpl, challenge, authScope);
+    auth.token = await fetchRegistryToken(fetchImpl, challenge, authScope, allowedAuthOrigins);
     response = await fetchImpl(url, {
-      headers: registryRequestHeaders(auth.token)
+      headers: registryRequestHeaders(auth.token),
+      redirect: "error"
     });
   }
 
@@ -468,16 +492,21 @@ function parseRegistryChallenge(header: string | null): RegistryChallenge | unde
 async function fetchRegistryToken(
   fetchImpl: typeof fetch,
   challenge: RegistryChallenge,
-  fallbackScope: string
+  fallbackScope: string,
+  allowedOrigins: readonly string[]
 ): Promise<string> {
   const tokenUrl = new URL(challenge.realm);
+  if (!allowedOrigins.includes(tokenUrl.origin)) {
+    throw new Error(`Registry authentication endpoint is not trusted: ${tokenUrl.origin}`);
+  }
   if (challenge.service) {
     tokenUrl.searchParams.set("service", challenge.service);
   }
   tokenUrl.searchParams.set("scope", challenge.scope ?? fallbackScope);
 
   const response = await fetchImpl(tokenUrl, {
-    headers: { Accept: "application/json" }
+    headers: { Accept: "application/json" },
+    redirect: "error"
   });
   if (!response.ok) {
     throw new Error(`Registry token request failed with ${response.status} ${response.statusText}`);

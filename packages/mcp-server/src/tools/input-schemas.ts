@@ -847,7 +847,7 @@ export function listVersionsSchema(): Tool["inputSchema"] {
       image: {
         type: "string",
         description:
-          "Container image name to inspect. Defaults to ghcr.io/ydb-platform/local-ydb.",
+          "GHCR or Docker Hub container image name to inspect. Defaults to ghcr.io/ydb-platform/local-ydb.",
       },
       pageSize: {
         type: "integer",
