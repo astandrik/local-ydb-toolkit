@@ -49,6 +49,24 @@ describe("MCP publication workflow", () => {
     }
   });
 
+  it("restricts recovery publication to released tags on main", () => {
+    const recoveryJob = publishWorkflow.slice(
+      publishWorkflow.indexOf("  publish-existing-release:"),
+      publishWorkflow.indexOf("  dry-run:"),
+    );
+
+    expect(recoveryJob).toContain("ref: refs/tags/${{ inputs.publish_tag }}");
+    expect(recoveryJob).toContain('git show-ref --verify --quiet "refs/tags/${PUBLISH_TAG}"');
+    expect(recoveryJob).toContain("git merge-base --is-ancestor HEAD origin/main");
+    expect(recoveryJob).toContain(
+      '"repos/${GITHUB_REPOSITORY}/releases/tags/${PUBLISH_TAG}"',
+    );
+    expect(recoveryJob).toContain("select(.draft == false and .prerelease == false)");
+    expect(recoveryJob.indexOf("Verify published release tag")).toBeLessThan(
+      recoveryJob.indexOf("npm ci"),
+    );
+  });
+
   it("documents the idempotent Registry recovery path", () => {
     expect(rootReadme).toContain("skips the npm publish step");
     expect(rootReadme).toContain("publishes only the missing MCP Registry record");
