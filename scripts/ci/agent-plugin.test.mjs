@@ -46,7 +46,7 @@ test("portable and Codex manifests expose identical plugin metadata", async () =
   assertSchema(validatePlugin, portableManifest, "plugin.json");
   assert.deepEqual(portableMetadata(portableManifest), legacyMetadata(legacyManifest));
   assert.equal(portableManifest.name, "local-ydb-toolkit");
-  assert.equal(portableManifest.version, "0.1.0");
+  assert.equal(portableManifest.version, "0.1.1");
   assert.equal(legacyManifest.skills, "./skills/");
   assert.equal(legacyManifest.mcpServers, "./.mcp.json");
 
@@ -85,7 +85,7 @@ test("portable and legacy MCP configs use the same exact published package", () 
   assert.equal(type, "stdio");
   assert.deepEqual(portableServer, legacyMcp.mcpServers["local-ydb"]);
   assert.equal(portableServer.command, "npx");
-  assert.deepEqual(portableServer.args, ["--yes", "@astandrik/local-ydb-mcp@0.15.2"]);
+  assert.deepEqual(portableServer.args, ["--yes", "@astandrik/local-ydb-mcp@0.15.4"]);
   assert.equal("env" in portableServer, false);
   assert.doesNotMatch(portableServer.args.join(" "), /@latest|[~^*]/);
 });

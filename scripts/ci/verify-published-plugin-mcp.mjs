@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const packageSpec = "@astandrik/local-ydb-mcp@0.15.2";
+const packageSpec = "@astandrik/local-ydb-mcp@0.15.4";
 const temporaryRoot = await mkdtemp(join(tmpdir(), "local-ydb-published-mcp-"));
 const stderrChunks = [];
 const transport = new StdioClientTransport({
@@ -21,7 +21,7 @@ const transport = new StdioClientTransport({
 transport.stderr?.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
 
 const client = new Client(
-  { name: "local-ydb-agent-plugin-smoke", version: "0.1.0" },
+  { name: "local-ydb-agent-plugin-smoke", version: "0.1.1" },
   { capabilities: {} },
 );
 
