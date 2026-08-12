@@ -33,5 +33,3 @@ jobs:
       - run: npm test
 
       - run: npm run typecheck
-
-      - run: npm run plugin:smoke

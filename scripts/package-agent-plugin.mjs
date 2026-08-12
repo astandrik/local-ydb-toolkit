@@ -16,6 +16,9 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+if (process.argv.length !== 2) {
+  throw new Error("Usage: node scripts/package-agent-plugin.mjs");
+}
 const portableManifest = await readJson(join(repositoryRoot, "plugin.json"));
 const legacyManifest = await readJson(join(repositoryRoot, ".codex-plugin", "plugin.json"));
 const defaultArchive = join(
@@ -23,10 +26,7 @@ const defaultArchive = join(
   "dist",
   `${portableManifest.name}-${portableManifest.version}-skills.zip`,
 );
-const requestedOutput = parseOutputPath(process.argv.slice(2));
-const outputPath = requestedOutput
-  ? resolve(repositoryRoot, requestedOutput)
-  : defaultArchive;
+const outputPath = defaultArchive;
 const stagingRoot = await mkdtemp(join(tmpdir(), "local-ydb-plugin-package-"));
 
 try {
@@ -62,16 +62,6 @@ try {
   console.log(outputPath);
 } finally {
   await rm(stagingRoot, { recursive: true, force: true });
-}
-
-function parseOutputPath(args) {
-  if (args.length === 0) {
-    return undefined;
-  }
-  if (args.length === 2 && args[0] === "--output" && args[1]) {
-    return args[1];
-  }
-  throw new Error("Usage: node scripts/package-agent-plugin.mjs [--output <archive.zip>]");
 }
 
 async function readJson(path) {

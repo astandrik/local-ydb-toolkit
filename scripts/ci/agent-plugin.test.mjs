@@ -8,6 +8,7 @@ import {
   readdir,
   rm,
   stat,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -112,22 +113,38 @@ test("submission materials contain exactly five positive and three negative case
   assert.match(submission, /Apps Management: Write/);
 });
 
+test("plugin packager rejects custom output paths without touching them", async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "local-ydb-plugin-output-test-"));
+  const externalArchive = join(temporaryRoot, "outside-repository.zip");
+  const sentinel = "do not overwrite\n";
+
+  try {
+    await writeFile(externalArchive, sentinel, "utf8");
+    assert.throws(() => packagePlugin(["--output", externalArchive]));
+    assert.equal(await readFile(externalArchive, "utf8"), sentinel);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("skills-only ZIP is deterministic, contained, and excludes MCP", { timeout: 30_000 }, async () => {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "local-ydb-plugin-test-"));
-  const firstArchive = join(temporaryRoot, "first.zip");
-  const secondArchive = join(temporaryRoot, "second.zip");
+  const archive = join(
+    repositoryRoot,
+    "dist",
+    `${portableManifest.name}-${portableManifest.version}-skills.zip`,
+  );
   const extractedRoot = join(temporaryRoot, "extracted");
 
   try {
-    packagePlugin(firstArchive);
-    packagePlugin(secondArchive);
-
-    const firstContents = await readFile(firstArchive);
-    const secondContents = await readFile(secondArchive);
+    packagePlugin();
+    const firstContents = await readFile(archive);
+    packagePlugin();
+    const secondContents = await readFile(archive);
     assert.deepEqual(firstContents, secondContents);
     assert(firstContents.byteLength < 100 * 1024 * 1024);
 
-    const entries = execFileSync("unzip", ["-Z1", firstArchive], { encoding: "utf8" })
+    const entries = execFileSync("unzip", ["-Z1", archive], { encoding: "utf8" })
       .trim()
       .split("\n");
     assert.deepEqual(entries, [...entries].sort());
@@ -153,7 +170,7 @@ test("skills-only ZIP is deterministic, contained, and excludes MCP", { timeout:
       );
     }
 
-    execFileSync("unzip", ["-qq", firstArchive, "-d", extractedRoot]);
+    execFileSync("unzip", ["-qq", archive, "-d", extractedRoot]);
     await assertNoSymlinks(extractedRoot);
     const publicPortableManifest = await readJsonFrom(
       join(extractedRoot, "plugin.json"),
@@ -199,10 +216,10 @@ function assertSchema(validate, value, label) {
   assert(validate(value), `${label} schema errors: ${JSON.stringify(validate.errors)}`);
 }
 
-function packagePlugin(outputPath) {
+function packagePlugin(args = []) {
   execFileSync(
     process.execPath,
-    [join(repositoryRoot, "scripts", "package-agent-plugin.mjs"), "--output", outputPath],
+    [join(repositoryRoot, "scripts", "package-agent-plugin.mjs"), ...args],
     { cwd: repositoryRoot, stdio: "pipe" },
   );
 }
