@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.15.4](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.3...mcp-server-v0.15.4) (2026-08-12)
+
+
+### Bug Fixes
+
+* **core:** normalize Docker Hub registry aliases ([4a2dae6](https://github.com/astandrik/local-ydb-toolkit/commit/4a2dae6e357ac48d04b6ca4499b23a356d8c9c18))
+* restrict registry version discovery requests ([57cccd8](https://github.com/astandrik/local-ydb-toolkit/commit/57cccd81556c3aba4f0c479b6c058c3330c5d187))
+* restrict registry version discovery requests ([d17174c](https://github.com/astandrik/local-ydb-toolkit/commit/d17174cccac7b43ee69ec548094c776a061ee56d))
+
 ## [0.15.3](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.2...mcp-server-v0.15.3) (2026-08-12)
 
 
