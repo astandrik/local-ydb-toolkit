@@ -143,16 +143,17 @@ describe("version operations", () => {
       tag: "26.1.1.6",
       digest: undefined
     });
+    expect(parseImageReference("docker.io/ydb-platform/local-ydb").registry).toBe("docker.io");
     expect(replaceImageTag("ghcr.io/ydb-platform/local-ydb:26.1.1.6", "latest")).toBe("ghcr.io/ydb-platform/local-ydb:latest");
   });
 
   it("lists registry tags across paginated Bearer-authenticated responses", async () => {
-    const requests: Array<{ url: string; auth?: string | null }> = [];
+    const requests: Array<{ url: string; auth?: string | null; redirect?: RequestInit["redirect"] }> = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input.toString();
       const headers = new Headers(init?.headers);
       const auth = headers.get("authorization");
-      requests.push({ url, auth });
+      requests.push({ url, auth, redirect: init?.redirect });
 
       if (url === "https://ghcr.io/v2/ydb-platform/local-ydb/tags/list?n=2" && !auth) {
         return new Response("", {
@@ -194,7 +195,42 @@ describe("version operations", () => {
       "Bearer secret-token",
       "Bearer secret-token"
     ]);
+    expect(requests.map((item) => item.redirect)).toEqual([
+      "error",
+      "error",
+      "error",
+      "error"
+    ]);
   });
+
+  it.each(["docker.io", "index.docker.io"])(
+    "normalizes Docker Hub registry alias %s before fetching tags",
+    async (registryAlias) => {
+      const requests: Array<{ url: string; redirect?: RequestInit["redirect"] }> = [];
+      const fetchImpl: typeof fetch = async (input, init) => {
+        requests.push({
+          url: typeof input === "string" ? input : input.toString(),
+          redirect: init?.redirect
+        });
+        return jsonResponse({ tags: ["latest"] });
+      };
+      const image = `${registryAlias}/ydb-platform/local-ydb`;
+
+      const result = await listVersions({ image, fetchImpl });
+
+      expect(requests).toEqual([{
+        url: "https://registry-1.docker.io/v2/ydb-platform/local-ydb/tags/list?n=100",
+        redirect: "error"
+      }]);
+      expect(result).toMatchObject({
+        image,
+        registry: "registry-1.docker.io",
+        repository: "ydb-platform/local-ydb",
+        tags: ["latest"],
+        count: 1
+      });
+    }
+  );
 
   it("marks the tag list as truncated when maxPages is reached", async () => {
     const fetchImpl: typeof fetch = async (input) => {
@@ -217,6 +253,50 @@ describe("version operations", () => {
 
     expect(result.tags).toEqual(["26.1.1.6"]);
     expect(result.truncated).toBe(true);
+  });
+
+  it.each([
+    "127.0.0.1:5000/attacker/repo",
+    "docker.io.attacker.invalid/ydb-platform/local-ydb",
+    "evil-docker.io/ydb-platform/local-ydb"
+  ])("rejects untrusted registry %s before making a request", async (image) => {
+    let requested = false;
+    const fetchImpl: typeof fetch = async () => {
+      requested = true;
+      return jsonResponse({ tags: [] });
+    };
+
+    await expect(listVersions({
+      image,
+      fetchImpl
+    })).rejects.toThrow("Version listing only supports trusted registries");
+    expect(requested).toBe(false);
+  });
+
+  it("rejects pagination links that leave the registry origin", async () => {
+    const fetchImpl: typeof fetch = async () => jsonResponse(
+      { tags: ["26.1.1.6"] },
+      { headers: { link: '<http://127.0.0.1/metadata>; rel="next"' } }
+    );
+
+    await expect(listVersions({
+      image: "ghcr.io/ydb-platform/local-ydb",
+      fetchImpl
+    })).rejects.toThrow("Registry pagination must remain on https://ghcr.io");
+  });
+
+  it("rejects Bearer challenge realms outside the registry trust boundary", async () => {
+    const fetchImpl: typeof fetch = async () => new Response("", {
+      status: 401,
+      headers: {
+        "www-authenticate": 'Bearer realm="http://127.0.0.1/token",service="ghcr.io"'
+      }
+    });
+
+    await expect(listVersions({
+      image: "ghcr.io/ydb-platform/local-ydb",
+      fetchImpl
+    })).rejects.toThrow("Registry authentication endpoint is not trusted: http://127.0.0.1");
   });
 
   it("plans a version upgrade via pull, dump, rebuild, auth reapply, and extra-node recreation", async () => {
