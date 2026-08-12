@@ -22,6 +22,10 @@ const DEFAULT_MAX_PAGES = 10;
 const DEFAULT_REGISTRY = "registry-1.docker.io";
 const DOCKER_HUB_LIBRARY_PREFIX = "library/";
 const VERSION_TAG_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
+const REGISTRY_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["docker.io", DEFAULT_REGISTRY],
+  ["index.docker.io", DEFAULT_REGISTRY]
+]);
 const REGISTRY_AUTH_ORIGINS: Readonly<Record<string, readonly string[]>> = {
   "ghcr.io": ["https://ghcr.io"],
   "registry-1.docker.io": ["https://auth.docker.io"]
@@ -141,7 +145,8 @@ export async function listVersions(options: ListVersionsOptions = {}): Promise<L
   }
 
   const parsed = parseImageReference(image);
-  const allowedAuthOrigins = REGISTRY_AUTH_ORIGINS[parsed.registry];
+  const registry = canonicalizeRegistry(parsed.registry);
+  const allowedAuthOrigins = REGISTRY_AUTH_ORIGINS[registry];
   if (!allowedAuthOrigins) {
     throw new Error(
       `Version listing only supports trusted registries: ${Object.keys(REGISTRY_AUTH_ORIGINS).join(", ")}`
@@ -149,7 +154,7 @@ export async function listVersions(options: ListVersionsOptions = {}): Promise<L
   }
   const authScope = `repository:${parsed.repository}:pull`;
   const auth = { token: undefined as string | undefined };
-  let nextUrl: URL | undefined = new URL(`https://${parsed.registry}/v2/${parsed.repository}/tags/list`);
+  let nextUrl: URL | undefined = new URL(`https://${registry}/v2/${parsed.repository}/tags/list`);
   const registryOrigin = nextUrl.origin;
   nextUrl.searchParams.set("n", String(pageSize));
   const tags: string[] = [];
@@ -193,14 +198,18 @@ export async function listVersions(options: ListVersionsOptions = {}): Promise<L
   const sortedTags = sortVersionTags(tags);
 
   return {
-    summary: `Listed ${tags.length} tag${tags.length === 1 ? "" : "s"} for ${parsed.repository} from ${parsed.registry}. Version tags are sorted newest first.`,
+    summary: `Listed ${tags.length} tag${tags.length === 1 ? "" : "s"} for ${parsed.repository} from ${registry}. Version tags are sorted newest first.`,
     image,
-    registry: parsed.registry,
+    registry,
     repository: parsed.repository,
     tags: sortedTags,
     count: tags.length,
     truncated
   };
+}
+
+function canonicalizeRegistry(registry: string): string {
+  return REGISTRY_ALIASES.get(registry) ?? registry;
 }
 
 export async function upgradeVersion(
