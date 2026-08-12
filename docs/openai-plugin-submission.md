@@ -8,7 +8,7 @@ Build the review archive with `npm run plugin:package`. Upload it as **Skills on
 
 - Name: `Local YDB Toolkit`
 - Package name: `local-ydb-toolkit`
-- Version: `0.1.0`
+- Version: `0.1.1`
 - Developer: `astandrik`
 - Category: `Developer Tools`
 - Short description: `Operate local YDB safely`
