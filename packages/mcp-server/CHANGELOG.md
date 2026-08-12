@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.3](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.2...mcp-server-v0.15.3) (2026-08-12)
+
+
+### Bug Fixes
+
+* **ci:** harden recovery artifact validation ([8a08e16](https://github.com/astandrik/local-ydb-toolkit/commit/8a08e16bb6f62ef5f2f85ac3415d37c8866f1742))
+* **ci:** restrict release recovery tags ([bb6a612](https://github.com/astandrik/local-ydb-toolkit/commit/bb6a6125de78703d459ab7596f41aa8e89285e4a))
+
 ## [0.15.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.1...mcp-server-v0.15.2) (2026-08-05)
 
 

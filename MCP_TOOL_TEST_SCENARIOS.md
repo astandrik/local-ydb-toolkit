@@ -296,6 +296,8 @@ Calls:
 { "tool": "local_ydb_list_versions", "arguments": { "image": "ghcr.io/ydb-platform/local-ydb", "pageSize": 50, "maxPages": 2 } }
 ```
 
+Version listing accepts only GHCR and Docker Hub images. Confirm that other registry hosts are rejected without a network request, and that cross-origin pagination links or bearer-token realms are rejected.
+
 Expected:
 
 - the response includes `image`, `registry`, `repository`, `tags`, `count`, and `truncated`
