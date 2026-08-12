@@ -97,13 +97,13 @@ describe("MCP Registry metadata", () => {
     }));
   });
 
-  it("keeps release-please paths rooted inside the configured package", () => {
-    const packageConfig = releasePleaseConfig.packages["."];
+  it("uses package-relative release files and repo-root metadata files", () => {
+    const packageConfig = releasePleaseConfig.packages["packages"];
 
-    expect(releasePleaseManifest["."]).toBe(packageJson.version);
+    expect(releasePleaseManifest["packages"]).toBe(packageJson.version);
     expect(packageConfig).toBeDefined();
-    expect(packageConfig["changelog-path"]).toBe("packages/mcp-server/CHANGELOG.md");
-    expect(packageConfig["version-file"]).toBe("packages/mcp-server/.release-please-version");
+    expect(packageConfig["changelog-path"]).toBe("mcp-server/CHANGELOG.md");
+    expect(packageConfig["version-file"]).toBe("mcp-server/.release-please-version");
 
     const configuredPaths = [
       packageConfig["changelog-path"],
@@ -113,8 +113,8 @@ describe("MCP Registry metadata", () => {
       ))
     ];
 
-    expect(configuredPaths).toContain("package-lock.json");
-    expect(configuredPaths).toContain("server.json");
+    expect(configuredPaths).toContain("/package-lock.json");
+    expect(configuredPaths).toContain("/server.json");
     expect(configuredPaths.every((configuredPath) => !configuredPath.includes(".."))).toBe(true);
   });
 });
