@@ -1,0 +1,45 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "local-ydb-toolkit",
+  "version": "0.1.0",
+  "description": "Operate Docker-based local YDB deployments with reusable safety guidance and an optional local stdio MCP server.",
+  "author": {
+    "name": "astandrik",
+    "url": "https://github.com/astandrik"
+  },
+  "homepage": "https://local-ydb-toolkit.ydb-qdrant.tech/",
+  "repository": "https://github.com/astandrik/local-ydb-toolkit",
+  "license": "MIT",
+  "keywords": [
+    "ydb",
+    "local-ydb",
+    "mcp",
+    "database",
+    "docker"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Local YDB Toolkit",
+        "shortDescription": "Operate local YDB safely",
+        "longDescription": "Inspect, troubleshoot, plan, and operate Docker-based local YDB deployments with reusable safety guidance. In Codex, use the bundled local stdio MCP server for tool-backed workflows; the public skills-only package can still guide local work without a hosted service.",
+        "developerName": "astandrik",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Diagnose local YDB deployments",
+          "Plan safe lifecycle changes",
+          "Generate and review YDB schema"
+        ],
+        "websiteURL": "https://local-ydb-toolkit.ydb-qdrant.tech/",
+        "defaultPrompt": [
+          "Diagnose my local YDB deployment and suggest the safest next step.",
+          "Generate and review YDB table DDL before applying it.",
+          "Plan a local YDB auth or storage change with rollback checks."
+        ],
+        "brandColor": "#2399FF",
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg"
+      }
+    }
+  }
+}

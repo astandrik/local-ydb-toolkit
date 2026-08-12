@@ -1,0 +1,53 @@
+name: Agent Plugin published MCP smoke
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/agent-plugin-smoke.yml"
+      - ".codex-plugin/plugin.json"
+      - ".mcp.json"
+      - "mcp.json"
+      - "package-lock.json"
+      - "package.json"
+      - "plugin.json"
+      - "scripts/ci/verify-published-plugin-mcp.mjs"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/agent-plugin-smoke.yml"
+      - ".codex-plugin/plugin.json"
+      - ".mcp.json"
+      - "mcp.json"
+      - "package-lock.json"
+      - "package.json"
+      - "plugin.json"
+      - "scripts/ci/verify-published-plugin-mcp.mjs"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-plugin-published-mcp-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  published-mcp-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run plugin:smoke

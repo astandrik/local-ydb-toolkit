@@ -9,6 +9,13 @@ description: Operate local-ydb deployments, especially Docker setups using ghcr.
 
 Use this skill to inspect, document, run, harden, troubleshoot, or generate and apply table schemas for `local-ydb` deployments. Keep reusable operational recipes separate from one-off cutover notes, host paths, timestamps, and secrets.
 
+## Execution Boundary
+
+- Operate a deployment only when the active agent has a local shell or the `local_ydb_*` MCP tools connected to the target machine. A chat-only or remote environment cannot inspect the user's Docker daemon, files, or YDB endpoints.
+- When local execution is unavailable, provide a bounded plan, configuration guidance, or commands for the user to run. State that the target was not inspected and do not report inferred health, inventory, or mutation results as observed facts.
+- Plugin MCP processes start from the installed plugin root. Pass an absolute `configPath` to profile-based tools or configure `LOCAL_YDB_TOOLKIT_CONFIG` in the MCP client; do not assume a project-local `local-ydb.config.json` is the process working-directory default.
+- Keep every mutation plan-first regardless of execution surface. Require the existing confirmation boundary before applying changes and preserve rollback and verification steps.
+
 ## First Steps
 
 1. Identify the task type: documentation cleanup, local bootstrap, live inspection, managed YQL query/explain/execute, schema generation/apply, auth hardening, storage expansion, monitoring exposure, TLS investigation, or troubleshooting.
