@@ -97,7 +97,7 @@ describe("MCP Registry metadata", () => {
     }));
   });
 
-  it("keeps release-please paths rooted inside the configured package", () => {
+  it("uses package-relative release files and repo-root metadata files", () => {
     const packageConfig = releasePleaseConfig.packages["packages"];
 
     expect(releasePleaseManifest["packages"]).toBe(packageJson.version);
