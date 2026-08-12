@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "local-ydb": {
+      "command": "npx",
+      "args": [
+        "--yes",
+        "@astandrik/local-ydb-mcp@0.15.2"
+      ]
+    }
+  }
+}

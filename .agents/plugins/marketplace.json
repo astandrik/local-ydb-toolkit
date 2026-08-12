@@ -1,0 +1,20 @@
+{
+  "name": "local-ydb-toolkit",
+  "interface": {
+    "displayName": "Local YDB Toolkit"
+  },
+  "plugins": [
+    {
+      "name": "local-ydb-toolkit",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

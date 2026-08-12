@@ -13,12 +13,15 @@
     "predocs:check": "npm run build:packages",
     "docs:check": "npm run docs:check:built",
     "docs:check:built": "node scripts/ci/generate-mcp-tools-docs.mjs --check",
+    "plugin:package": "node scripts/package-agent-plugin.mjs",
+    "plugin:smoke": "node scripts/ci/verify-published-plugin-mcp.mjs",
     "test": "vitest run",
     "posttest": "node --test scripts/ci/*.test.mjs",
     "typecheck": "npm run typecheck --workspaces"
   },
   "devDependencies": {
     "@types/node": "^22.10.7",
+    "ajv": "8.20.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.5"
   }
