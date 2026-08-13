@@ -3,7 +3,6 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -20,7 +19,7 @@ import {
 import { ResultSet_Format } from "@ydbjs/api/value";
 import { prepareSqlParameters } from "../src/sql-parameters.js";
 import { createContext } from "../src/operations/context.js";
-import { ShellCommandExecutor } from "../src/api-client.js";
+import { ShellCommandExecutor, shellQuote } from "../src/api-client.js";
 import { ConfigSchema } from "../src/validation.js";
 
 const SUCCESS = StatusIds_StatusCode.SUCCESS;
@@ -1346,21 +1345,21 @@ describe("low-level Query Service adapter", () => {
   it("aborts an in-flight remote password command before SQL is sent", async () => {
     // Production break caught: caller cancellation only changed the eventual
     // classification while the real SSH child kept running until timeout.
+    // Marker files identify this exact fixture process even if its PID is reused.
     const tempDir = mkdtempSync(join(tmpdir(), "local-ydb-command-abort-"));
     const sshPath = join(tempDir, "ssh");
-    const pidFile = join(tempDir, "ssh.pid");
+    const readyFile = join(tempDir, "ssh.ready");
+    const exitFile = join(tempDir, "ssh.exited");
     const originalPath = process.env.PATH;
-    const originalPidFile = process.env.LOCAL_YDB_TEST_SSH_PID_FILE;
     writeFileSync(sshPath, [
       "#!/bin/sh",
-      "echo $$ > \"$LOCAL_YDB_TEST_SSH_PID_FILE\"",
-      "trap 'exit 0' TERM INT",
+      `trap "printf exited > ${shellQuote(exitFile)}; exit 0" TERM INT`,
+      `printf ready > ${shellQuote(readyFile)}`,
       "while :; do :; done",
       "",
     ].join("\n"), "utf8");
     chmodSync(sshPath, 0o755);
     process.env.PATH = `${tempDir}:${originalPath ?? ""}`;
-    process.env.LOCAL_YDB_TEST_SSH_PID_FILE = pidFile;
 
     try {
       const ctx = createContext(undefined, new ShellCommandExecutor(), ConfigSchema.parse({
@@ -1376,7 +1375,7 @@ describe("low-level Query Service adapter", () => {
       let queryCalls = 0;
       const { executeQueryService } = await import("../src/query-service.js");
       const operation = executeQueryService(ctx, {
-        timeoutMs: 1_000,
+        timeoutMs: 10_000,
         script: "SELECT 1;",
         parameters: {},
         mode: "snapshotReadOnly",
@@ -1388,8 +1387,12 @@ describe("low-level Query Service adapter", () => {
         throw new Error("query executor must not run");
       });
 
-      await waitForFile(pidFile);
-      const childPid = Number(readFileSync(pidFile, "utf8").trim());
+      await Promise.race([
+        waitForFile(readyFile),
+        operation.then((result) => {
+          throw new Error(`SSH fixture exited before reporting ready: ${result.diagnostics}`);
+        }),
+      ]);
       const abortedAt = Date.now();
       caller.abort();
       const result = await operation;
@@ -1398,17 +1401,12 @@ describe("low-level Query Service adapter", () => {
       expect(result.completion).toBe("cancelled");
       expect(result.diagnostics).toBe("Remote YDB credential read failed.");
       expect(queryCalls).toBe(0);
-      expect(isProcessAlive(childPid)).toBe(false);
+      expect(existsSync(exitFile)).toBe(true);
     } finally {
       if (originalPath === undefined) {
         delete process.env.PATH;
       } else {
         process.env.PATH = originalPath;
-      }
-      if (originalPidFile === undefined) {
-        delete process.env.LOCAL_YDB_TEST_SSH_PID_FILE;
-      } else {
-        process.env.LOCAL_YDB_TEST_SSH_PID_FILE = originalPidFile;
       }
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1872,21 +1870,12 @@ function cancellationAfterSendDriver() {
 }
 
 async function waitForFile(path: string): Promise<void> {
-  const deadline = Date.now() + 1_000;
+  const deadline = Date.now() + 4_000;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) {
       throw new Error(`Timed out waiting for test file: ${path}`);
     }
     await delay(5);
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 

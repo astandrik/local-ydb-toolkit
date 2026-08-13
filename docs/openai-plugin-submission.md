@@ -1,6 +1,6 @@
 # Local YDB Toolkit: OpenAI skills-only submission
 
-Status: technically prepared, not authorized for portal submission.
+Status: ready for portal draft; not submitted for review.
 
 Build the review archive with `npm run plugin:package`. Upload it as **Skills only**. The archive intentionally excludes MCP configuration because the operational server is a local stdio process, not a production HTTPS MCP endpoint.
 
@@ -9,13 +9,17 @@ Build the review archive with `npm run plugin:package`. Upload it as **Skills on
 - Name: `Local YDB Toolkit`
 - Package name: `local-ydb-toolkit`
 - Version: `0.1.1`
-- Developer: `astandrik`
+- Publisher: `astandrik`
+- Submission type: `Skills only`
+- Availability: all countries and regions supported by OpenAI
 - Category: `Developer Tools`
 - Short description: `Operate local YDB safely`
 - Long description: `Inspect, troubleshoot, plan, and operate Docker-based local YDB deployments with reusable safety guidance. In Codex, use the bundled local stdio MCP server for tool-backed workflows; the public skills-only package can still guide local work without a hosted service.`
 - Website: `https://local-ydb-toolkit.ydb-qdrant.tech/`
 - Repository: `https://github.com/astandrik/local-ydb-toolkit`
 - Support: `https://github.com/astandrik/local-ydb-toolkit/issues`
+- Privacy policy: `https://local-ydb-toolkit.ydb-qdrant.tech/privacy`
+- Terms of use: `https://local-ydb-toolkit.ydb-qdrant.tech/terms`
 - Logo: `assets/icon.svg`
 
 Capabilities:
@@ -93,12 +97,13 @@ Initial skills-only submission. The plugin packages the reusable Local YDB opera
 
 ## Submission gates
 
-Do not submit or publish until all of these are confirmed by the publisher:
+Creating and saving a portal draft is allowed after the repository checks pass. Do not click **Submit for review** until all of these are confirmed by the publisher:
 
 - the selected OpenAI organization grants `Apps Management: Write`;
-- the verified developer identity is exactly `astandrik`, or the publisher explicitly approves synchronized metadata changes;
-- availability countries/regions are selected;
+- the verified developer identity is exactly `astandrik`; stop if it differs and do not substitute another publisher;
+- availability is set to all countries and regions supported by OpenAI;
+- the public privacy-policy, terms, support, and website URLs are reachable and match the `astandrik` listing;
 - all eight cases above pass in a new task using the final archive;
 - the portal accepts the final skill security scan and listing metadata.
 
-Privacy-policy and terms URLs are intentionally omitted from the skills-only manifest. Do not invent legal URLs or reuse unrelated policies; add them only after the publisher supplies approved public documents.
+The privacy-policy and terms URLs belong in the portal listing. They remain intentionally absent from the Agent Plugins manifests because schema 1.0.0 does not define fields for them.
