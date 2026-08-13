@@ -107,10 +107,31 @@ test("submission materials contain exactly five positive and three negative case
     join(repositoryRoot, "docs", "openai-plugin-submission.md"),
     "utf8",
   );
+  const privacyPolicyUrl = "https://local-ydb-toolkit.ydb-qdrant.tech/privacy";
+  const termsOfUseUrl = "https://local-ydb-toolkit.ydb-qdrant.tech/terms";
+
   assert.equal(submission.match(/^### Positive \d+:/gm)?.length, 5);
   assert.equal(submission.match(/^### Negative \d+:/gm)?.length, 3);
-  assert.match(submission, /not authorized for portal submission/);
+  assert.match(submission, /^Status: ready for portal draft; not submitted for review\.$/m);
+  assert.match(submission, /^- Publisher: `astandrik`$/m);
+  assert.match(submission, /^- Submission type: `Skills only`$/m);
+  assert.match(
+    submission,
+    /^- Availability: all countries and regions supported by OpenAI$/m,
+  );
+  const submissionLines = submission.split("\n");
+  assert(submissionLines.includes(`- Privacy policy: \`${privacyPolicyUrl}\``));
+  assert(submissionLines.includes(`- Terms of use: \`${termsOfUseUrl}\``));
+  assert.equal(new URL(privacyPolicyUrl).protocol, "https:");
+  assert.equal(new URL(termsOfUseUrl).protocol, "https:");
   assert.match(submission, /Apps Management: Write/);
+  assert.match(submission, /verified developer identity is exactly `astandrik`/);
+  assert.doesNotMatch(submission, /^Status:\s*(?:approved|published|submitted)\b/im);
+  assert.doesNotMatch(submission, /approved by OpenAI/i);
+  assert.doesNotMatch(
+    submission,
+    /(?:published|available) (?:on|in) (?:the )?(?:public )?OpenAI marketplace/i,
+  );
 });
 
 test("plugin packager rejects custom output paths without touching them", async () => {
