@@ -13,6 +13,8 @@ Website: [local-ydb-toolkit.ydb-qdrant.tech](https://local-ydb-toolkit.ydb-qdran
 
 [Security policy](SECURITY.md) — supported versions, private vulnerability reporting, and the local process trust boundary.
 
+[Privacy policy](https://local-ydb-toolkit.ydb-qdrant.tech/privacy) — data handling for the website and public skills-only package. For support, use [GitHub Issues](https://github.com/astandrik/local-ydb-toolkit/issues) and do not include credentials or other sensitive data.
+
 It includes:
 
 - a reusable Codex skill for local and SSH `local-ydb` operations;
