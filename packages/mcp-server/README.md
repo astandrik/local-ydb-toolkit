@@ -99,7 +99,7 @@ The server exposes 39 tools. This index is generated from the runtime tool regis
 | --- | --- | --- |
 | `local_ydb_add_storage_groups` | plan-first mutation | Increase NumGroups for one tenant storage pool using the current ReadStoragePool definition. Without confirm=true this returns the DefineStoragePool plan, rollback, target pool, and target count; when the update succeeds it verifies NumGroups and tenant metadata. |
 | `local_ydb_reduce_storage_groups` | plan-first mutation | Reduce NumGroups for a tenant storage pool by dumping the tenant, rebuilding the profile stack with a smaller storagePoolCount, restoring the dump, and reapplying auth when needed. |
-| `local_ydb_cleanup_storage` | plan-first mutation | Delete only the explicitly supplied local-ydb host paths or Docker volumes. Use after inspecting local_ydb_storage_leftovers; without confirm=true this returns the cleanup plan and removes nothing. |
+| `local_ydb_cleanup_storage` | plan-first mutation | Delete only explicitly supplied exact normalized POSIX host paths without colons containing ydb, local, or dump that are strict descendants of the selected profile's dumpHostPath or bindMountPath, or explicitly supplied Docker volumes. Configured roots themselves cannot be removed; storageSearchPaths is discovery only and does not authorize deletion. Paths with symlink components, inaccessible parents, or nested mounts are rejected. Existing path cleanup requires the profile image in the local Docker cache; use local_ydb_pull_image before retrying when it is missing. Use after inspecting local_ydb_storage_leftovers; without confirm=true this returns the cleanup plan and removes nothing. |
 
 ### Lifecycle
 

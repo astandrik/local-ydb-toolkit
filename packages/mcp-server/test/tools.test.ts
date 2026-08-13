@@ -170,6 +170,49 @@ describe("mcp tools", () => {
     ]);
   });
 
+  it("advertises the confined profile-root cleanup path contract", () => {
+    const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_cleanup_storage");
+    const paths = tool?.inputSchema.properties?.paths as {
+      description?: string;
+      items?: { description?: string; minLength?: number; pattern?: string };
+    } | undefined;
+
+    expect(tool?.description).toMatch(/strict descendants.*dumpHostPath.*bindMountPath/i);
+    expect(tool?.description).toMatch(/storageSearchPaths.*discovery only/i);
+    expect(tool?.description).toMatch(/local Docker cache.*local_ydb_pull_image/i);
+    expect(tool?.description).toMatch(/ydb.*local.*dump/i);
+    expect(tool?.description).toMatch(/without colons/i);
+    expect(paths?.description).toMatch(/strict descendant.*dumpHostPath.*bindMountPath/i);
+    expect(paths?.description).toMatch(/storageSearchPaths.*discovery only/i);
+    expect(paths?.description).toMatch(/configured roots themselves cannot be removed/i);
+    expect(paths?.items).toMatchObject({
+      minLength: 2,
+      description: expect.stringMatching(/absolute normalized POSIX path.*ydb.*local.*dump/i),
+      pattern: expect.any(String),
+    });
+    expect(paths?.items?.description).toMatch(/without colons/i);
+
+    const pattern = new RegExp(paths?.items?.pattern ?? "");
+    expect(pattern.test("/tmp/local-ydb-dump/mcp-smoke")).toBe(true);
+    for (const path of [
+      "/",
+      "tmp/local-ydb-dump",
+      "/tmp/local-ydb-dump/./child",
+      "/tmp/local-ydb-dump/../usr",
+      " /tmp/local-ydb-dump/child",
+      "/tmp/local-ydb-dump/child ",
+      "/tmp/local-ydb-dump/child/",
+      "/tmp/local-ydb-dump\\child",
+      "/tmp/local:ydb-dump/child",
+      "/tmp/local-ydb-dump/control\u0001path",
+      "/tmp/local-ydb-dump/control\u0085path",
+      "/tmp//local-ydb-dump/child",
+      "/backups/example-2026",
+    ]) {
+      expect(pattern.test(path), path).toBe(false);
+    }
+  });
+
   it("registers managed SQL in its own group with the conservative mixed-action contract", () => {
     // Production break caught: managed SQL is absent from MCP discovery, is
     // grouped with unrelated operations, or advertises a read-only/idempotent
@@ -1039,6 +1082,83 @@ describe("mcp tools", () => {
     }) as { executed: boolean; plannedCommands: string[] };
     expect(result.executed).toBe(false);
     expect(result.plannedCommands.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    "/",
+    "tmp/local-ydb-dump",
+    "/tmp/local-ydb-dump/./child",
+    "/tmp/local-ydb-dump/../usr",
+    " /tmp/local-ydb-dump/child",
+    "/tmp/local-ydb-dump/child ",
+    "/tmp/local-ydb-dump/child/",
+    "/tmp/local-ydb-dump\\child",
+    "/tmp/local:ydb-dump/child",
+    "/tmp/local-ydb-dump/control\u0001path",
+    "/tmp/local-ydb-dump/control\u0085path",
+    "/tmp//local-ydb-dump/child",
+  ])("rejects invalid cleanup path syntax at the MCP boundary: %s", async (path) => {
+    const executor = new RecordingExecutor();
+
+    await expect(callLocalYdbToolForTest("local_ydb_cleanup_storage", {
+      confirm: true,
+      paths: [path],
+    }, {
+      config: ConfigSchema.parse({}),
+      executor,
+    })).rejects.toThrow("exact absolute normalized POSIX path");
+    expect(executor.commands).toEqual([]);
+  });
+
+  it("rejects cleanup paths outside profile roots before executor invocation", async () => {
+    const executor = new RecordingExecutor();
+
+    await expect(callLocalYdbToolForTest("local_ydb_cleanup_storage", {
+      confirm: true,
+      paths: ["/usr/local"],
+    }, {
+      config: ConfigSchema.parse({}),
+      executor,
+    })).rejects.toThrow("strict descendant of profile.dumpHostPath or profile.bindMountPath");
+    expect(executor.commands).toEqual([]);
+  });
+
+  it("does not treat storageSearchPaths as cleanup authorization", async () => {
+    const executor = new RecordingExecutor();
+
+    await expect(callLocalYdbToolForTest("local_ydb_cleanup_storage", {
+      confirm: true,
+      paths: ["/srv/local-ydb-discovery/stale-local-data"],
+    }, {
+      config: ConfigSchema.parse({
+        profiles: {
+          default: {
+            storageSearchPaths: ["/srv/local-ydb-discovery"],
+          },
+        },
+      }),
+      executor,
+    })).rejects.toThrow("strict descendant of profile.dumpHostPath or profile.bindMountPath");
+    expect(executor.commands).toEqual([]);
+  });
+
+  it("rejects cleanup paths without a local-ydb-related name at the MCP boundary", async () => {
+    const executor = new RecordingExecutor();
+
+    await expect(callLocalYdbToolForTest("local_ydb_cleanup_storage", {
+      confirm: true,
+      paths: ["/backups/example-2026"],
+    }, {
+      config: ConfigSchema.parse({
+        profiles: {
+          default: {
+            dumpHostPath: "/backups",
+          },
+        },
+      }),
+      executor,
+    })).rejects.toThrow("cleanup path must contain ydb, local, or dump");
+    expect(executor.commands).toEqual([]);
   });
 
   it("lists dumps through the public MCP handler", async () => {

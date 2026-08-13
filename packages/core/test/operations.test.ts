@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -2598,13 +2598,372 @@ describe("mutating operations", () => {
     expect(response.plannedCommands).toEqual([]);
   });
 
-  it("falls back to sudo when removing root-owned cleanup paths", async () => {
+  it("confines dump cleanup to the most specific profile root without privilege elevation", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
     const response = await cleanupStorage(ctx, { paths: ["/tmp/local-ydb-dump/mcp-smoke"] });
+    const plan = response.plannedCommands[0] ?? "";
+
     expect(response.executed).toBe(false);
-    expect(response.plannedCommands[0]).toContain("rm -rf -- /tmp/local-ydb-dump/mcp-smoke");
-    expect(response.plannedCommands[0]).toContain("sudo -n rm -rf -- /tmp/local-ydb-dump/mcp-smoke");
+    expect(plan).toContain("docker image inspect");
+    expect(plan).toContain("docker run --rm --pull never --network none --read-only");
+    expect(plan).toContain("-v /tmp/local-ydb-dump:/cleanup-root:rw");
+    expect(plan).toContain("/cleanup-root");
+    expect(plan).toContain("/proc/self/mountinfo");
+    expect(plan).toContain("contains a mount point");
+    expect(plan).toContain("inaccessible cleanup path parent");
+    expect(plan).toContain("mcp-smoke");
+    expect(plan).not.toContain("sudo");
+    expect(plan).not.toContain("rm -rf -- /tmp/local-ydb-dump/mcp-smoke");
+  });
+
+  it("uses the longest matching dump or bind-mount root for cleanup", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dumpHostPath: "/srv/local-ydb",
+          bindMountPath: "/srv/local-ydb/storage",
+          storageSearchPaths: ["/srv/local-ydb/storage"]
+        }
+      }
+    }));
+
+    const response = await cleanupStorage(ctx, { paths: ["/srv/local-ydb/storage/pdisks"] });
+    const plan = response.plannedCommands[0] ?? "";
+
+    expect(plan).toContain("-v /srv/local-ydb/storage:/cleanup-root:rw");
+    expect(plan).not.toContain("-v /srv/local-ydb:/cleanup-root:rw");
+  });
+
+  it.each([
+    ["the default /tmp discovery root", ConfigSchema.parse({}), "/tmp/my-local-project"],
+    ["a custom discovery root", ConfigSchema.parse({
+      profiles: {
+        default: {
+          storageSearchPaths: ["/srv/local-ydb-discovery"]
+        }
+      }
+    }), "/srv/local-ydb-discovery/stale-local-data"]
+  ])("does not grant cleanup authority through %s", async (_label, config, path) => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, config);
+
+    await expect(cleanupStorage(ctx, { confirm: true, paths: [path] }))
+      .rejects.toThrow("strict descendant of profile.dumpHostPath or profile.bindMountPath");
+    expect(executor.commands).toEqual([]);
+  });
+
+  it("normalizes one trailing slash in a configured cleanup root", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dumpHostPath: "/srv/local-ydb-dumps/",
+          storageSearchPaths: []
+        }
+      }
+    }));
+
+    const response = await cleanupStorage(ctx, { paths: ["/srv/local-ydb-dumps/old-dump"] });
+    const plan = response.plannedCommands[0] ?? "";
+
+    expect(plan).toContain("-v /srv/local-ydb-dumps:/cleanup-root:rw");
+    expect(plan).not.toContain("-v /srv/local-ydb-dumps/:/cleanup-root:rw");
+  });
+
+  it.each([
+    ["/", "/srv/local-ydb-data/stale-local"],
+    ["srv/local-ydb", "/srv/local-ydb/stale-local"],
+    [" /srv/local-ydb", "/srv/local-ydb/stale-local"],
+    ["/srv/local-ydb\\data", "/srv/local-ydb/data/stale-local"],
+    ["/srv/local-ydb\u0001", "/srv/local-ydb/stale-local"],
+    ["/srv/local-ydb/./data", "/srv/local-ydb/data/stale-local"],
+    ["/srv//local-ydb", "/srv/local-ydb/stale-local"],
+    ["/srv/local-ydb//", "/srv/local-ydb/stale-local"]
+  ])("does not grant cleanup authority through invalid configured root %s", async (root, path) => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dumpHostPath: root,
+          storageSearchPaths: []
+        }
+      }
+    }));
+
+    await expect(cleanupStorage(ctx, { confirm: true, paths: [path] }))
+      .rejects.toThrow("strict descendant of profile.dumpHostPath or profile.bindMountPath");
+    expect(executor.commands).toEqual([]);
+  });
+
+  it("does not grant cleanup authority through a colon-containing configured root", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dumpHostPath: "/srv/local:ydb",
+          storageSearchPaths: []
+        }
+      }
+    }));
+
+    await expect(cleanupStorage(ctx, { confirm: true, paths: ["/srv/local:ydb/stale-local"] }))
+      .rejects.toThrow("exact absolute normalized POSIX path without colons");
+    expect(executor.commands).toEqual([]);
+  });
+
+  it.each([
+    "/",
+    "tmp/local-ydb-dump",
+    "/tmp/local-ydb-dump/./child",
+    "/tmp/../usr/local",
+    "/tmp/local-ydb-dump/../../usr/local",
+    " /tmp/local-ydb-dump/child",
+    "/tmp/local-ydb-dump/child ",
+    "/tmp/local-ydb-dump/child/",
+    "/tmp/local-ydb-dump\\child",
+    "/tmp/local:ydb-dump/child",
+    "/tmp/local-ydb-dump/control\u0001path",
+    "/tmp/local-ydb-dump/control\u0085path",
+    "/tmp//local-ydb-dump/child"
+  ])("rejects invalid POSIX cleanup path syntax %s", async (path) => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    await expect(cleanupStorage(ctx, { confirm: true, paths: [path] }))
+      .rejects.toThrow("exact absolute normalized POSIX path");
+    expect(executor.commands).toEqual([]);
+  });
+
+  it.each([
+    "/usr/local",
+    "/tmp/local-ydb-dump",
+    "/opt/local-ydb-data"
+  ])("rejects cleanup path outside or equal to profile roots: %s", async (path) => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    await expect(cleanupStorage(ctx, { confirm: true, paths: [path] }))
+      .rejects.toThrow("strict descendant of profile.dumpHostPath or profile.bindMountPath");
+    expect(executor.commands).toEqual([]);
+  });
+
+  it.each(["final", "intermediate"])("rejects a %s cleanup symlink before Docker execution", async (kind) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "local-ydb-cleanup-root-")));
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "local-ydb-cleanup-outside-")));
+    const marker = join(root, "docker-called");
+    const link = join(root, "local-ydb-link");
+    symlinkSync(outside, link, "dir");
+    const target = kind === "final" ? link : join(link, "dump");
+    const fakeBin = createTempExecutableDir({
+      docker: `#!/bin/bash
+set -euo pipefail
+: > ${shellQuote(marker)}
+exit 99
+`
+    });
+
+    try {
+      const executor = new ScriptRewritingShellExecutor((script) =>
+        script.replace(/\bdocker\b/g, shellQuote(join(fakeBin.path, "docker")))
+      );
+      const ctx = createContext(undefined, executor, ConfigSchema.parse({
+        profiles: {
+          default: {
+            dumpHostPath: root,
+            storageSearchPaths: []
+          }
+        }
+      }));
+
+      const response = await cleanupStorage(ctx, { confirm: true, paths: [target] });
+
+      expect(response.executed).toBe(true);
+      expect(response.results?.[0]).toMatchObject({ ok: false, exitCode: 1 });
+      expect(response.results?.[0]?.stderr).toContain("symlink component");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      fakeBin.cleanup();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a cleanup target that contains a nested mount", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "local-ydb-cleanup-root-")));
+    const target = join(root, "local-ydb stale");
+    const nestedMount = join(target, "nested");
+    const mountInfo = join(root, "mountinfo");
+    const marker = join(root, "docker-run-called");
+    mkdirSync(nestedMount, { recursive: true });
+    const encodedNestedMount = nestedMount.replace(/ /g, "\\040");
+    writeFileSync(mountInfo, `123 45 0:1 / ${encodedNestedMount} rw - tmpfs tmpfs rw\n`, "utf8");
+    const fakeBin = createTempExecutableDir({
+      docker: `#!/bin/bash
+set -euo pipefail
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  exit 0
+fi
+if [ "$1" = "run" ]; then
+  : > ${shellQuote(marker)}
+  inner_script="\${!#}"
+  inner_script="\${inner_script//\\/cleanup-root/${root}}"
+  inner_script="\${inner_script//\\/proc\\/self\\/mountinfo/${mountInfo}}"
+  exec /bin/bash -lc "$inner_script"
+fi
+printf '%s\\n' "unexpected docker invocation: $*" >&2
+exit 98
+`
+    });
+
+    try {
+      const executor = new ScriptRewritingShellExecutor((script) =>
+        script.replace(/\bdocker\b/g, shellQuote(join(fakeBin.path, "docker")))
+      );
+      const ctx = createContext(undefined, executor, ConfigSchema.parse({
+        profiles: {
+          default: {
+            dumpHostPath: root,
+            storageSearchPaths: []
+          }
+        }
+      }));
+
+      const response = await cleanupStorage(ctx, { confirm: true, paths: [target] });
+
+      expect(response.executed).toBe(true);
+      expect(response.results?.[0]).toMatchObject({ ok: false, exitCode: 1 });
+      expect(response.results?.[0]?.stderr).toContain("contains a mount point");
+      expect(existsSync(marker)).toBe(true);
+      expect(existsSync(target)).toBe(true);
+    } finally {
+      fakeBin.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.getuid?.() === 0)("fails instead of treating a target below an inaccessible parent as absent", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "local-ydb-cleanup-root-")));
+    const inaccessibleParent = join(root, "private-local-ydb");
+    const target = join(inaccessibleParent, "dump");
+    const marker = join(root, "docker-called");
+    mkdirSync(target, { recursive: true });
+    chmodSync(inaccessibleParent, 0o000);
+    const fakeBin = createTempExecutableDir({
+      docker: `#!/bin/bash
+set -euo pipefail
+: > ${shellQuote(marker)}
+exit 99
+`
+    });
+
+    try {
+      const executor = new ScriptRewritingShellExecutor((script) =>
+        script.replace(/\bdocker\b/g, shellQuote(join(fakeBin.path, "docker")))
+      );
+      const ctx = createContext(undefined, executor, ConfigSchema.parse({
+        profiles: {
+          default: {
+            dumpHostPath: root,
+            storageSearchPaths: []
+          }
+        }
+      }));
+
+      const response = await cleanupStorage(ctx, { confirm: true, paths: [target] });
+
+      expect(response.executed).toBe(true);
+      expect(response.results?.[0]).toMatchObject({ ok: false, exitCode: 1 });
+      expect(response.results?.[0]?.stderr).toContain("inaccessible cleanup path parent");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      chmodSync(inaccessibleParent, 0o700);
+      fakeBin.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an absent cleanup path as a successful no-op without Docker execution", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "local-ydb-cleanup-root-")));
+    const target = join(root, "local-ydb-missing");
+    const marker = join(root, "docker-called");
+    const fakeBin = createTempExecutableDir({
+      docker: `#!/bin/bash
+set -euo pipefail
+: > ${shellQuote(marker)}
+exit 99
+`
+    });
+
+    try {
+      const executor = new ScriptRewritingShellExecutor((script) =>
+        script.replace(/\bdocker\b/g, shellQuote(join(fakeBin.path, "docker")))
+      );
+      const ctx = createContext(undefined, executor, ConfigSchema.parse({
+        profiles: {
+          default: {
+            dumpHostPath: root,
+            storageSearchPaths: []
+          }
+        }
+      }));
+
+      const response = await cleanupStorage(ctx, { confirm: true, paths: [target] });
+
+      expect(response.executed).toBe(true);
+      expect(response.results?.[0]).toMatchObject({ ok: true, exitCode: 0 });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      fakeBin.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails clearly when the cleanup image is missing without running a container", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "local-ydb-cleanup-root-")));
+    const target = join(root, "local-ydb-stale");
+    const marker = join(root, "docker-run-called");
+    mkdirSync(target);
+    const fakeBin = createTempExecutableDir({
+      docker: `#!/bin/bash
+set -euo pipefail
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  exit 1
+fi
+if [ "$1" = "run" ]; then
+  : > ${shellQuote(marker)}
+  exit 99
+fi
+printf '%s\\n' "unexpected docker invocation: $*" >&2
+exit 98
+`
+    });
+
+    try {
+      const executor = new ScriptRewritingShellExecutor((script) =>
+        script.replace(/\bdocker\b/g, shellQuote(join(fakeBin.path, "docker")))
+      );
+      const ctx = createContext(undefined, executor, ConfigSchema.parse({
+        profiles: {
+          default: {
+            dumpHostPath: root,
+            image: "example.invalid/local-ydb:missing",
+            storageSearchPaths: []
+          }
+        }
+      }));
+
+      const response = await cleanupStorage(ctx, { confirm: true, paths: [target] });
+
+      expect(response.executed).toBe(true);
+      expect(response.results?.[0]).toMatchObject({ ok: false, exitCode: 42 });
+      expect(response.results?.[0]?.stderr).toContain("local_ydb_pull_image");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      fakeBin.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("skips absent cleanup volumes but fails if an existing volume cannot be removed", async () => {

@@ -1,4 +1,5 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { CLEANUP_TARGET_PATH_PATTERN } from "@local-ydb-toolkit/core";
 
 function profileProperty(): { type: "string"; description: string } {
   return {
@@ -1265,9 +1266,15 @@ export function cleanupSchema(): Tool["inputSchema"] {
       confirm: confirmProperty("remove the explicitly supplied storage paths or Docker volumes"),
       paths: {
         type: "array",
-        items: { type: "string" },
+        items: {
+          type: "string",
+          minLength: 2,
+          pattern: CLEANUP_TARGET_PATH_PATTERN,
+          description:
+            "Exact absolute normalized POSIX path without colons containing ydb, local, or dump (case-insensitive), with no whitespace padding, backslashes, control characters, dot segments, duplicate slashes, or trailing slash.",
+        },
         description:
-          "Explicit host filesystem paths to remove. Nothing is deleted unless each path is supplied here and confirm=true.",
+          "Explicit host filesystem paths to remove. Each path must contain ydb, local, or dump and be a strict descendant of profile.dumpHostPath or profile.bindMountPath; configured roots themselves cannot be removed. profile.storageSearchPaths is discovery only and does not authorize deletion. Paths with symlink components, inaccessible parents, or nested mounts are rejected. Existing path cleanup requires profile.image in the local Docker cache; use local_ydb_pull_image before retrying. Nothing is deleted unless each path is supplied here and confirm=true.",
       },
       volumes: {
         type: "array",

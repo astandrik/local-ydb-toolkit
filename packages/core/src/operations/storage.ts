@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import {
   LocalYdbApiClient,
   bash,
@@ -7,7 +8,7 @@ import {
   type CommandResult,
   type StoragePoolSummary
 } from "../api-client.js";
-import { sanitizeTenantName } from "../validation.js";
+import { sanitizeTenantName, type ResolvedLocalYdbProfile } from "../validation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
 import { requireInventory } from "./checks.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
@@ -27,6 +28,36 @@ import type {
 
 type ResolvedStoragePoolSummary = Required<Pick<StoragePoolSummary, "rawBlock" | "boxId" | "storagePoolId" | "name" | "numGroups">> &
   Pick<StoragePoolSummary, "itemConfigGeneration">;
+
+export const CLEANUP_PATH_PATTERN = String.raw`^/(?!\.\.?(?:/|$))(?!.*\/\.\.?(?:/|$))(?!.*//)(?!.*\\)(?!.*:)(?!.*[\u0000-\u001F\u007F-\u009F])(?!\s)(?!.*\s$)(?!.*\/$).+$`;
+const CLEANUP_TARGET_NAME_PATTERN = String.raw`(?:[yY][dD][bB]|[lL][oO][cC][aA][lL]|[dD][uU][mM][pP])`;
+export const CLEANUP_TARGET_PATH_PATTERN = CLEANUP_PATH_PATTERN.replace(
+  "^",
+  `^(?=.*${CLEANUP_TARGET_NAME_PATTERN})`
+);
+
+const cleanupPathPattern = new RegExp(CLEANUP_PATH_PATTERN);
+
+export function isAbsoluteNormalizedCleanupPath(value: string): boolean {
+  return cleanupPathPattern.test(value) &&
+    value.trim() === value &&
+    posix.isAbsolute(value) &&
+    posix.normalize(value) === value;
+}
+
+function normalizeCleanupRoot(value: string | undefined): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.endsWith("/") ? value.slice(0, -1) : value;
+  return isAbsoluteNormalizedCleanupPath(normalized) ? normalized : undefined;
+}
+
+type ResolvedCleanupPath = {
+  root: string;
+  relativeTarget: string;
+  target: string;
+};
 
 export async function storagePlacement(ctx: ToolkitContext) {
   const readPool = await ctx.client.run(ydbdAdmin(ctx.profile, [
@@ -285,15 +316,13 @@ export async function reduceStorageGroups(
 export async function cleanupStorage(ctx: ToolkitContext, options: MutatingOptions & { paths?: string[]; volumes?: string[] } = {}) {
   const paths = options.paths ?? [];
   const volumes = options.volumes ?? [];
-  for (const path of paths) {
-    assertSafeCleanupTarget(path);
-  }
+  const resolvedPaths = paths.map((path) => resolveCleanupPath(ctx.profile, path));
   for (const volume of volumes) {
     assertSafeCleanupTarget(volume);
   }
   const specs = [
     ...volumes.map((volume) => removeVolumeIfPresentSpec(volume)),
-    ...paths.map((path) => bash(`rm -rf -- ${shellQuote(path)} || sudo -n rm -rf -- ${shellQuote(path)}`))
+    ...resolvedPaths.map((path) => cleanupPathSpec(ctx.profile, path))
   ];
   return runMutating(ctx, {
     summary: `Clean ${paths.length} storage paths and ${volumes.length} Docker volumes.`,
@@ -302,6 +331,115 @@ export async function cleanupStorage(ctx: ToolkitContext, options: MutatingOptio
     rollback: ["No automatic rollback after deletion; restore from backups/dumps."],
     verification: ["local_ydb_storage_leftovers no longer reports the removed targets"]
   }, options);
+}
+
+function resolveCleanupPath(profile: ResolvedLocalYdbProfile, target: string): ResolvedCleanupPath {
+  if (!isAbsoluteNormalizedCleanupPath(target)) {
+    throw new Error(`Cleanup path must be an exact absolute normalized POSIX path without colons: ${target}`);
+  }
+  assertSafeCleanupTarget(target);
+
+  const roots = [...new Set(
+    [profile.dumpHostPath, profile.bindMountPath]
+      .map(normalizeCleanupRoot)
+      .filter((root): root is string => root !== undefined)
+  )];
+  if (roots.includes(target)) {
+    throw new Error(`Cleanup path must be a strict descendant of profile.dumpHostPath or profile.bindMountPath: ${target}`);
+  }
+
+  const match = roots
+    .map((root) => ({ root, relativeTarget: posix.relative(root, target) }))
+    .filter(({ relativeTarget }) =>
+      relativeTarget !== "" &&
+      relativeTarget !== ".." &&
+      !relativeTarget.startsWith("../") &&
+      !posix.isAbsolute(relativeTarget)
+    )
+    .sort((left, right) => right.root.length - left.root.length)[0];
+
+  if (!match) {
+    throw new Error(`Cleanup path must be a strict descendant of profile.dumpHostPath or profile.bindMountPath: ${target}`);
+  }
+  return { ...match, target };
+}
+
+function cleanupPathSpec(profile: ResolvedLocalYdbProfile, path: ResolvedCleanupPath) {
+  const missingImageMessage = [
+    `Docker image ${profile.image} is not available on the target.`,
+    `Start local_ydb_pull_image for the selected profile, then retry local_ydb_cleanup_storage.`
+  ].join(" ");
+  const innerScript = [
+    "set -euo pipefail",
+    `cleanup_relative=${shellQuote(path.relativeTarget)}`,
+    "cleanup_current=/cleanup-root",
+    "IFS='/' read -r -a cleanup_parts <<< \"$cleanup_relative\"",
+    "for cleanup_part in \"${cleanup_parts[@]}\"; do",
+    "  cleanup_current=\"${cleanup_current}/${cleanup_part}\"",
+    "  if [ -L \"$cleanup_current\" ]; then",
+    "    printf 'Refusing cleanup path with symlink component: %s\\n' \"$cleanup_current\" >&2",
+    "    exit 1",
+    "  fi",
+    "done",
+    "if [ ! -e \"$cleanup_current\" ]; then",
+    "  exit 0",
+    "fi",
+    "if [ ! -r /proc/self/mountinfo ]; then",
+    "  printf 'Refusing cleanup because mount boundaries cannot be inspected\\n' >&2",
+    "  exit 1",
+    "fi",
+    "cleanup_mount_target=${cleanup_current// /\\\\040}",
+    "while IFS=' ' read -r cleanup_mount_id cleanup_mount_parent cleanup_mount_device cleanup_mount_root cleanup_mount_point cleanup_mount_rest; do",
+    "  if [ \"$cleanup_mount_point\" = \"$cleanup_mount_target\" ] || [[ \"$cleanup_mount_point\" == \"$cleanup_mount_target/\"* ]]; then",
+    "    printf 'Refusing cleanup path that is or contains a mount point: %s\\n' \"$cleanup_current\" >&2",
+    "    exit 1",
+    "  fi",
+    "done < /proc/self/mountinfo",
+    "rm -rf -- \"$cleanup_current\""
+  ].join("\n");
+  const dockerCommand = [
+    "docker", "run", "--rm",
+    "--pull", "never",
+    "--network", "none",
+    "--read-only",
+    "-v", `${path.root}:/cleanup-root:rw`,
+    "--entrypoint", "/bin/bash",
+    profile.image,
+    "-lc", innerScript
+  ].map(shellQuote).join(" ");
+
+  return bash([
+    "set -euo pipefail",
+    `cleanup_target=${shellQuote(path.target)}`,
+    "cleanup_current=/",
+    "IFS='/' read -r -a cleanup_parts <<< \"$cleanup_target\"",
+    "for cleanup_part in \"${cleanup_parts[@]}\"; do",
+    "  if [ -z \"$cleanup_part\" ]; then",
+    "    continue",
+    "  fi",
+    "  if [ ! -d \"$cleanup_current\" ] || [ ! -x \"$cleanup_current\" ]; then",
+    "    printf 'Refusing non-directory or inaccessible cleanup path parent: %s\\n' \"$cleanup_current\" >&2",
+    "    exit 1",
+    "  fi",
+    "  if [ \"$cleanup_current\" = / ]; then",
+    "    cleanup_next=\"/${cleanup_part}\"",
+    "  else",
+    "    cleanup_next=\"${cleanup_current}/${cleanup_part}\"",
+    "  fi",
+    "  if [ -L \"$cleanup_next\" ]; then",
+    "    printf 'Refusing cleanup path with symlink component: %s\\n' \"$cleanup_next\" >&2",
+    "    exit 1",
+    "  fi",
+    "  if [ ! -e \"$cleanup_next\" ]; then",
+    "    exit 0",
+    "  fi",
+    "  cleanup_current=\"$cleanup_next\"",
+    "done",
+    `docker image inspect ${shellQuote(profile.image)} >/dev/null 2>&1 || { printf '%s\\n' ${shellQuote(missingImageMessage)} >&2; exit 42; }`,
+    dockerCommand
+  ].join("\n"), {
+    description: `Remove cleanup path ${path.target} in a confined container`
+  });
 }
 
 function removeVolumeIfPresentSpec(volume: string) {

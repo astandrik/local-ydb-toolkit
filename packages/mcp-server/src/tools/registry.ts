@@ -609,7 +609,7 @@ export const toolDefinitions = [
     group: "storage",
     name: "local_ydb_cleanup_storage",
     description:
-      "Delete only the explicitly supplied local-ydb host paths or Docker volumes. Use after inspecting local_ydb_storage_leftovers; without confirm=true this returns the cleanup plan and removes nothing.",
+      "Delete only explicitly supplied exact normalized POSIX host paths without colons containing ydb, local, or dump that are strict descendants of the selected profile's dumpHostPath or bindMountPath, or explicitly supplied Docker volumes. Configured roots themselves cannot be removed; storageSearchPaths is discovery only and does not authorize deletion. Paths with symlink components, inaccessible parents, or nested mounts are rejected. Existing path cleanup requires the profile image in the local Docker cache; use local_ydb_pull_image before retrying when it is missing. Use after inspecting local_ydb_storage_leftovers; without confirm=true this returns the cleanup plan and removes nothing.",
     inputSchema: cleanupSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: withContext(CleanupArgs, (context, parsed) =>
