@@ -119,7 +119,7 @@ test("submission materials contain exactly five positive and three negative case
     submission,
     /^- Availability: all countries and regions supported by OpenAI$/m,
   );
-  const submissionLines = submission.split("\n");
+  const submissionLines = submission.split(/\r?\n/);
   assert(submissionLines.includes(`- Privacy policy: \`${privacyPolicyUrl}\``));
   assert(submissionLines.includes(`- Terms of use: \`${termsOfUseUrl}\``));
   assert.equal(new URL(privacyPolicyUrl).protocol, "https:");
