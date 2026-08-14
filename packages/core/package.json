@@ -11,7 +11,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node ../../scripts/cleanup-helper/asset-check.mjs && tsc -p tsconfig.json && node ../../scripts/cleanup-helper/copy-asset.mjs",
     "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "dependencies": {
