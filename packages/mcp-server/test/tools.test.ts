@@ -1041,6 +1041,45 @@ describe("mcp tools", () => {
     expect(result.plannedCommands.length).toBeGreaterThan(0);
   });
 
+  it("keeps topology tool input keys stable while documenting the new add default", () => {
+    const expectedSchemas: Record<string, string[]> = {
+      local_ydb_bootstrap: ["configPath", "confirm", "profile"],
+      local_ydb_restart_stack: ["configPath", "confirm", "profile"],
+      local_ydb_add_dynamic_nodes: [
+        "configPath",
+        "confirm",
+        "count",
+        "grpcPortStart",
+        "icPortStart",
+        "monitoringPortStart",
+        "profile",
+        "startIndex"
+      ]
+    };
+
+    for (const [name, keys] of Object.entries(expectedSchemas)) {
+      const tool = localYdbTools.find((candidate) => candidate.name === name);
+      expect(Object.keys(tool?.inputSchema.properties ?? {}).sort()).toEqual(keys);
+    }
+
+    const addTool = localYdbTools.find((tool) => tool.name === "local_ydb_add_dynamic_nodes");
+    const startIndexSchema = addTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;
+    expect(startIndexSchema?.description).toContain("profile.dynamicNodeCount + 1");
+  });
+
+  it("returns additive restart drift arrays", async () => {
+    const result = await callLocalYdbToolForTest("local_ydb_restart_stack", {}, {
+      config: ConfigSchema.parse({}),
+      executor: new RecordingExecutor()
+    }) as {
+      missingDynamicContainers: string[];
+      unexpectedDynamicContainers: string[];
+    };
+
+    expect(result.missingDynamicContainers).toEqual(["ydb-dyn-example"]);
+    expect(result.unexpectedDynamicContainers).toEqual([]);
+  });
+
   it("lists dumps through the public MCP handler", async () => {
     const executor = new RecordingExecutor();
     executor.run = async (_profile, spec) => {

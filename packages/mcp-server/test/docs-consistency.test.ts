@@ -47,6 +47,17 @@ function readJson<T>(url: URL): T {
   return JSON.parse(readFileSync(url, "utf8")) as T;
 }
 
+function managedBlock(text: string, name: string): string {
+  const startMarker = `<!-- BEGIN ${name} -->`;
+  const endMarker = `<!-- END ${name} -->`;
+  const start = text.indexOf(startMarker);
+  const end = text.indexOf(endMarker);
+  if (start < 0 || end < 0 || end < start) {
+    throw new Error(`Managed block ${name} was not found`);
+  }
+  return text.slice(start, end + endMarker.length);
+}
+
 describe("MCP Registry metadata", () => {
   const packageJson = readJson<PackageJson>(new URL("../package.json", import.meta.url));
   const corePackageJson = readJson<PackageJson>(
@@ -116,5 +127,15 @@ describe("MCP Registry metadata", () => {
     expect(configuredPaths).toContain("/package-lock.json");
     expect(configuredPaths).toContain("/server.json");
     expect(configuredPaths.every((configuredPath) => !configuredPath.includes(".."))).toBe(true);
+  });
+});
+
+describe("repository skill consistency", () => {
+  it("keeps the declarative topology contract identical in both scenario copies", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+
+    expect(managedBlock(rootScenarios, "DECLARATIVE TOPOLOGY CONTRACT"))
+      .toBe(managedBlock(skillScenarios, "DECLARATIVE TOPOLOGY CONTRACT"));
   });
 });

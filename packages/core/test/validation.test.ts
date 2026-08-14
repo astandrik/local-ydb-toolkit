@@ -10,6 +10,20 @@ describe("config validation", () => {
     expect(profile.staticContainer).toBe("ydb-local");
     expect(profile.tenantPath).toBe("/local/example");
     expect(profile.dynamicContainer).toBe("ydb-dyn-example");
+    expect(profile.dynamicNodeCount).toBe(1);
+  });
+
+  it.each([1, 11])("accepts dynamicNodeCount=%i", (dynamicNodeCount) => {
+    const config = ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount } }
+    });
+    expect(resolveProfile(config).dynamicNodeCount).toBe(dynamicNodeCount);
+  });
+
+  it.each([0, 12, 1.5])("rejects dynamicNodeCount=%s", (dynamicNodeCount) => {
+    expect(() => ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount } }
+    })).toThrow();
   });
 
   it("requires ssh settings for ssh profiles", () => {

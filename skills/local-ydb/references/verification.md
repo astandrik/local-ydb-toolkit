@@ -105,6 +105,10 @@ Treat a node as healthy only after all of these are true:
 - authenticated `nodelist` includes the node ID and IC port
 - tenant metadata checks still pass
 
+For declarative topology verification, start with `local_ydb_inventory` and require `ok=true`. Build the expected container set from `dynamicContainer`, suffixes `-2..-dynamicNodeCount`, and any explicitly retained one-off suffixes above the count. Compare that exact set and each container's running/stopped state before interpreting restart or rebuild results.
+
+Do not validate a multi-node topology by node count alone. Derive the exact expected IC ports as `dynamicIc + index - 1`, verify every configured port in authenticated `nodelist`, and then run the tenant metadata read. For `dynamicNodeCount: 3` with base IC `19002`, the required configured ports are `19002`, `19003`, and `19004`.
+
 `whoami` reachability checks:
 
 ```bash

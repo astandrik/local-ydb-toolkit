@@ -104,6 +104,8 @@ For production-like changes, use a copied volume first when possible.
 7. Start containers in dependency order: static node, dynamic nodes, clients.
 8. Verify tenant state, GraphShard, anonymous denial, and authenticated behavior before declaring success.
 
+When `dynamicNodeCount > 1`, steps 6-8 apply to every configured dynamic node. Stop all configured nodes before restarting the static node, then recreate nodes `1..N` with the auth-token mount in index order. After each launch, authenticated `viewer/json/nodelist` must contain that node's exact configured IC port before the next node starts. One-off suffixes above `dynamicNodeCount` keep their existing standalone hardening policy; this declarative rollout does not broaden it.
+
 Before mutating live config or volumes, provide a rollback plan: previous run commands, previous image tag, volume backup, and config restore point.
 
 Field-proven MCP sequence for a fresh stable `26.1.1.6` GHCR stack:

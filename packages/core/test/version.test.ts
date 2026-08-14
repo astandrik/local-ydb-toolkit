@@ -78,7 +78,7 @@ function writeTempConfig(rawConfig: unknown): { configPath: string; cleanup: () 
 function stubUpgradeExecutor(
   executor: RecordingExecutor,
   inventoryImage: string,
-  options: { failDockerPsCall?: number; containerNames?: string[] } = {}
+  options: { failDockerPsCall?: number; containerNames?: string[]; nodePorts?: number[] } = {}
 ): void {
   let dockerPsCalls = 0;
   executor.run = async (_profile, spec) => {
@@ -123,7 +123,7 @@ function stubUpgradeExecutor(
       return {
         command,
         exitCode: 0,
-        stdout: "[{\"Port\":19003}]",
+        stdout: JSON.stringify((options.nodePorts ?? [19002, 19003]).map((Port) => ({ Port }))),
         stderr: "",
         ok: true,
         timedOut: false
@@ -331,6 +331,35 @@ describe("version operations", () => {
     }
   });
 
+  it("treats only suffixes above dynamicNodeCount as one-off nodes during upgrade", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({ dynamicNodeCount: 3 });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.1.6", {
+        containerNames: [
+          "ydb-dyn-example-4",
+          "ydb-dyn-example-3",
+          "ydb-dyn-example-2",
+          "ydb-dyn-example",
+          "ydb-local"
+        ]
+      });
+
+      const response = await upgradeVersion(ctx, { version: "26.1.2.0" });
+      const plan = response.plannedCommands.join("\n");
+
+      expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
+      expect(plan).toContain("--name ydb-dyn-example-2 ");
+      expect(plan).toContain("--name ydb-dyn-example-3 ");
+      expect(plan).toContain("--name ydb-dyn-example-4 ");
+      expect(response.verification.join("\n")).toContain("ydb-dyn-example, ydb-dyn-example-2, ydb-dyn-example-3, ydb-dyn-example-4");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("executes a version upgrade and verifies target image usage", async () => {
     const executor = new RecordingExecutor();
     const rawConfig = upgradeConfig();
@@ -371,6 +400,44 @@ describe("version operations", () => {
       expect(commands.some((command) => command.includes("--name ydb-dyn-example-2") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("verify profile containers use image ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("verifies configured and one-off container images after a multi-node upgrade", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({ dynamicNodeCount: 3 });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: [
+          "ydb-dyn-example-4",
+          "ydb-dyn-example-3",
+          "ydb-dyn-example-2",
+          "ydb-dyn-example",
+          "ydb-local"
+        ],
+        nodePorts: [19002, 19003, 19004, 19005]
+      });
+
+      const response = await upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-multi-node"
+      });
+
+      expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
+      expect(response.imageVerification).toEqual({
+        expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        missing: [],
+        mismatches: []
+      });
+      const imageResult = response.results?.find((result) => result.command.includes("verify profile containers use image"));
+      expect(imageResult?.stdout).toContain("ydb-dyn-example-2=ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(imageResult?.stdout).toContain("ydb-dyn-example-3=ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(imageResult?.stdout).toContain("ydb-dyn-example-4=ghcr.io/ydb-platform/local-ydb:26.1.2.0");
     } finally {
       cleanup();
     }

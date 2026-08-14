@@ -17,14 +17,7 @@ export async function runMutating(
       verification: plan.verification
     };
   }
-  const results: CommandResult[] = [];
-  for (const spec of plan.specs) {
-    const result = normalizeExpectedYdbResult(spec, await ctx.client.run(spec));
-    results.push(result);
-    if (!result.ok) {
-      break;
-    }
-  }
+  const results = await runCommandSpecs(ctx, plan.specs);
   return {
     summary: `${plan.summary} Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
     executed: true,
@@ -34,6 +27,18 @@ export async function runMutating(
     verification: plan.verification,
     results
   };
+}
+
+export async function runCommandSpecs(ctx: ToolkitContext, specs: CommandSpec[]): Promise<CommandResult[]> {
+  const results: CommandResult[] = [];
+  for (const spec of specs) {
+    const result = normalizeExpectedYdbResult(spec, await ctx.client.run(spec));
+    results.push(result);
+    if (!result.ok) {
+      break;
+    }
+  }
+  return results;
 }
 
 export function normalizeExpectedYdbResult(spec: CommandSpec, result: CommandResult): CommandResult {

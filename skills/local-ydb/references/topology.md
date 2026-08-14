@@ -123,6 +123,20 @@ docker run -d --name ydb-dyn-example \
 
 Additional nodes need unique `--grpc-port`, `--mon-port`, and `--ic-port` values. Dynamic node IDs are assigned by NodeBroker. Scripts should discover IDs through `/viewer/json/nodelist`, not hardcode observed values.
 
+### Declarative node count and runtime drift
+
+`profile.dynamicNodeCount` is the total configured tenant-node count, including the primary node. It defaults to `1` and accepts `1..11`; root-only bootstrap ignores it.
+
+For node index `i`:
+
+- index `1` uses `dynamicContainer` and the base `dynamicGrpc`, `dynamicMonitoring`, and `dynamicIc` ports;
+- indices `2..N` use `<dynamicContainer>-<i>` and each base port plus `i - 1`;
+- every gRPC, monitoring, and IC listener must be in range and unique across the shared static-container network namespace.
+
+Tenant bootstrap and restart reconcile the complete configured set in index order and verify each exact IC port before continuing. `local_ydb_start_dynamic_node` remains primary-only. `local_ydb_add_dynamic_nodes` is runtime scaling: its default first index is `dynamicNodeCount + 1`, and those higher suffixes are one-off nodes rather than declarative topology.
+
+Explicit removal still protects only the primary container. Removing a configured suffix is allowed, but creates runtime drift. The next tenant bootstrap, restart, storage rebuild, or version rebuild restores the configured node. Restart reports missing configured names and unexpected suffixes above the configured count; it recreates configured nodes, preserves unexpected container identity, restarts only unexpected nodes that were previously running, leaves stopped unexpected nodes stopped, and never removes them.
+
 ## Adding Dynamic Nodes After Mandatory Auth
 
 Before adding nodes on a live host, inspect the current shape and copy mount, tenant, port, image, and network patterns from the working dynamic node:

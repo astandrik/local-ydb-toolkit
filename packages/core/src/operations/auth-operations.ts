@@ -1,60 +1,129 @@
 import { dirname } from "node:path";
-import { bash, shellQuote } from "../api-client.js";
+import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
 import { pathRedactions } from "../redactions.js";
-import { commandForDynamicRun, createTenantSpec, waitForYdbCli } from "./commands.js";
-import { planOnly, runMutating } from "./execution.js";
+import { createTenantSpec, dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
+import { configuredDynamicNodePlans, startDynamicNodePlans } from "./dynamic-node-topology.js";
+import { planOnly, runCommandSpecs, runMutating } from "./execution.js";
 import { commandForStaticGeneratedConfigPath } from "./generated-config.js";
 import { escapeTextProtoString, statusCommandFailureLines } from "./helpers.js";
 import type { MutatingOptions, OperationResponse, SetRootPasswordOptions, ToolkitContext } from "./types.js";
 
-export async function applyAuthHardening(ctx: ToolkitContext, options: MutatingOptions & { configHostPath?: string } = {}) {
+export async function applyAuthHardening(
+  ctx: ToolkitContext,
+  options: MutatingOptions & { configHostPath?: string } = {}
+): Promise<OperationResponse> {
   const configHostPath = options.configHostPath ?? ctx.profile.authConfigPath;
   if (!configHostPath) {
     return planOnly(ctx, "Auth hardening requires configHostPath for the prepared YDB config.", "high", [], ["No changes."], ["Provide a reviewed configHostPath."]);
   }
   const targetCommand = commandForStaticGeneratedConfigPath(ctx.profile.staticContainer);
-  const dynamicNodeRecreate = ctx.profile.dynamicNodeAuthTokenFile
-    ? [
-        bash(`docker rm -f ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`),
-        bash(commandForDynamicRun(ctx.profile), { timeoutMs: 60_000 })
-      ]
-    : [
-        bash(`docker restart ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`)
-      ];
-  return runMutating(ctx, {
-    summary: `Apply reviewed YDB auth config from ${configHostPath}.`,
+  const plans = configuredDynamicNodePlans(ctx.profile);
+  const preDynamicSpecs: CommandSpec[] = [
+    bash(`docker cp ${shellQuote(configHostPath)} ${shellQuote(`${ctx.profile.staticContainer}:/tmp/local-ydb-toolkit-config.yaml`)}`, {
+      redactions: pathRedactions(configHostPath)
+    }),
+    bash([
+      "set -euo pipefail",
+      `target=$(${targetCommand})`,
+      `docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target" "$target.before-local-ydb-toolkit-auth"`
+    ].join("\n")),
+    ...plans.slice().reverse().map((plan) => bash(`docker stop ${shellQuote(plan.container)} 2>/dev/null || true`, {
+      timeoutMs: 60_000,
+      description: `Stop configured dynamic tenant node ${plan.container}`
+    })),
+    bash(`docker restart ${shellQuote(ctx.profile.staticContainer)}`),
+    bash("sleep 5"),
+    bash([
+      "set -euo pipefail",
+      `target=$(${targetCommand})`,
+      `docker exec ${shellQuote(ctx.profile.staticContainer)} cp /tmp/local-ydb-toolkit-config.yaml "$target"`
+    ].join("\n")),
+    bash(`docker restart ${shellQuote(ctx.profile.staticContainer)}`),
+    bash("sleep 5"),
+    ctx.profile.rootPasswordFile ? waitForAuthenticatedTenantStatusSpec(ctx) : createTenantSpec(ctx.profile)
+  ];
+  const dynamicSpecs = ctx.profile.dynamicNodeAuthTokenFile
+    ? plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan))
+    : plans.map((plan) => bash(`docker restart ${shellQuote(plan.container)} 2>/dev/null || true`, {
+        timeoutMs: 60_000,
+        description: `Restart configured dynamic tenant node ${plan.container}`
+      }));
+  const finalSpecs = ctx.profile.rootPasswordFile
+    ? [waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Wait for authenticated tenant metadata")]
+    : [];
+  const specs = [...preDynamicSpecs, ...dynamicSpecs, ...finalSpecs];
+  const rollback = [
+    `target=$(${targetCommand}) && docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target.before-local-ydb-toolkit-auth" "$target"`,
+    `docker restart ${shellQuote(ctx.profile.staticContainer)}`,
+    ...plans.map((plan) => `docker start ${plan.container}`)
+  ];
+  const verification = [
+    "anonymous viewer/json returns 401",
+    "authenticated tenant checks pass",
+    `authenticated viewer/json/nodelist includes configured IC ports: ${plans.map((plan) => plan.icPort).join(", ")}`
+  ];
+  const summary = `Apply reviewed YDB auth config from ${configHostPath}.`;
+
+  if (!options.confirm) {
+    return {
+      summary: `${summary} Not executed because confirm=true was not provided.`,
+      executed: false,
+      risk: "high",
+      plannedCommands: specs.map((spec) => ctx.client.display(spec)),
+      rollback,
+      verification
+    };
+  }
+
+  const results = await runCommandSpecs(ctx, preDynamicSpecs);
+  if (!completedAll(preDynamicSpecs, results)) {
+    return authHardeningResponse(ctx, summary, specs, rollback, verification, results, 0, plans.length);
+  }
+
+  let completedNodes = 0;
+  if (ctx.profile.dynamicNodeAuthTokenFile) {
+    const topology = await startDynamicNodePlans(ctx, plans);
+    results.push(...topology.results);
+    completedNodes = topology.completedNodes;
+    if (completedNodes < plans.length) {
+      return authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length);
+    }
+  } else {
+    const dynamicResults = await runCommandSpecs(ctx, dynamicSpecs);
+    results.push(...dynamicResults);
+    completedNodes = dynamicResults.filter((result) => result.ok).length;
+    if (!completedAll(dynamicSpecs, dynamicResults)) {
+      return authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length);
+    }
+  }
+
+  results.push(...await runCommandSpecs(ctx, finalSpecs));
+  return authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length);
+}
+
+function completedAll(specs: CommandSpec[], results: CommandResult[]): boolean {
+  return results.length === specs.length && results.every((result) => result.ok);
+}
+
+function authHardeningResponse(
+  ctx: ToolkitContext,
+  summary: string,
+  specs: CommandSpec[],
+  rollback: string[],
+  verification: string[],
+  results: CommandResult[],
+  completedNodes: number,
+  nodeCount: number
+): OperationResponse {
+  return {
+    summary: `${summary} Executed ${results.filter((result) => result.ok).length}/${results.length} commands; restored ${completedNodes}/${nodeCount} configured dynamic nodes.`,
+    executed: true,
     risk: "high",
-    specs: [
-      bash(`docker cp ${shellQuote(configHostPath)} ${shellQuote(`${ctx.profile.staticContainer}:/tmp/local-ydb-toolkit-config.yaml`)}`, {
-        redactions: pathRedactions(configHostPath)
-      }),
-      bash([
-        "set -euo pipefail",
-        `target=$(${targetCommand})`,
-        `docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target" "$target.before-local-ydb-toolkit-auth"`
-      ].join("\n")),
-      bash(`docker stop ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`),
-      bash(`docker restart ${shellQuote(ctx.profile.staticContainer)}`),
-      bash("sleep 5"),
-      bash([
-        "set -euo pipefail",
-        `target=$(${targetCommand})`,
-        `docker exec ${shellQuote(ctx.profile.staticContainer)} cp /tmp/local-ydb-toolkit-config.yaml "$target"`
-      ].join("\n")),
-      bash(`docker restart ${shellQuote(ctx.profile.staticContainer)}`),
-      bash("sleep 5"),
-      ctx.profile.rootPasswordFile ? waitForAuthenticatedTenantStatusSpec(ctx) : createTenantSpec(ctx.profile),
-      ...dynamicNodeRecreate,
-      ...(ctx.profile.rootPasswordFile
-        ? [waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Wait for authenticated tenant metadata")]
-        : [])
-    ],
-    rollback: [
-      `target=$(${targetCommand}) && docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target.before-local-ydb-toolkit-auth" "$target"`,
-      `docker restart ${shellQuote(ctx.profile.staticContainer)}`
-    ],
-    verification: ["anonymous viewer/json returns 401", "authenticated tenant checks pass", "dynamic node reaches nodelist"]
-  }, options);
+    plannedCommands: specs.map((spec) => ctx.client.display(spec)),
+    rollback,
+    verification,
+    results
+  };
 }
 
 function waitForAuthenticatedTenantStatusSpec(ctx: ToolkitContext) {

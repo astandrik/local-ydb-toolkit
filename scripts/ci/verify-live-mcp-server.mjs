@@ -56,6 +56,18 @@ const [
   lifecycleDynamicGrpcPort,
   lifecycleMonitoringPort,
 ] = await allocateOpenPorts(3);
+const topologyProfileName = "ci-declarative-topology";
+const topologyPrefix = `${containerPrefix}-declarative-topology`;
+const topologyStaticContainer = `${topologyPrefix}-static`;
+const topologyDynamicContainer = `${topologyPrefix}-dynamic`;
+const topologyVolume = `${topologyPrefix}-data`;
+const topologyNetwork = `${topologyPrefix}-net`;
+const topologyPorts = await allocateContiguousOpenPorts(14);
+const topologyStaticGrpcPort = topologyPorts[0];
+const topologyDynamicGrpcPort = topologyPorts[1];
+const topologyMonitoringPort = topologyPorts[5];
+const topologyDynamicMonitoringPort = topologyPorts[6];
+const topologyDynamicIcPort = topologyPorts[10];
 
 const config = {
   defaultProfile: profileName,
@@ -100,6 +112,25 @@ const config = {
         monitoring: lifecycleMonitoringPort,
       },
     },
+    [topologyProfileName]: {
+      mode: "local",
+      image,
+      staticContainer: topologyStaticContainer,
+      dynamicContainer: topologyDynamicContainer,
+      dynamicNodeCount: 3,
+      tenantPath: "/local/declarative-topology",
+      volume: topologyVolume,
+      network: topologyNetwork,
+      monitoringBaseUrl: `http://127.0.0.1:${topologyMonitoringPort}`,
+      dumpHostPath: join(tempDir, "declarative-topology-dumps"),
+      ports: {
+        staticGrpc: topologyStaticGrpcPort,
+        dynamicGrpc: topologyDynamicGrpcPort,
+        monitoring: topologyMonitoringPort,
+        dynamicMonitoring: topologyDynamicMonitoringPort,
+        dynamicIc: topologyDynamicIcPort,
+      },
+    },
   },
 };
 
@@ -138,6 +169,7 @@ try {
   await verifyPromptRegistry(client);
   await verifyLiveTools(client);
   await verifyStoppedStaticRestart(client);
+  await verifyDeclarativeTopologyLifecycle(client);
 
   console.log("Live local-ydb MCP stdio server integration passed.");
 } finally {
@@ -797,6 +829,194 @@ async function verifyStoppedStaticRestart(client) {
   }
 }
 
+async function verifyDeclarativeTopologyLifecycle(client) {
+  console.log("::group::declarative dynamic-node topology");
+  const failures = [];
+  const configuredContainers = [
+    topologyDynamicContainer,
+    `${topologyDynamicContainer}-2`,
+    `${topologyDynamicContainer}-3`,
+  ];
+  const oneOffContainer = `${topologyDynamicContainer}-4`;
+  const configuredIcPorts = [
+    topologyDynamicIcPort,
+    topologyDynamicIcPort + 1,
+    topologyDynamicIcPort + 2,
+  ];
+  try {
+    try {
+      const bootstrapPlan = await callTool(client, "local_ydb_bootstrap", {
+        profile: topologyProfileName,
+      });
+      assert(bootstrapPlan.executed === false, "declarative bootstrap plan executed unexpectedly.");
+      for (const container of configuredContainers) {
+        assert(
+          plannedCommandsText(bootstrapPlan).includes(`--name ${container} `),
+          `declarative bootstrap plan omitted ${container}.`,
+        );
+      }
+
+      const bootstrapResult = await callTool(client, "local_ydb_bootstrap", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(bootstrapResult, "three-node declarative bootstrap");
+      await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
+
+      const addPlan = await callTool(client, "local_ydb_add_dynamic_nodes", {
+        profile: topologyProfileName,
+      });
+      assert(addPlan.executed === false, "default one-off add plan executed unexpectedly.");
+      assert(addPlan.nodes?.[0]?.index === 4, "default one-off add did not start at configured count + 1.");
+      assert(addPlan.nodes?.[0]?.container === oneOffContainer, "default one-off add planned an unexpected container.");
+
+      const addResult = await callTool(client, "local_ydb_add_dynamic_nodes", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(addResult, "default one-off node add");
+      const afterAdd = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      const oneOffBefore = findContainer(afterAdd, oneOffContainer);
+      assert(oneOffBefore?.id, "one-off container ID was not available after add.");
+      assert(oneOffBefore.state === "running", "one-off container was not running after add.");
+
+      const removeConfigured = await callTool(client, "local_ydb_remove_dynamic_nodes", {
+        profile: topologyProfileName,
+        containers: [`${topologyDynamicContainer}-2`],
+        confirm: true,
+      });
+      assertSuccessfulMutation(removeConfigured, "configured node drift fixture removal");
+
+      const restartPlan = await callTool(client, "local_ydb_restart_stack", {
+        profile: topologyProfileName,
+      });
+      assert(
+        JSON.stringify(restartPlan.missingDynamicContainers) === JSON.stringify([`${topologyDynamicContainer}-2`]),
+        "restart preflight did not report the missing configured node.",
+      );
+      assert(
+        JSON.stringify(restartPlan.unexpectedDynamicContainers) === JSON.stringify([oneOffContainer]),
+        "restart preflight did not report the one-off node.",
+      );
+      assert(
+        !plannedCommandsText(restartPlan).includes(`docker rm -f ${oneOffContainer}`),
+        "restart plan attempted to remove the one-off container.",
+      );
+
+      const restartResult = await callTool(client, "local_ydb_restart_stack", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(restartResult, "drift-aware declarative restart");
+      await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
+      const afterRestart = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      const oneOffAfter = findContainer(afterRestart, oneOffContainer);
+      assert(oneOffAfter?.id === oneOffBefore.id, "restart changed the one-off container identity.");
+      assert(oneOffAfter?.state === oneOffBefore.state, "restart changed the one-off container running state.");
+
+      const destroyResult = await callTool(client, "local_ydb_destroy_stack", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(destroyResult, "declarative topology destroy");
+
+      const rebootstrapResult = await callTool(client, "local_ydb_bootstrap", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(rebootstrapResult, "declarative topology rebootstrap");
+      const afterRebootstrap = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      const dynamicNames = afterRebootstrap.containers
+        ?.map((container) => container.names)
+        .filter((name) => name === topologyDynamicContainer || name?.startsWith(`${topologyDynamicContainer}-`))
+        .sort();
+      assert(
+        JSON.stringify(dynamicNames) === JSON.stringify([...configuredContainers].sort()),
+        "destroy/rebootstrap did not produce exactly the configured dynamic containers.",
+      );
+      await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
+    } catch (error) {
+      failures.push(error);
+    }
+
+    try {
+      const cleanup = await callTool(client, "local_ydb_destroy_stack", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(cleanup, "declarative topology cleanup");
+    } catch (error) {
+      failures.push(error);
+    }
+
+    try {
+      await cleanupTopologyArtifacts();
+      await assertTopologyArtifactsAbsent();
+    } catch (error) {
+      failures.push(error);
+    }
+
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Declarative topology lifecycle or cleanup failed.");
+    }
+    console.log("Declarative dynamic-node topology lifecycle passed.");
+  } finally {
+    console.log("::endgroup::");
+  }
+}
+
+async function assertConfiguredTopology(client, configuredContainers, configuredIcPorts) {
+  const inventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+  assert(inventory.ok === true, inventory.summary || "declarative inventory failed.");
+  for (const container of configuredContainers) {
+    assert(findContainer(inventory, container), `declarative inventory omitted ${container}.`);
+  }
+
+  const nodes = await callTool(client, "local_ydb_nodes_check", { profile: topologyProfileName });
+  const observedPorts = nodePorts(nodes);
+  for (const port of configuredIcPorts) {
+    assert(observedPorts.includes(port), `declarative nodelist omitted IC port ${port}.`);
+  }
+
+  const tenant = await callTool(client, "local_ydb_tenant_check", { profile: topologyProfileName });
+  assert(tenant.ok === true, tenant.stderr || "declarative tenant metadata check failed.");
+}
+
+function findContainer(inventory, name) {
+  return Array.isArray(inventory.containers)
+    ? inventory.containers.find((container) => container.names === name)
+    : undefined;
+}
+
+async function cleanupTopologyArtifacts() {
+  await runCommand("docker", [
+    "rm",
+    "-f",
+    `${topologyDynamicContainer}-4`,
+    `${topologyDynamicContainer}-3`,
+    `${topologyDynamicContainer}-2`,
+    topologyDynamicContainer,
+    topologyStaticContainer,
+  ]);
+  await runCommand("docker", ["network", "rm", topologyNetwork]);
+  await runCommand("docker", ["volume", "rm", topologyVolume]);
+}
+
+async function assertTopologyArtifactsAbsent() {
+  for (const [kind, args] of [
+    ["static container", ["inspect", topologyStaticContainer]],
+    ["primary dynamic container", ["inspect", topologyDynamicContainer]],
+    ["dynamic container 2", ["inspect", `${topologyDynamicContainer}-2`]],
+    ["dynamic container 3", ["inspect", `${topologyDynamicContainer}-3`]],
+    ["one-off dynamic container", ["inspect", `${topologyDynamicContainer}-4`]],
+    ["network", ["network", "inspect", topologyNetwork]],
+    ["volume", ["volume", "inspect", topologyVolume]],
+  ]) {
+    const result = await runCommand("docker", args);
+    assert(result.exitCode !== 0, `Disposable declarative topology ${kind} still exists after cleanup.`);
+  }
+}
+
 function assertSuccessfulMutation(result, description) {
   assert(result.executed === true, `${description} did not execute.`);
   assert(
@@ -954,6 +1174,39 @@ async function allocateOpenPorts(count) {
     ports.add(await allocateOpenPort());
   }
   return [...ports];
+}
+
+async function allocateContiguousOpenPorts(count) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const first = 20_000 + Math.floor(Math.random() * (45_000 - count));
+    const ports = Array.from({ length: count }, (_, offset) => first + offset);
+    const servers = [];
+    try {
+      for (const port of ports) {
+        servers.push(await listenOnPort(port));
+      }
+      await Promise.all(servers.map(closeServer));
+      return ports;
+    } catch {
+      await Promise.all(servers.map(closeServer));
+    }
+  }
+  throw new Error(`Could not allocate ${count} contiguous open TCP ports.`);
+}
+
+function listenOnPort(port) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", rejectPromise);
+    server.listen({ host: "127.0.0.1", port }, () => resolvePromise(server));
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolvePromise) => {
+    server.close(() => resolvePromise());
+  });
 }
 
 async function allocateOpenPort() {

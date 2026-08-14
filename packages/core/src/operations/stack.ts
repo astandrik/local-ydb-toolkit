@@ -4,17 +4,31 @@ import {
   commandForDynamicEnsureRun,
   commandForStaticEnsureRun,
   createTenantSpec,
+  dynamicNodeStartSpecs,
   removeTenantIfPresentSpec,
   waitForYdbRootCli,
   waitForYdbCli,
 } from "./commands.js";
-import { normalizeExpectedYdbResult, runMutating } from "./execution.js";
+import {
+  classifyDynamicTopologyDrift,
+  configuredDynamicNodePlans,
+  startDynamicNodePlans
+} from "./dynamic-node-topology.js";
+import { normalizeExpectedYdbResult, runCommandSpecs, runMutating } from "./execution.js";
 import { findExtraDynamicContainers } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
-import type { DestroyStackOptions, DestroyStackResponse, MutatingOptions, OperationResponse, ToolkitContext } from "./types.js";
+import type {
+  DestroyStackOptions,
+  DestroyStackResponse,
+  MutatingOptions,
+  OperationResponse,
+  RestartStackResponse,
+  ToolkitContext
+} from "./types.js";
 
 export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<OperationResponse> {
-  const specs = [
+  const plans = configuredDynamicNodePlans(ctx.profile);
+  const baseSpecs = [
     ensureImagePresentSpec(ctx.profile.image),
     bash(`docker network inspect ${shellQuote(ctx.profile.network)} >/dev/null 2>&1 || docker network create ${shellQuote(ctx.profile.network)}`, { description: "Ensure Docker network exists" }),
     ctx.profile.bindMountPath
@@ -23,27 +37,47 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
     bash(commandForStaticEnsureRun(ctx.profile, { enableGraphShard: true, requireGraphShard: true, publishDynamicGrpc: true }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
     bash("sleep 5", { description: "Wait briefly for static node startup" }),
     createTenantSpec(ctx.profile),
-    bash("sleep 5", { description: "Wait briefly for tenant creation" }),
-    bash(commandForDynamicEnsureRun(ctx.profile), { timeoutMs: 60_000, description: "Start dynamic tenant node" }),
-    bash("sleep 5", { description: "Wait briefly for dynamic node startup" }),
+    bash("sleep 5", { description: "Wait briefly for tenant creation" })
+  ];
+  const finalSpecs = [
     waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Wait for tenant metadata"),
     bash(`curl -fsSL ${shellQuote(`${ctx.profile.monitoringBaseUrl}/viewer/json/capabilities?database=${encodeURIComponent(ctx.profile.tenantPath)}`)} >/dev/null || true`, { allowFailure: true, description: "Verify viewer capabilities endpoint" })
   ];
-  return runMutating(ctx, {
-    summary: `Bootstrap local-ydb topology for ${ctx.profile.tenantPath}.`,
-    risk: "high",
-    specs,
-    rollback: [
-      `docker rm -f ${ctx.profile.dynamicContainer}`,
-      `docker rm -f ${ctx.profile.staticContainer}`,
-      ctx.profile.bindMountPath ? `Review and remove bind mount path manually: ${ctx.profile.bindMountPath}` : `docker volume rm ${ctx.profile.volume}`
-    ],
-    verification: [
-      `scheme ls ${ctx.profile.tenantPath}`,
-      "viewer capabilities reports GraphShardExists=true",
-      "dynamic node appears in viewer/json/nodelist"
-    ]
-  }, options);
+  const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan));
+  const specs = [...baseSpecs, ...nodeSpecs, ...finalSpecs];
+  const rollback = [
+    ...plans.slice().reverse().map((plan) => `docker rm -f ${plan.container}`),
+    `docker rm -f ${ctx.profile.staticContainer}`,
+    ctx.profile.bindMountPath ? `Review and remove bind mount path manually: ${ctx.profile.bindMountPath}` : `docker volume rm ${ctx.profile.volume}`
+  ];
+  const verification = [
+    `scheme ls ${ctx.profile.tenantPath}`,
+    "viewer capabilities reports GraphShardExists=true",
+    `viewer/json/nodelist includes configured IC ports: ${plans.map((plan) => plan.icPort).join(", ")}`
+  ];
+
+  if (!options.confirm) {
+    return {
+      summary: `Bootstrap local-ydb topology for ${ctx.profile.tenantPath}. Not executed because confirm=true was not provided.`,
+      executed: false,
+      risk: "high",
+      plannedCommands: specs.map((spec) => ctx.client.display(spec)),
+      rollback,
+      verification
+    };
+  }
+
+  const results = await runCommandSpecs(ctx, baseSpecs);
+  if (!completedAll(baseSpecs, results)) {
+    return bootstrapResponse(ctx, specs, rollback, verification, results, 0, plans.length);
+  }
+  const topology = await startDynamicNodePlans(ctx, plans);
+  results.push(...topology.results);
+  if (topology.completedNodes < plans.length) {
+    return bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length);
+  }
+  results.push(...await runCommandSpecs(ctx, finalSpecs));
+  return bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length);
 }
 
 export async function bootstrapRootDatabase(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<OperationResponse> {
@@ -210,22 +244,126 @@ function canContinueAfterTenantRemoveFailureDuringTeardown(
   return /UNAUTHORIZED|Invalid password|Access denied|login denied|too many failed password attempts|CLIENT_UNAUTHENTICATED|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:\s*UNAVAILABLE|No such container/i.test(output);
 }
 
-export async function restartStack(ctx: ToolkitContext, options: MutatingOptions = {}) {
-  const specs = [
+export async function restartStack(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<RestartStackResponse> {
+  const inventory = await requireInventory(ctx);
+  const plans = configuredDynamicNodePlans(ctx.profile);
+  const drift = classifyDynamicTopologyDrift(ctx.profile, inventory.containers);
+  const configuredNames = new Set(plans.map((plan) => plan.container));
+  const runningConfigured = inventory.containers
+    .filter((container) => container.names && configuredNames.has(container.names) && container.state === "running")
+    .map((container) => container.names as string);
+  const runningUnexpected = drift.unexpected
+    .filter((container) => container.state === "running" && container.names)
+    .map((container) => container.names as string);
+  const stopSpecs = [...runningConfigured.slice().reverse(), ...runningUnexpected.slice().reverse()]
+    .map((container) => bash(`docker stop ${shellQuote(container)}`, {
+      timeoutMs: 60_000,
+      description: `Stop dynamic tenant node ${container}`
+    }));
+  const baseSpecs = [
     ensureImagePresentSpec(ctx.profile.image),
-    bash(`docker stop ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`),
+    ...stopSpecs,
     bash(`docker stop ${shellQuote(ctx.profile.staticContainer)} 2>/dev/null || true`),
     bash(`docker start ${shellQuote(ctx.profile.staticContainer)}`),
     bash("sleep 5"),
     createTenantSpec(ctx.profile),
-    bash("sleep 5"),
-    bash(commandForDynamicEnsureRun(ctx.profile))
+    bash("sleep 5")
   ];
-  return runMutating(ctx, {
-    summary: `Restart local-ydb static and dynamic containers for ${ctx.profile.name}.`,
+  const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan));
+  const unexpectedStartSpecs = runningUnexpected.map((container) => bash(`docker start ${shellQuote(container)}`, {
+    timeoutMs: 60_000,
+    description: `Restore unexpected dynamic tenant node ${container}`
+  }));
+  const finalSpecs = [
+    ...unexpectedStartSpecs,
+    waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata after restart")
+  ];
+  const specs = [...baseSpecs, ...nodeSpecs, ...finalSpecs];
+  const rollback = [
+    "Start previous configured container definitions captured by local_ydb_inventory.",
+    ...runningUnexpected.map((container) => `docker start ${container}`)
+  ];
+  const verification = [
+    "static and configured dynamic containers are Up",
+    `viewer/json/nodelist includes configured IC ports: ${plans.map((plan) => plan.icPort).join(", ")}`,
+    `scheme ls ${ctx.profile.tenantPath}`,
+    "unexpected dynamic containers retain their preflight running/stopped state"
+  ];
+  const missingDynamicContainers = drift.missing;
+  const unexpectedDynamicContainers = drift.unexpected
+    .map((container) => container.names)
+    .filter((name): name is string => Boolean(name));
+
+  if (!options.confirm) {
+    return {
+      summary: `Restart local-ydb static and dynamic containers for ${ctx.profile.name}. Not executed because confirm=true was not provided.`,
+      executed: false,
+      risk: "high",
+      plannedCommands: specs.map((spec) => ctx.client.display(spec)),
+      rollback,
+      verification,
+      missingDynamicContainers,
+      unexpectedDynamicContainers
+    };
+  }
+
+  const results = await runCommandSpecs(ctx, baseSpecs);
+  if (!completedAll(baseSpecs, results)) {
+    return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length);
+  }
+  const topology = await startDynamicNodePlans(ctx, plans);
+  results.push(...topology.results);
+  if (topology.completedNodes < plans.length) {
+    return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length);
+  }
+  results.push(...await runCommandSpecs(ctx, finalSpecs));
+  return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length);
+}
+
+function completedAll(specs: CommandSpec[], results: CommandResult[]): boolean {
+  return results.length === specs.length && results.every((result) => result.ok);
+}
+
+function bootstrapResponse(
+  ctx: ToolkitContext,
+  specs: CommandSpec[],
+  rollback: string[],
+  verification: string[],
+  results: CommandResult[],
+  completedNodes: number,
+  nodeCount: number
+): OperationResponse {
+  return {
+    summary: `Bootstrap local-ydb topology for ${ctx.profile.tenantPath}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands; verified ${completedNodes}/${nodeCount} configured dynamic nodes.`,
+    executed: true,
     risk: "high",
-    specs,
-    rollback: ["Start previous container definitions captured by local_ydb_inventory."],
-    verification: ["static and dynamic containers are Up", `scheme ls ${ctx.profile.tenantPath}`]
-  }, options);
+    plannedCommands: specs.map((spec) => ctx.client.display(spec)),
+    rollback,
+    verification,
+    results
+  };
+}
+
+function restartResponse(
+  ctx: ToolkitContext,
+  specs: CommandSpec[],
+  rollback: string[],
+  verification: string[],
+  results: CommandResult[],
+  missingDynamicContainers: string[],
+  unexpectedDynamicContainers: string[],
+  completedNodes: number,
+  nodeCount: number
+): RestartStackResponse {
+  return {
+    summary: `Restart local-ydb static and dynamic containers for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands; verified ${completedNodes}/${nodeCount} configured dynamic nodes.`,
+    executed: true,
+    risk: "high",
+    plannedCommands: specs.map((spec) => ctx.client.display(spec)),
+    rollback,
+    verification,
+    results,
+    missingDynamicContainers,
+    unexpectedDynamicContainers
+  };
 }

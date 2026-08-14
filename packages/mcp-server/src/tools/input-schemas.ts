@@ -929,7 +929,7 @@ export function addDynamicNodesSchema(): Tool["inputSchema"] {
         type: "integer",
         minimum: 2,
         description:
-          "Suffix for the first added container. Defaults to 2, producing <dynamicContainer>-2.",
+          "Suffix for the first added container. Defaults to profile.dynamicNodeCount + 1, producing <dynamicContainer>-<dynamicNodeCount + 1>.",
       },
       grpcPortStart: {
         type: "integer",

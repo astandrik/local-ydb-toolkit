@@ -9,8 +9,9 @@ import {
 } from "../api-client.js";
 import { sanitizeTenantName } from "../validation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
-import { requireInventory } from "./checks.js";
+import { inventory, requireInventory } from "./checks.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
+import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { runMutating } from "./execution.js";
 import { assertPositiveInteger, assertSafeCleanupTarget, extraDynamicNodeTarget } from "./helpers.js";
@@ -162,6 +163,7 @@ export async function reduceStorageGroups(
   const extraDynamicNodes = inventoryState.containers
     .map((container) => extraDynamicNodeTarget(ctx.profile, container.names))
     .filter((target): target is NonNullable<typeof target> => Boolean(target))
+    .filter((target) => target.index > ctx.profile.dynamicNodeCount)
     .sort((left, right) => left.index - right.index);
   const finalCtx = authReapplyPlanned ? ctx : rebuildCtx;
 
@@ -197,7 +199,8 @@ export async function reduceStorageGroups(
     `ReadStoragePool for ${pool.name} reports NumGroups: ${targetNumGroups}`,
     `scheme ls ${ctx.profile.tenantPath}`,
     authReapplyPlanned ? "anonymous viewer/json returns 401 again after auth reapply" : "viewer/json/whoami remains reachable anonymously",
-    extraDynamicNodes.length ? "previous extra dynamic-node suffixes appear in authenticated nodelist again" : "base dynamic node remains reachable"
+    `configured and restored one-off containers are present with image ${finalCtx.profile.image}: ${expectedProfileContainerNames(finalCtx, extraDynamicNodes).join(", ")}`,
+    `authenticated nodelist includes configured and restored one-off IC ports: ${expectedDynamicNodePorts(finalCtx, extraDynamicNodes).join(", ")}`
   ];
 
   if (!options.confirm) {
@@ -278,8 +281,73 @@ export async function reduceStorageGroups(
     finalCtx.profile.tenantPath,
     "Wait for tenant metadata"
   )));
+  if (results.at(-1)?.ok) {
+    results.push(await verifyRebuiltProfileContainers(finalCtx, extraDynamicNodes));
+  }
 
   return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results);
+}
+
+function expectedProfileContainerNames(
+  ctx: ToolkitContext,
+  extraDynamicNodes: Array<{ container: string }>
+): string[] {
+  return [
+    ctx.profile.staticContainer,
+    ...configuredDynamicNodePlans(ctx.profile).map((plan) => plan.container),
+    ...extraDynamicNodes.map((node) => node.container)
+  ];
+}
+
+function expectedDynamicNodePorts(
+  ctx: ToolkitContext,
+  extraDynamicNodes: Array<{ index: number }>
+): number[] {
+  return [
+    ...configuredDynamicNodePlans(ctx.profile).map((plan) => plan.icPort),
+    ...extraDynamicNodes.map((node) => ctx.profile.ports.dynamicIc + node.index - 1)
+  ];
+}
+
+async function verifyRebuiltProfileContainers(
+  ctx: ToolkitContext,
+  extraDynamicNodes: Array<{ container: string }>
+): Promise<CommandResult> {
+  const expected = expectedProfileContainerNames(ctx, extraDynamicNodes);
+  const result = await inventory(ctx);
+  if (!result.ok) {
+    return {
+      command: `verify rebuilt profile containers use image ${ctx.profile.image}`,
+      exitCode: 1,
+      stdout: "",
+      stderr: "Docker inventory was unavailable during final rebuild verification.",
+      ok: false,
+      timedOut: false
+    };
+  }
+  const imageByName = new Map(
+    result.containers
+      .filter((container) => container.names && container.image)
+      .map((container) => [container.names as string, container.image as string])
+  );
+  const missing = expected.filter((name) => !imageByName.has(name));
+  const mismatches = expected
+    .filter((name) => imageByName.has(name) && imageByName.get(name) !== ctx.profile.image)
+    .map((name) => `${name} -> ${imageByName.get(name)}`);
+  const ok = missing.length === 0 && mismatches.length === 0;
+  return {
+    command: `verify rebuilt profile containers use image ${ctx.profile.image}`,
+    exitCode: ok ? 0 : 1,
+    stdout: expected.map((name) => `${name}=${imageByName.get(name) ?? "<missing>"}`).join("\n"),
+    stderr: ok
+      ? ""
+      : [
+          missing.length ? `Missing containers: ${missing.join(", ")}` : "",
+          mismatches.length ? `Image mismatches: ${mismatches.join(", ")}` : ""
+        ].filter(Boolean).join("\n"),
+    ok,
+    timedOut: false
+  };
 }
 
 export async function cleanupStorage(ctx: ToolkitContext, options: MutatingOptions & { paths?: string[]; volumes?: string[] } = {}) {

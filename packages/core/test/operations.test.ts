@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addStorageGroups,
   addDynamicNodes,
@@ -60,6 +60,16 @@ class RecordingExecutor implements CommandExecutor {
       timedOut: false
     };
   }
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+function confirmDynamicPorts(ctx: ReturnType<typeof createContext>, ports: number[]): void {
+  ctx.client.viewerGet = async (path) => path.includes("nodelist")
+    ? { status: "ok", data: ports.map((Port, index) => ({ Id: 50_000 + index, Port })) }
+    : { status: "ok", data: { TenantInfo: [{ AliveNodes: ports.length, NodeIds: ports.map((_, index) => 50_000 + index) }] } };
 }
 
 function createTempExecutableDir(files: Record<string, string>): { path: string; cleanup: () => void } {
@@ -926,6 +936,17 @@ describe("mutating operations", () => {
     expect(plan).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
   });
 
+  it("keeps root bootstrap static-only when dynamicNodeCount is three", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+
+    const response = await bootstrapRootDatabase(ctx, {});
+
+    expect(response.plannedCommands.join("\n")).not.toContain("ydb-dyn-example");
+  });
+
   it("plans root bootstrap to start an existing stopped static container", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -1051,6 +1072,7 @@ describe("mutating operations", () => {
         timedOut: false
       };
     };
+    confirmDynamicPorts(ctx, [19002]);
 
     const response = await bootstrap(ctx, { confirm: true });
     expect(response.executed).toBe(true);
@@ -1171,10 +1193,66 @@ describe("mutating operations", () => {
   it("executes bootstrap commands with confirm=true", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    confirmDynamicPorts(ctx, [19002]);
     const response = await bootstrap(ctx, { confirm: true });
     expect(response.executed).toBe(true);
     expect(executor.commands.length).toBeGreaterThan(1);
     expect(executor.commands.join("\n")).toContain("admin database");
+  });
+
+  it("starts and verifies configured dynamic nodes in index order", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+    confirmDynamicPorts(ctx, [19002, 19003, 19004]);
+
+    const response = await bootstrap(ctx, { confirm: true });
+    const commands = executor.commands.join("\n");
+
+    expect(response.summary).toContain("verified 3/3 configured dynamic nodes");
+    expect(commands.indexOf("--name ydb-dyn-example ")).toBeLessThan(commands.indexOf("--name ydb-dyn-example-2 "));
+    expect(commands.indexOf("--name ydb-dyn-example-2 ")).toBeLessThan(commands.indexOf("--name ydb-dyn-example-3 "));
+  });
+
+  it("stops configured bootstrap after the first dynamic-node command failure", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+    confirmDynamicPorts(ctx, [19002, 19003, 19004]);
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      const ok = !command.includes("--name ydb-dyn-example-2 ");
+      return { command, exitCode: ok ? 0 : 1, stdout: "", stderr: ok ? "" : "node 2 failed", ok, timedOut: false };
+    };
+
+    const response = await bootstrap(ctx, { confirm: true });
+
+    expect(response.summary).toContain("verified 1/3 configured dynamic nodes");
+    expect(response.results?.at(-1)?.stderr).toBe("node 2 failed");
+    expect(executor.commands.join("\n")).not.toContain("--name ydb-dyn-example-3 ");
+  });
+
+  it("stops configured bootstrap after the first readiness failure", async () => {
+    vi.useFakeTimers();
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+    confirmDynamicPorts(ctx, [19002]);
+
+    const pending = bootstrap(ctx, { confirm: true });
+    await vi.runAllTimersAsync();
+    const response = await pending;
+
+    expect(response.summary).toContain("verified 1/3 configured dynamic nodes");
+    expect(response.results?.at(-1)).toMatchObject({
+      command: "verify dynamic node ydb-dyn-example-2 IC port 19003",
+      ok: false
+    });
+    expect(executor.commands.join("\n")).not.toContain("--name ydb-dyn-example-3 ");
   });
 
   it("creates the named dump directory before running ydb dump", async () => {
@@ -1451,6 +1529,92 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[tenantCommandIndex]).toContain("SCHEME_ERROR|No database found");
   });
 
+  it("reports restart drift and preserves unexpected container state without removing it", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            '{"Names":"ydb-local","State":"running"}',
+            '{"Names":"ydb-dyn-example","State":"running","ID":"primary-id"}',
+            '{"Names":"ydb-dyn-example-3","State":"exited","ID":"configured-3-id"}',
+            '{"Names":"ydb-dyn-example-4","State":"running","ID":"one-off-4-id"}',
+            '{"Names":"ydb-dyn-example-5","State":"exited","ID":"one-off-5-id"}'
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.startsWith("docker inspect ")) {
+        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await restartStack(ctx, {});
+    const plan = response.plannedCommands.join("\n");
+
+    expect(response.missingDynamicContainers).toEqual(["ydb-dyn-example-2"]);
+    expect(response.unexpectedDynamicContainers).toEqual(["ydb-dyn-example-4", "ydb-dyn-example-5"]);
+    expect(plan).toContain("docker stop ydb-dyn-example-4");
+    expect(plan).toContain("docker start ydb-dyn-example-4");
+    expect(plan).not.toContain("docker start ydb-dyn-example-5");
+    expect(plan).not.toMatch(/docker rm -f ydb-dyn-example-4(?:\s|$)/);
+    expect(plan).not.toMatch(/docker rm -f ydb-dyn-example-5(?:\s|$)/);
+    expect(response.rollback).toContain("docker start ydb-dyn-example-4");
+  });
+
+  it("restores only previously running unexpected containers after configured nodes", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: [
+            '{"Names":"ydb-local","State":"running"}',
+            '{"Names":"ydb-dyn-example","State":"running"}',
+            '{"Names":"ydb-dyn-example-2","State":"running","ID":"running-extra"}',
+            '{"Names":"ydb-dyn-example-3","State":"exited","ID":"stopped-extra"}'
+          ].join("\n"),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      if (command.startsWith("docker inspect ")) {
+        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+      }
+      if (command.includes("viewer/json/nodelist")) {
+        return { command, exitCode: 0, stdout: '[{"Port":19002}]', stderr: "", ok: true, timedOut: false };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await restartStack(ctx, { confirm: true });
+    const commands = executor.commands.join("\n");
+    const configuredStart = executor.commands.findIndex((command) => command.includes("--name ydb-dyn-example "));
+    const unexpectedStart = executor.commands.findIndex((command) => command.includes("docker start ydb-dyn-example-2"));
+
+    expect(response.results?.every((result) => result.ok)).toBe(true);
+    expect(commands).toContain("docker stop ydb-dyn-example-2");
+    expect(commands).not.toContain("docker stop ydb-dyn-example-3");
+    expect(unexpectedStart).toBeGreaterThan(configuredStart);
+    expect(commands).not.toContain("docker start ydb-dyn-example-3");
+    expect(commands).not.toMatch(/docker rm -f ydb-dyn-example-[23](?:\s|$)/);
+  });
+
   it("adds an auth-token mount when the dynamic node auth file is configured", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
@@ -1517,6 +1681,19 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-3");
+  });
+
+  it("defaults one-off scaling to the node after the configured topology", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+
+    const response = await addDynamicNodes(ctx, {});
+
+    expect(response.nodes).toEqual([
+      { container: "ydb-dyn-example-4", index: 4, grpcPort: 2140, monitoringPort: 8769, icPort: 19005 }
+    ]);
   });
 
   it("plans removing the highest-index extra dynamic nodes by default", async () => {
@@ -1811,6 +1988,7 @@ describe("mutating operations", () => {
       profiles: {
         default: {
           authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
+          dynamicNodeCount: 3,
           dynamicNodeAuthSid: "root@builtin",
           dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
           rootPasswordFile: "/tmp/local-ydb-auth/root.password",
@@ -1857,6 +2035,8 @@ describe("mutating operations", () => {
           command,
           exitCode: 0,
           stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example-4" }),
+            JSON.stringify({ Names: "ydb-dyn-example-3" }),
             JSON.stringify({ Names: "ydb-dyn-example-2" }),
             JSON.stringify({ Names: "ydb-dyn-example" }),
             JSON.stringify({ Names: "ydb-local" })
@@ -1888,11 +2068,13 @@ describe("mutating operations", () => {
     expect(response.pool.targetNumGroups).toBe(1);
     expect(response.dumpName).toBe("shrink-smoke");
     expect(response.authReapplyPlanned).toBe(true);
-    expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-2"]);
+    expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
     expect(response.plannedCommands.join("\n")).toContain("/dump/shrink-smoke/tenant");
     expect(response.plannedCommands.join("\n")).toContain("admin database /local/example create hdd:1");
     expect(response.plannedCommands.join("\n")).toContain("/tmp/local-ydb-auth/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
+    expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-3");
+    expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-4");
   });
 
   it("executes storage-group reduction rebuild and reapplies auth before re-adding extra dynamic nodes", async () => {
@@ -1902,6 +2084,7 @@ describe("mutating operations", () => {
         default: {
           authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
           dynamicContainer: "ydb-dyn-example",
+          dynamicNodeCount: 3,
           dynamicNodeAuthSid: "root@builtin",
           dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
           rootPasswordFile: "/tmp/local-ydb-auth/root.password",
@@ -1956,9 +2139,11 @@ describe("mutating operations", () => {
           command,
           exitCode: 0,
           stdout: [
-            JSON.stringify({ Names: "ydb-dyn-example-2" }),
-            JSON.stringify({ Names: "ydb-dyn-example" }),
-            JSON.stringify({ Names: "ydb-local" })
+            JSON.stringify({ Names: "ydb-dyn-example-4", Image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" }),
+            JSON.stringify({ Names: "ydb-dyn-example-3", Image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" }),
+            JSON.stringify({ Names: "ydb-dyn-example-2", Image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" }),
+            JSON.stringify({ Names: "ydb-dyn-example", Image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" }),
+            JSON.stringify({ Names: "ydb-local", Image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" })
           ].join("\n"),
           stderr: "",
           ok: true,
@@ -1992,7 +2177,7 @@ describe("mutating operations", () => {
         return {
           command,
           exitCode: 0,
-          stdout: '[{"Port":19003}]',
+          stdout: '[{"Port":19002},{"Port":19003},{"Port":19004},{"Port":19005}]',
           stderr: "",
           ok: true,
           timedOut: false
@@ -2013,6 +2198,7 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(true);
     expect(response.dumpName).toBe("shrink-smoke");
     expect(response.authReapplyPlanned).toBe(true);
+    expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
     expect(response.observedNumGroups).toBe(1);
 
     const commands = response.results?.map((result) => result.command) ?? [];
@@ -2022,11 +2208,14 @@ describe("mutating operations", () => {
     expect(commands.some((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""))).toBe(true);
     expect(commands.some((command) => command.includes("StaffApiUserToken: \"root@builtin\""))).toBe(true);
     expect(commands.some((command) => command.includes("--name ydb-dyn-example-2"))).toBe(true);
+    expect(commands.some((command) => command.includes("--name ydb-dyn-example-3"))).toBe(true);
+    expect(commands.some((command) => command.includes("--name ydb-dyn-example-4"))).toBe(true);
+    expect(commands.some((command) => command.includes("verify rebuilt profile containers use image"))).toBe(true);
 
     const firstRestartIndex = commands.findIndex((command) => command.includes("docker restart ydb-local"));
     const recopyIndex = commands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""));
     const secondRestartIndex = commands.findIndex((command, index) => index > firstRestartIndex && command.includes("docker restart ydb-local"));
-    const readdExtraNodeIndex = commands.findIndex((command) => command.includes("--name ydb-dyn-example-2"));
+    const readdExtraNodeIndex = commands.findIndex((command) => command.includes("--name ydb-dyn-example-4"));
     expect(firstRestartIndex).toBeGreaterThan(-1);
     expect(recopyIndex).toBeGreaterThan(firstRestartIndex);
     expect(secondRestartIndex).toBeGreaterThan(recopyIndex);
@@ -2421,6 +2610,30 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.some((command) => command.includes("--auth-token-file /run/local-ydb/dynamic-node-auth.pb"))).toBe(true);
     expect(response.plannedCommands.join("\n")).toContain("SCHEME_ERROR|No database found");
     expect(response.plannedCommands.join("\n")).toContain("Group fit error|failed to allocate group|no group options");
+  });
+
+  it("recreates every configured dynamic node during auth hardening", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.yaml",
+          dynamicNodeAuthTokenFile: "/tmp/local-ydb/auth.pb",
+          dynamicNodeCount: 3
+        }
+      }
+    }));
+
+    const response = await applyAuthHardening(ctx, {});
+    const plan = response.plannedCommands.join("\n");
+
+    expect(plan).toContain("docker stop ydb-dyn-example-3");
+    expect(plan).toContain("docker stop ydb-dyn-example-2");
+    expect(plan).toContain("docker stop ydb-dyn-example");
+    expect(plan).toContain("--name ydb-dyn-example ");
+    expect(plan).toContain("--name ydb-dyn-example-2 ");
+    expect(plan).toContain("--name ydb-dyn-example-3 ");
+    expect(response.verification.join("\n")).toContain("19002, 19003, 19004");
   });
 
   it("adds an authenticated tenant metadata wait for auth-hardening profiles with rootPasswordFile", async () => {

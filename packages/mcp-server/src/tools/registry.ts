@@ -440,7 +440,7 @@ export const toolDefinitions = [
     instructionOrder: 2,
     name: "local_ydb_bootstrap",
     description:
-      "Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and primary dynamic tenant node. An existing running or stopped static container is reused only after the full profile compatibility check, including GraphShard and static/dynamic gRPC bindings. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
+      "Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and all dynamic nodes declared by profile.dynamicNodeCount. Nodes start in index order and each IC port must appear in viewer/json nodelist before the next node starts. An existing running or stopped static container is reused only after the full profile compatibility check, including GraphShard and static/dynamic gRPC bindings. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -487,7 +487,7 @@ export const toolDefinitions = [
     group: "dynamic nodes",
     name: "local_ydb_add_dynamic_nodes",
     description:
-      "Add extra dynamic tenant nodes beyond the configured primary dynamic node, one at a time. Without confirm=true it returns container/port plans; with confirm=true it starts each node, verifies its IC port appears in viewer/json nodelist, and checks tenant metadata.",
+      "Add one-off dynamic tenant nodes beyond the declarative profile.dynamicNodeCount topology, one at a time. By default the first suffix is dynamicNodeCount + 1; explicit startIndex and port overrides remain available. Without confirm=true it returns container/port plans; with confirm=true it starts each node, verifies its IC port appears in viewer/json nodelist, and checks tenant metadata.",
     inputSchema: addDynamicNodesSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(AddDynamicNodesArgs, (context, parsed) =>
@@ -510,7 +510,7 @@ export const toolDefinitions = [
     instructionOrder: 5,
     name: "local_ydb_restart_stack",
     description:
-      "Restart the selected profile by stopping dynamic and static containers, starting the static node, ensuring the configured tenant, then starting the dynamic node. Use after config or runtime changes; without confirm=true this returns the restart plan only.",
+      "Reconcile and restart the selected profile after an inventory preflight: report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, recreate configured nodes in index order with nodelist checks, and restore only previously running unexpected containers without removing them. Use after config changes or runtime drift; without confirm=true this returns the restart plan only.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(MutatingArgs, (context, parsed) =>

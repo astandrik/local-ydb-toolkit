@@ -38,6 +38,7 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 
 - Do not assume `/local` has GraphShard. `YDB_FEATURE_FLAGS=enable_graph_shard` is necessary but not sufficient; use a CMS-created tenant such as `/local/<tenant>`.
 - For a plain root `/local` database, use the root-only MCP bootstrap path instead of the tenant/dynamic-node bootstrap.
+- Treat `profile.dynamicNodeCount` as the total declarative tenant-node count, including the primary node. Bootstrap and restart reconcile nodes `1..N`; `local_ydb_add_dynamic_nodes` creates one-off runtime nodes starting at `N+1` by default. Removing a configured suffix creates drift that the next bootstrap or restart restores.
 - Do not create GraphShard tenants with SQL. Use the public CMS gRPC API.
 - Prefer exact GHCR patch tags such as `ghcr.io/ydb-platform/local-ydb:26.1.1.6`. Do not assume floating aliases like `:26.1` exist or are pullable.
 - When `local-ydb` behavior is unclear, search upstream `ydb-platform/ydb` source with `gh api search/code` and read matching files through `gh api repos/ydb-platform/ydb/contents/...`; use pinned commits from project docs when matching documented proto shapes.
@@ -63,6 +64,7 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - On GHCR `26.1.1.6`, treat `admin database ... status` success with `State: PENDING_RESOURCES` as the expected pre-dynamic state. Wait for `status` to succeed before first dynamic-node start; do not wait for `RUNNING` before starting the first dynamic node.
 - On GHCR `26.1.1.6`, the generated static-node `config.yaml` can contain `grpc_config.{ca,cert,key}=/ydb_certs/...`. A dynamic node that reuses that file verbatim can crash on missing cert files. For non-TLS local runs, sanitize those three lines out for the dynamic-node copy of the config.
 - When adding dynamic nodes to a mandatory-auth deployment, start one new node first, verify it reaches `nodelist`, then add the next. If a new node registers but cannot fetch dynamic config, preserve evidence and stop the broken container; do not delete working or recently registered containers before a replacement is healthy.
+- Apply auth hardening to every configured dynamic node in index order. Recreate each node with the configured auth-token mount and verify its exact IC port through authenticated `nodelist` before continuing.
 - If a dynamic-node container already exists but was started with stale flags, stale image tag, or stale config, do not rely on `docker start`. Remove and recreate it so the new launch command actually takes effect.
 - Do not reuse an old data volume for an in-place version upgrade unless the upgrade has been rehearsed on a copy.
 - Do not assume `admin database ... status` or UI `StorageGroups` means groups are physically placed where you want them. Use BSC `QueryBaseConfig` to confirm actual `Group -> PDisk` placement.

@@ -69,6 +69,28 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Do not mix static and dynamic image tags inside one profile.
 - For stable GHCR tests, use the exact patch tag `ghcr.io/ydb-platform/local-ydb:26.1.1.6`.
 
+<!-- BEGIN DECLARATIVE TOPOLOGY CONTRACT -->
+## Declarative Topology Contract
+
+- `dynamicNodeCount` is the total configured tenant-node count, including primary, and defaults to `1`.
+- Configured node `1` uses `dynamicContainer`; nodes `2..N` use `dynamicContainer-<index>` and base ports plus `index - 1`.
+- Tenant bootstrap and restart reconcile configured nodes in index order and verify each exact IC port.
+- Default `local_ydb_add_dynamic_nodes` starts at `dynamicNodeCount + 1`; higher suffixes are one-off runtime nodes.
+- Restart reports missing configured and unexpected one-off containers, never removes unexpected containers, and preserves their running/stopped state.
+<!-- END DECLARATIVE TOPOLOGY CONTRACT -->
+
+## Declarative Topology Acceptance Flow
+
+Use only a disposable profile with `dynamicNodeCount: 3`, unique container/network/volume names, and non-overlapping contiguous port ranges. Keep cleanup in `finally`.
+
+1. Call `local_ydb_bootstrap` plan-only, then with `confirm: true`. Inventory must contain the primary, `-2`, and `-3`; authenticated `nodelist` must contain all three derived IC ports; `local_ydb_tenant_check` must pass.
+2. Call `local_ydb_add_dynamic_nodes` without `startIndex`. It must plan and create `-4`. Save its Docker ID and running state from inventory.
+3. Remove configured container `-2` explicitly. Call restart plan-only and require `missingDynamicContainers=["<dynamicContainer>-2"]` and `unexpectedDynamicContainers=["<dynamicContainer>-4"]`. The plan must not contain `docker rm -f <dynamicContainer>-4`.
+4. Confirm restart. Inventory must show restored `-2`; `-4` must retain the saved Docker ID and preflight running state. Exact configured IC ports and tenant metadata must pass again.
+5. While `-4` exists, plan a storage reduction or version upgrade rebuild. Only `-4` may appear in `extraDynamicNodes`; configured `-2` and `-3` come from bootstrap/auth reconciliation. Final container/image and nodelist verification must cover configured nodes plus `-4`.
+6. Confirm destroy, then bootstrap again. Inventory must contain exactly the three configured dynamic containers and no `-4`.
+7. In `finally`, destroy the disposable stack and independently remove any leftover disposable containers, network, and volume.
+
 <!-- BEGIN MANAGED SQL SCENARIOS -->
 ## Managed SQL Scenario: Query Service Safety Matrix
 
