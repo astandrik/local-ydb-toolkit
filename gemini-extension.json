@@ -1,0 +1,29 @@
+{
+  "name": "local-ydb-toolkit",
+  "version": "0.1.1",
+  "description": "Operate Docker-based local YDB deployments with reusable safety guidance and an optional local stdio MCP server.",
+  "mcpServers": {
+    "local-ydb": {
+      "command": "npx",
+      "args": [
+        "--yes",
+        "@astandrik/local-ydb-mcp@0.15.4"
+      ],
+      "cwd": "${extensionPath}"
+    }
+  },
+  "settings": [
+    {
+      "name": "Local YDB Toolkit config path",
+      "description": "Optional absolute path to a local-ydb-toolkit config JSON file. Leave blank to pass configPath on individual tool calls.",
+      "envVar": "LOCAL_YDB_TOOLKIT_CONFIG",
+      "sensitive": false
+    },
+    {
+      "name": "MCP response text format",
+      "description": "Optional response text format: json or toon. Leave blank for the server default.",
+      "envVar": "LOCAL_YDB_MCP_CONTENT_FORMAT",
+      "sensitive": false
+    }
+  ]
+}

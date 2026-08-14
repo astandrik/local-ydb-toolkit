@@ -18,9 +18,11 @@ import Ajv2020 from "ajv/dist/2020.js";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const schemaRoot = join(repositoryRoot, "schemas", "agent-plugins", "1.0.0");
+const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
 const portableManifest = await readJson("plugin.json");
 const legacyManifest = await readJson(".codex-plugin/plugin.json");
 const claudeManifest = await readJson(".claude-plugin/plugin.json");
+const geminiManifest = await readJson("gemini-extension.json");
 const portableMcp = await readJson("mcp.json");
 const legacyMcp = await readJson(".mcp.json");
 const marketplace = await readJson(".agents/plugins/marketplace.json");
@@ -76,6 +78,7 @@ test("portable and Codex manifests expose identical plugin metadata", async () =
     portableManifest,
     legacyManifest,
     claudeManifest,
+    geminiManifest,
     portableMcp,
     legacyMcp,
   });
@@ -104,6 +107,60 @@ test("Claude manifest mirrors portable metadata and uses default component locat
   assert.equal("mcpServers" in claudeManifest, false);
   assert((await stat(join(repositoryRoot, "skills", "local-ydb", "SKILL.md"))).isFile());
   assert((await stat(join(repositoryRoot, ".mcp.json"))).isFile());
+});
+
+test("Gemini extension mirrors portable metadata and the pinned local MCP", async () => {
+  assert.deepEqual(
+    {
+      name: geminiManifest.name,
+      version: geminiManifest.version,
+      description: geminiManifest.description,
+    },
+    {
+      name: portableManifest.name,
+      version: portableManifest.version,
+      description: portableManifest.description,
+    },
+  );
+
+  assert.deepEqual(Object.keys(geminiManifest.mcpServers), ["local-ydb"]);
+  const { cwd, ...geminiServer } = geminiManifest.mcpServers["local-ydb"];
+  assert.equal(cwd, "${extensionPath}");
+  assert.deepEqual(geminiServer, legacyMcp.mcpServers["local-ydb"]);
+  assert.doesNotMatch(geminiServer.args.join(" "), /@latest|[~^*]/);
+  assert.equal("env" in geminiServer, false);
+
+  assert.deepEqual(geminiManifest.settings, [
+    {
+      name: "Local YDB Toolkit config path",
+      description:
+        "Optional absolute path to a local-ydb-toolkit config JSON file. Leave blank to pass configPath on individual tool calls.",
+      envVar: "LOCAL_YDB_TOOLKIT_CONFIG",
+      sensitive: false,
+    },
+    {
+      name: "MCP response text format",
+      description:
+        "Optional response text format: json or toon. Leave blank for the server default.",
+      envVar: "LOCAL_YDB_MCP_CONTENT_FORMAT",
+      sensitive: false,
+    },
+  ]);
+  assert((await stat(join(repositoryRoot, "skills", "local-ydb", "SKILL.md"))).isFile());
+});
+
+test("Gemini and Antigravity documentation preserves the supported install paths", () => {
+  assert(
+    readme.includes(
+      "gemini extensions install https://github.com/astandrik/local-ydb-toolkit --ref=main --auto-update",
+    ),
+  );
+  assert(readme.includes("agy plugin import gemini"));
+  assert(
+    readme.includes(
+      "The repository is not listed in the Gemini extension gallery until the owner adds the `gemini-cli-extension` GitHub topic",
+    ),
+  );
 });
 
 test("repo marketplace exposes the plugin root with explicit policy", () => {
@@ -192,6 +249,7 @@ test("skills-only ZIP is deterministic, contained, and excludes MCP", { timeout:
     assert(entries.includes("LICENSE"));
     assert(!entries.includes("mcp.json"));
     assert(!entries.includes(".mcp.json"));
+    assert(!entries.includes("gemini-extension.json"));
     assert(entries.every((entry) => !entry.endsWith("/.gitkeep")));
 
     for (const entry of entries) {
