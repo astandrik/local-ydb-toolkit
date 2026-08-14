@@ -902,8 +902,11 @@ Calls:
 
 Expected:
 
-- plan-only output includes the exact `docker volume rm` or `rm -rf` target
-- unsafe targets like `/tmp`, `/var/lib/docker`, or unrelated names are rejected by validation
+- path cleanup accepts only exact normalized absolute POSIX paths without colons containing `ydb`, `local`, or `dump` that are strict descendants of the selected profile's `dumpHostPath` or `bindMountPath`
+- `storageSearchPaths` is discovery only; a discovered path is removable only when it is also inside one of those cleanup roots
+- plan-only output uses a network-disabled, read-only helper container with only the most specific matching profile root mounted read-write; it does not use `sudo`
+- an existing target requires the profile image in the local Docker cache; use `local_ydb_pull_image` before retrying when it is missing
+- configured roots, paths outside those roots, symlinked targets, targets with inaccessible parents or nested mounts, and unsafe names are rejected; a genuinely absent target is a successful no-op
 
 Avoid:
 

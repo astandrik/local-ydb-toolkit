@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { SqlParameter } from "@local-ydb-toolkit/core";
+import { isAbsoluteNormalizedCleanupPath, type SqlParameter } from "@local-ydb-toolkit/core";
 
 export const ProfileArgs = z.object({
   profile: z.string().optional(),
@@ -617,7 +617,15 @@ export const SetRootPasswordArgs = MutatingArgs.extend({
 });
 
 export const CleanupArgs = MutatingArgs.extend({
-  paths: z.array(z.string()).optional(),
+  paths: z.array(z.string()
+    .refine(
+      isAbsoluteNormalizedCleanupPath,
+      "cleanup path must be an exact absolute normalized POSIX path without colons",
+    )
+    .refine(
+      (value) => /(ydb|local|dump)/i.test(value),
+      "cleanup path must contain ydb, local, or dump",
+    )).optional(),
   volumes: z.array(z.string()).optional(),
 });
 
