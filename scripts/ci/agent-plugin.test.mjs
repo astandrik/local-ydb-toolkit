@@ -20,6 +20,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const schemaRoot = join(repositoryRoot, "schemas", "agent-plugins", "1.0.0");
 const portableManifest = await readJson("plugin.json");
 const legacyManifest = await readJson(".codex-plugin/plugin.json");
+const claudeManifest = await readJson(".claude-plugin/plugin.json");
 const portableMcp = await readJson("mcp.json");
 const legacyMcp = await readJson(".mcp.json");
 const marketplace = await readJson(".agents/plugins/marketplace.json");
@@ -71,7 +72,13 @@ test("portable and Codex manifests expose identical plugin metadata", async () =
     assert((await stat(join(repositoryRoot, path))).isFile(), `Missing plugin file: ${path}`);
   }
 
-  const serializedConfig = JSON.stringify({ portableManifest, legacyManifest, portableMcp, legacyMcp });
+  const serializedConfig = JSON.stringify({
+    portableManifest,
+    legacyManifest,
+    claudeManifest,
+    portableMcp,
+    legacyMcp,
+  });
   assert.doesNotMatch(serializedConfig, /\/(?:Users|home)\//);
   assert.doesNotMatch(serializedConfig, /"(?:password|secret|token|api[_-]?key)"\s*:/i);
 });
@@ -88,6 +95,15 @@ test("portable and legacy MCP configs use the same exact published package", () 
   assert.deepEqual(portableServer.args, ["--yes", "@astandrik/local-ydb-mcp@0.15.4"]);
   assert.equal("env" in portableServer, false);
   assert.doesNotMatch(portableServer.args.join(" "), /@latest|[~^*]/);
+});
+
+test("Claude manifest mirrors portable metadata and uses default component locations", async () => {
+  assert.deepEqual(coreMetadata(claudeManifest), coreMetadata(portableManifest));
+  assert.equal("displayName" in claudeManifest, false);
+  assert.equal("skills" in claudeManifest, false);
+  assert.equal("mcpServers" in claudeManifest, false);
+  assert((await stat(join(repositoryRoot, "skills", "local-ydb", "SKILL.md"))).isFile());
+  assert((await stat(join(repositoryRoot, ".mcp.json"))).isFile());
 });
 
 test("repo marketplace exposes the plugin root with explicit policy", () => {
@@ -221,6 +237,13 @@ function legacyMetadata(manifest) {
 
 function commonMetadata(manifest, pluginInterface) {
   return {
+    ...coreMetadata(manifest),
+    interface: pluginInterface,
+  };
+}
+
+function coreMetadata(manifest) {
+  return {
     name: manifest.name,
     version: manifest.version,
     description: manifest.description,
@@ -229,7 +252,6 @@ function commonMetadata(manifest, pluginInterface) {
     repository: manifest.repository,
     license: manifest.license,
     keywords: manifest.keywords,
-    interface: pluginInterface,
   };
 }
 
