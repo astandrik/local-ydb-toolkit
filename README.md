@@ -46,6 +46,17 @@ Agent Plugins start a stdio server with the installed plugin root as its working
 
 The public OpenAI submission artifact is deliberately skills-only because public MCP-backed submissions require a production HTTPS MCP server. Local Docker/YDB operations remain in the repo-marketplace plugin and the npm stdio package.
 
+## Claude Code Plugin
+
+The repository also contains a Claude Code plugin manifest. Claude discovers the existing `skills/` directory and pinned `.mcp.json` server from their default plugin-root locations. Before the Claude Community review is complete, test the repository directly with a current Claude Code release:
+
+```bash
+claude plugin validate .
+claude --plugin-dir .
+```
+
+The Claude Community submission is pending review and is not described as publicly installable until it appears in the community catalog. The same Node.js, absolute `configPath`, `LOCAL_YDB_TOOLKIT_CONFIG`, execution-boundary, and `confirm: true` requirements apply.
+
 ## Codex Skill Quick Start
 
 The easiest install path for Codex is to ask Codex to install the skill from this repository:
