@@ -57,6 +57,26 @@ claude --plugin-dir .
 
 The Claude Community submission is pending review and is not described as publicly installable until it appears in the community catalog. The same Node.js, absolute `configPath`, `LOCAL_YDB_TOOLKIT_CONFIG`, execution-boundary, and `confirm: true` requirements apply.
 
+## Gemini CLI / Antigravity Plugin
+
+The root `gemini-extension.json` adapts the same `skills/local-ydb` skill and pinned local stdio MCP server for Gemini CLI extensions. Install the repository directly:
+
+```bash
+gemini extensions install https://github.com/astandrik/local-ydb-toolkit --ref=main --auto-update
+```
+
+Gemini CLI prompts for optional extension settings during installation. Set `LOCAL_YDB_TOOLKIT_CONFIG` to an absolute config path, or leave it blank and pass an absolute `configPath` on profile-based tool calls. `LOCAL_YDB_MCP_CONTENT_FORMAT` may be left blank for JSON or set to `toon`. The MCP launcher requires Node.js 20.19 or newer plus `npx`, and a new session is required after installation.
+
+Google routes consumer Gemini CLI users through Antigravity CLI. Its supported migration command converts installed Gemini extensions, including bundled skills and MCP configuration, into native Antigravity plugins:
+
+```bash
+agy plugin import gemini
+```
+
+The migration utility searches the legacy Gemini extension directories, so its reported results can include other installed extensions as well.
+
+The repository is not listed in the Gemini extension gallery until the owner adds the `gemini-cli-extension` GitHub topic and the daily crawler accepts the manifest. Direct installation and local validation do not imply gallery publication.
+
 ## Codex Skill Quick Start
 
 The easiest install path for Codex is to ask Codex to install the skill from this repository:
