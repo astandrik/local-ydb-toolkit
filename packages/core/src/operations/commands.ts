@@ -245,10 +245,20 @@ export function commandForDynamicEnsureRun(profile: ResolvedLocalYdbProfile, nod
   ].join("\n");
 }
 
-export function dynamicNodeStartSpecs(profile: ResolvedLocalYdbProfile, plan: DynamicNodePlan): CommandSpec[] {
+export function dynamicNodeStartSpecs(
+  profile: ResolvedLocalYdbProfile,
+  plan: DynamicNodePlan,
+  mode: "ensure" | "recreate" = "ensure"
+): CommandSpec[] {
+  const startCommand = mode === "ensure"
+    ? commandForDynamicEnsureRun(profile, plan)
+    : [
+        `docker rm -f ${shellQuote(plan.container)} 2>/dev/null || true`,
+        commandForDynamicNodeRun(profile, plan)
+      ].join("\n");
   return [
     ensureImagePresentSpec(profile.image),
-    bash(commandForDynamicEnsureRun(profile, plan), {
+    bash(startCommand, {
       timeoutMs: 60_000,
       description: `Start dynamic tenant node ${plan.container}`
     }),

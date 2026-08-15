@@ -498,7 +498,7 @@ export const toolDefinitions = [
     group: "dynamic nodes",
     name: "local_ydb_remove_dynamic_nodes",
     description:
-      "Remove extra dynamic tenant nodes one at a time and verify nodelist disappearance when the node IC port can be resolved.",
+      "Remove dynamic tenant suffix nodes one at a time and verify nodelist disappearance when the node IC port can be resolved. Without containers, nodeIds, or startIndex, only one-off suffixes above profile.dynamicNodeCount are eligible and the highest suffix is removed first. Explicit selectors or startIndex may remove a configured suffix and create drift that bootstrap or restart restores. The primary dynamicContainer is always protected.",
     inputSchema: removeDynamicNodesSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: withContext(RemoveDynamicNodesArgs, (context, parsed) =>

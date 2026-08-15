@@ -58,6 +58,15 @@ function managedBlock(text: string, name: string): string {
   return text.slice(start, end + endMarker.length);
 }
 
+function sectionRange(text: string, startHeading: string, endHeading: string): string {
+  const start = text.indexOf(startHeading);
+  const end = text.indexOf(endHeading, start + startHeading.length);
+  if (start < 0 || end < 0) {
+    throw new Error(`Section range ${startHeading}..${endHeading} was not found`);
+  }
+  return text.slice(start, end).trim();
+}
+
 describe("MCP Registry metadata", () => {
   const packageJson = readJson<PackageJson>(new URL("../package.json", import.meta.url));
   const corePackageJson = readJson<PackageJson>(
@@ -137,5 +146,23 @@ describe("repository skill consistency", () => {
 
     expect(managedBlock(rootScenarios, "DECLARATIVE TOPOLOGY CONTRACT"))
       .toBe(managedBlock(skillScenarios, "DECLARATIVE TOPOLOGY CONTRACT"));
+  });
+
+  it("keeps dynamic-node scenarios 11 and 12 identical and topology-aware", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootSection = sectionRange(rootScenarios, "## Scenario 11: Add Extra Dynamic Nodes", "## Scenario 13: Add Storage Groups");
+    const skillSection = sectionRange(skillScenarios, "## Scenario 11: Add Extra Dynamic Nodes", "## Scenario 13: Add Storage Groups");
+
+    expect(rootSection).toBe(skillSection);
+    expect(rootSection).toContain("ydb-dyn-example-ghcr261-4");
+    expect(rootSection).toContain("ydb-dyn-example-ghcr261-5");
+    expect(rootSection).toContain("2260/9069/19305");
+    expect(rootSection).toContain("2261/9070/19306");
+    expect(rootSection).toContain("five dynamic nodes total");
+    expect(rootSection).toContain("docker rm -f ydb-dyn-example-ghcr261-4 ydb-dyn-example-ghcr261-5");
+    expect(rootSection).toContain("default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`");
+    expect(rootSection).toContain("Configured suffix `-2` is removable only through an explicit");
+    expect(rootSection).not.toContain("docker rm -f ydb-dyn-example-ghcr261-2 ydb-dyn-example-ghcr261-3");
   });
 });

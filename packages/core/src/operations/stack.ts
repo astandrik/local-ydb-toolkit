@@ -43,7 +43,7 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
     waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Wait for tenant metadata"),
     bash(`curl -fsSL ${shellQuote(`${ctx.profile.monitoringBaseUrl}/viewer/json/capabilities?database=${encodeURIComponent(ctx.profile.tenantPath)}`)} >/dev/null || true`, { allowFailure: true, description: "Verify viewer capabilities endpoint" })
   ];
-  const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan));
+  const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan, "recreate"));
   const specs = [...baseSpecs, ...nodeSpecs, ...finalSpecs];
   const rollback = [
     ...plans.slice().reverse().map((plan) => `docker rm -f ${plan.container}`),
@@ -71,7 +71,7 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
   if (!completedAll(baseSpecs, results)) {
     return bootstrapResponse(ctx, specs, rollback, verification, results, 0, plans.length);
   }
-  const topology = await startDynamicNodePlans(ctx, plans);
+  const topology = await startDynamicNodePlans(ctx, plans, "recreate");
   results.push(...topology.results);
   if (topology.completedNodes < plans.length) {
     return bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length);
@@ -274,10 +274,13 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
     timeoutMs: 60_000,
     description: `Restore unexpected dynamic tenant node ${container}`
   }));
-  const finalSpecs = [
-    ...unexpectedStartSpecs,
-    waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata after restart")
-  ];
+  const metadataSpec = waitForYdbCli(
+    ctx.profile,
+    ["scheme", "ls", ctx.profile.tenantPath],
+    ctx.profile.tenantPath,
+    "Verify tenant metadata after restart"
+  );
+  const finalSpecs = [...unexpectedStartSpecs, metadataSpec];
   const specs = [...baseSpecs, ...nodeSpecs, ...finalSpecs];
   const rollback = [
     "Start previous configured container definitions captured by local_ydb_inventory.",
@@ -309,15 +312,30 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
 
   const results = await runCommandSpecs(ctx, baseSpecs);
   if (!completedAll(baseSpecs, results)) {
+    results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));
     return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length);
   }
   const topology = await startDynamicNodePlans(ctx, plans);
   results.push(...topology.results);
   if (topology.completedNodes < plans.length) {
+    results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));
     return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length);
   }
-  results.push(...await runCommandSpecs(ctx, finalSpecs));
+  const recoveryResults = await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs);
+  results.push(...recoveryResults);
+  if (!completedAll(unexpectedStartSpecs, recoveryResults)) {
+    return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length);
+  }
+  results.push(await ctx.client.run(metadataSpec));
   return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length);
+}
+
+async function restoreUnexpectedDynamicNodes(ctx: ToolkitContext, specs: CommandSpec[]): Promise<CommandResult[]> {
+  const results: CommandResult[] = [];
+  for (const spec of specs) {
+    results.push(await ctx.client.run(spec));
+  }
+  return results;
 }
 
 function completedAll(specs: CommandSpec[], results: CommandResult[]): boolean {

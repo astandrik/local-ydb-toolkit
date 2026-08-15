@@ -38,7 +38,7 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 
 - Do not assume `/local` has GraphShard. `YDB_FEATURE_FLAGS=enable_graph_shard` is necessary but not sufficient; use a CMS-created tenant such as `/local/<tenant>`.
 - For a plain root `/local` database, use the root-only MCP bootstrap path instead of the tenant/dynamic-node bootstrap.
-- Treat `profile.dynamicNodeCount` as the total declarative tenant-node count, including the primary node. Bootstrap and restart reconcile nodes `1..N`; `local_ydb_add_dynamic_nodes` creates one-off runtime nodes starting at `N+1` by default. Removing a configured suffix creates drift that the next bootstrap or restart restores.
+- Treat `profile.dynamicNodeCount` as the total declarative tenant-node count, including the primary node. Bootstrap and restart reconcile nodes `1..N`; bootstrap recreates configured containers even when they are already running. `local_ydb_add_dynamic_nodes` creates one-off runtime nodes starting at `N+1` by default. Default removal considers only one-off suffixes above `N`; explicit container, node ID, or `startIndex` targeting can remove a configured suffix and create drift that the next bootstrap or restart restores.
 - Do not create GraphShard tenants with SQL. Use the public CMS gRPC API.
 - Prefer exact GHCR patch tags such as `ghcr.io/ydb-platform/local-ydb:26.1.1.6`. Do not assume floating aliases like `:26.1` exist or are pullable.
 - When `local-ydb` behavior is unclear, search upstream `ydb-platform/ydb` source with `gh api search/code` and read matching files through `gh api repos/ydb-platform/ydb/contents/...`; use pinned commits from project docs when matching documented proto shapes.

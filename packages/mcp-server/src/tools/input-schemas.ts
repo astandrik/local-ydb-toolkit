@@ -1047,24 +1047,27 @@ export function removeDynamicNodesSchema(): Tool["inputSchema"] {
         type: "integer",
         minimum: 1,
         maximum: 10,
-        description: "Number of extra dynamic nodes to remove. Defaults to 1.",
+        description:
+          "Number of dynamic nodes to remove when containers and nodeIds are omitted. Defaults to 1.",
       },
       startIndex: {
         type: "integer",
         minimum: 2,
-        description: "Minimum suffix to consider removable. Defaults to 2.",
+        description:
+          "Minimum suffix to consider removable. Without explicit containers or nodeIds, defaults to profile.dynamicNodeCount + 1 so configured suffixes are excluded. Explicit selectors default to 2. An explicit startIndex always overrides either default.",
       },
       containers: {
         type: "array",
         items: { type: "string" },
-        description: "Explicit extra dynamic-node container names to remove.",
+        description:
+          "Explicit suffix dynamic-node container names to remove. Configured suffixes can be selected and become runtime drift; the profile's primary dynamicContainer remains protected.",
       },
       nodeIds: {
         type: "array",
         items: { type: "integer", minimum: 1 },
         maxItems: 10,
         description:
-          "Explicit YDB dynamic-node IDs to remove. IDs must resolve to extra dynamic-node containers; the profile's base dynamic node is not removable through this option.",
+          "Explicit YDB dynamic-node IDs to remove. IDs may resolve to configured or one-off suffix containers; the profile's primary dynamicContainer is not removable through this option.",
       },
     },
     additionalProperties: false,

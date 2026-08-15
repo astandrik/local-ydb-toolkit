@@ -1041,7 +1041,7 @@ describe("mcp tools", () => {
     expect(result.plannedCommands.length).toBeGreaterThan(0);
   });
 
-  it("keeps topology tool input keys stable while documenting the new add default", () => {
+  it("keeps topology tool input keys stable while documenting dynamic-node defaults", () => {
     const expectedSchemas: Record<string, string[]> = {
       local_ydb_bootstrap: ["configPath", "confirm", "profile"],
       local_ydb_restart_stack: ["configPath", "confirm", "profile"],
@@ -1052,6 +1052,15 @@ describe("mcp tools", () => {
         "grpcPortStart",
         "icPortStart",
         "monitoringPortStart",
+        "profile",
+        "startIndex"
+      ],
+      local_ydb_remove_dynamic_nodes: [
+        "configPath",
+        "confirm",
+        "containers",
+        "count",
+        "nodeIds",
         "profile",
         "startIndex"
       ]
@@ -1065,6 +1074,13 @@ describe("mcp tools", () => {
     const addTool = localYdbTools.find((tool) => tool.name === "local_ydb_add_dynamic_nodes");
     const startIndexSchema = addTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;
     expect(startIndexSchema?.description).toContain("profile.dynamicNodeCount + 1");
+
+    const removeTool = localYdbTools.find((tool) => tool.name === "local_ydb_remove_dynamic_nodes");
+    const removeStartIndex = removeTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;
+    expect(removeTool?.description).toContain("only one-off suffixes above profile.dynamicNodeCount");
+    expect(removeTool?.description).toContain("Explicit selectors or startIndex may remove a configured suffix");
+    expect(removeStartIndex?.description).toContain("profile.dynamicNodeCount + 1");
+    expect(removeStartIndex?.description).toContain("Explicit selectors default to 2");
   });
 
   it("returns additive restart drift arrays", async () => {

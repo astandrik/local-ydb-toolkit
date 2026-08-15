@@ -109,7 +109,8 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
 }
 
 async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveDynamicNodesOptions): Promise<DynamicNodeTarget[]> {
-  const startIndex = options.startIndex ?? 2;
+  const hasExplicitTargets = Boolean(options.nodeIds?.length || options.containers?.length);
+  const startIndex = options.startIndex ?? (hasExplicitTargets ? 2 : ctx.profile.dynamicNodeCount + 1);
   if (startIndex < 2) {
     throw new Error("startIndex must be 2 or greater to avoid the profile dynamicContainer");
   }
@@ -139,7 +140,7 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
     if (targets.length !== requested.size) {
       const resolved = new Set(targets.map((target) => target.container));
       const missing = Array.from(requested).filter((container) => !resolved.has(container));
-      throw new Error(`Requested dynamic-node containers were not found or were not removable extras: ${missing.join(", ")}`);
+      throw new Error(`Requested dynamic-node containers were not found or were not removable suffixes: ${missing.join(", ")}`);
     }
   } else {
     const count = options.count ?? 1;
@@ -216,14 +217,14 @@ async function targetsForNodeIds(
     }
     const target = targetsByPort.get(icPort);
     if (!target) {
-      missing.push(`${nodeId} (port ${icPort} is not a removable extra dynamic node)`);
+      missing.push(`${nodeId} (port ${icPort} is not a removable dynamic-node suffix)`);
       continue;
     }
     targets.push({ ...target, nodeId });
   }
 
   if (missing.length > 0) {
-    throw new Error(`Requested dynamic-node IDs were not found or were not removable extras: ${missing.join(", ")}`);
+    throw new Error(`Requested dynamic-node IDs were not found or were not removable suffixes: ${missing.join(", ")}`);
   }
   return targets;
 }

@@ -74,9 +74,10 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 
 - `dynamicNodeCount` is the total configured tenant-node count, including primary, and defaults to `1`.
 - Configured node `1` uses `dynamicContainer`; nodes `2..N` use `dynamicContainer-<index>` and base ports plus `index - 1`.
-- Tenant bootstrap and restart reconcile configured nodes in index order and verify each exact IC port.
+- Tenant bootstrap recreates configured containers in index order, even when a stale container is already running, and verifies each exact IC port.
 - Default `local_ydb_add_dynamic_nodes` starts at `dynamicNodeCount + 1`; higher suffixes are one-off runtime nodes.
-- Restart reports missing configured and unexpected one-off containers, never removes unexpected containers, and preserves their running/stopped state.
+- Default `local_ydb_remove_dynamic_nodes` considers only suffixes above `dynamicNodeCount`; explicit selectors or `startIndex` can remove a configured suffix and create drift.
+- Restart reports missing configured and unexpected one-off containers, never removes unexpected containers, and attempts to restore every preflight-running unexpected container even when restart fails.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
 
 ## Declarative Topology Acceptance Flow
@@ -676,12 +677,12 @@ Calls:
 
 Expected:
 
-- plan-only output creates `ydb-dyn-example-ghcr261-2` and `ydb-dyn-example-ghcr261-3`
+- plan-only output creates one-off containers `ydb-dyn-example-ghcr261-4` and `ydb-dyn-example-ghcr261-5`
 - default ports are derived from the profile:
-  `2258/9067/19303` and `2259/9068/19304`
+  `2260/9069/19305` and `2261/9070/19306`
 - dynamic containers mount `/tmp/local-ydb-auth/dynamic-node-auth.pb` when auth is enabled
 - `confirm=true` starts one node, verifies its IC port appears in `nodelist`, then starts the next
-- `nodes_check` reports three dynamic nodes total after adding two extra nodes to the one-node baseline
+- `nodes_check` reports five dynamic nodes total: three configured nodes plus the two one-off nodes
 - tenant metadata remains reachable
 
 Avoid:
@@ -692,12 +693,12 @@ Avoid:
 Rollback:
 
 ```bash
-docker rm -f ydb-dyn-example-ghcr261-2 ydb-dyn-example-ghcr261-3
+docker rm -f ydb-dyn-example-ghcr261-4 ydb-dyn-example-ghcr261-5
 ```
 
 ## Scenario 12: Remove Extra Dynamic Nodes
 
-Goal: remove one or more extra dynamic nodes from a healthy stack without touching the base dynamic node.
+Goal: keep default removal inside one-off capacity while allowing deliberate configured-node drift fixtures.
 
 Profile:
 `ghcr261-auth`
@@ -712,20 +713,26 @@ Calls:
 
 Expected:
 
-- plan-only output targets the highest-index extra node first, such as `ydb-dyn-example-ghcr261-3`
+- immediately after Scenario 11, default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`
 - `confirm=true` removes that container and verifies its IC port disappears from authenticated `nodelist`
-- the base dynamic node `ydb-dyn-example-ghcr261` remains running
+- configured containers `ydb-dyn-example-ghcr261`, `-2`, and `-3` remain running with unchanged Docker IDs
+- after all one-off nodes are removed, another default call fails with `found 0` and returns no destructive plan
 - tenant metadata remains reachable after removal
 
-Optional explicit targeting:
+Explicit configured-node drift fixture:
 
 ```json
 { "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "containers": ["ydb-dyn-example-ghcr261-2"] } }
+{ "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "nodeIds": [50001] } }
 ```
+
+Configured suffix `-2` is removable only through an explicit container, node ID, or `startIndex: 2` selector. Its removal creates runtime drift; the next tenant bootstrap or restart must recreate `-2` from the profile.
 
 Avoid:
 
 - treating the profile's main `dynamicContainer` as removable through this tool
+- assuming default removal can select configured suffixes
+- using `nodeIds` for the base dynamic node; only IDs that resolve to suffix containers are removable
 - removing multiple extra nodes at once on a live stack without checking `nodelist` after each removal
 
 ## Scenario 13: Add Storage Groups

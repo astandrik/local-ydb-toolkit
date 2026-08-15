@@ -92,14 +92,15 @@ export function classifyDynamicTopologyDrift(
 
 export async function startDynamicNodePlans(
   ctx: ToolkitContext,
-  plans: DynamicNodePlan[]
+  plans: DynamicNodePlan[],
+  mode: "ensure" | "recreate" = "ensure"
 ): Promise<DynamicTopologyExecution> {
   const results: CommandResult[] = [];
   const nodeChecks: DynamicNodeCheck[] = [];
   let completedNodes = 0;
 
   for (const plan of plans) {
-    for (const spec of dynamicNodeStartSpecs(ctx.profile, plan)) {
+    for (const spec of dynamicNodeStartSpecs(ctx.profile, plan, mode)) {
       const result = await ctx.client.run(spec);
       results.push(result);
       if (!result.ok) {

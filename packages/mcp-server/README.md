@@ -120,7 +120,7 @@ The server exposes 39 tools. This index is generated from the runtime tool regis
 | Tool | Mode | Description |
 | --- | --- | --- |
 | `local_ydb_add_dynamic_nodes` | plan-first mutation | Add one-off dynamic tenant nodes beyond the declarative profile.dynamicNodeCount topology, one at a time. By default the first suffix is dynamicNodeCount + 1; explicit startIndex and port overrides remain available. Without confirm=true it returns container/port plans; with confirm=true it starts each node, verifies its IC port appears in viewer/json nodelist, and checks tenant metadata. |
-| `local_ydb_remove_dynamic_nodes` | plan-first mutation | Remove extra dynamic tenant nodes one at a time and verify nodelist disappearance when the node IC port can be resolved. |
+| `local_ydb_remove_dynamic_nodes` | plan-first mutation | Remove dynamic tenant suffix nodes one at a time and verify nodelist disappearance when the node IC port can be resolved. Without containers, nodeIds, or startIndex, only one-off suffixes above profile.dynamicNodeCount are eligible and the highest suffix is removed first. Explicit selectors or startIndex may remove a configured suffix and create drift that bootstrap or restart restores. The primary dynamicContainer is always protected. |
 
 ### Backup Restore
 
