@@ -28,6 +28,7 @@
         "group": "Workflows",
         "pages": [
           "workflows/diagnostics",
+          "workflows/dynamic-node-topology",
           "workflows/github-actions"
         ]
       },

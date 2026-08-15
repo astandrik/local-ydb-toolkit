@@ -15,7 +15,7 @@ client to list tools for the exact version currently installed.
 | Auth | prepare config, write token file, apply hardening, rotate password | Plan-first mutation |
 | Storage | inspect placement, add or reduce groups, clean storage | Inspection is read-only; changes are plan-first |
 | Backup and restore | list dumps, dump, restore | Listing is read-only; dump and restore are plan-first |
-| Dynamic nodes | add and remove extra nodes | Plan-first mutation with per-node verification |
+| Dynamic nodes | bootstrap/restart configured nodes; add/remove one-off nodes | Plan-first mutation with exact-container and IC verification |
 
 ## Recommended entry points
 
@@ -23,6 +23,8 @@ client to list tools for the exact version currently installed.
 - Unknown failure: `local_ydb_status_report`, then `local_ydb_healthcheck`.
 - Generic local database: `local_ydb_bootstrap_root_database`.
 - CMS tenant, GraphShard, dump/restore, or dynamic nodes: `local_ydb_bootstrap`.
+- Declarative multi-node tenants and runtime drift: follow
+  [Declarative dynamic-node topology](/workflows/dynamic-node-topology).
 - New table DDL: `local_ydb_generate_schema`, review, validate, then `local_ydb_apply_schema`.
 - General work against an arbitrary existing YDB endpoint: use the official
   [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp).
@@ -30,3 +32,10 @@ client to list tools for the exact version currently installed.
 The generated catalog in the repository
 [README](https://github.com/astandrik/local-ydb-toolkit#tools) is the public
 reference for the current release.
+
+## Configured topology and one-off scaling
+
+`profile.dynamicNodeCount` declares the complete configured tenant topology.
+Bootstrap and restart reconcile that set from the profile. Add/remove tools are
+for one-off suffixes above the configured count by default; explicit removal of
+a configured suffix creates drift that bootstrap or restart restores.

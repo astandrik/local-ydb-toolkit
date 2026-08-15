@@ -73,7 +73,7 @@ When the documented CMS proto recipe is version-sensitive, pin the upstream `ydb
 
 ## Dynamic Nodes
 
-Generated `local-ydb` config may advertise the static node as `localhost:19001`. Dynamic node containers therefore often need to share the `ydb-local` network namespace.
+Generated `local-ydb` config may advertise the static node as `localhost:19001`. Treat IC port `19001` as reserved by the static node when validating every shared-network topology. Dynamic node containers therefore often need to share the `ydb-local` network namespace.
 
 For `ghcr.io/ydb-platform/local-ydb:26.1.1.6`, the generated static-node `config.yaml` can also contain:
 
@@ -122,6 +122,27 @@ docker run -d --name ydb-dyn-example \
 ```
 
 Additional nodes need unique `--grpc-port`, `--mon-port`, and `--ic-port` values. Dynamic node IDs are assigned by NodeBroker. Scripts should discover IDs through `/viewer/json/nodelist`, not hardcode observed values.
+
+### Declarative node count and runtime drift
+
+`profile.dynamicNodeCount` is the total configured tenant-node count, including the primary node. It defaults to `1` and accepts `1..11`; root-only bootstrap ignores it.
+
+For node index `i`:
+
+- index `1` uses `dynamicContainer` and the base `dynamicGrpc`, `dynamicMonitoring`, and `dynamicIc` ports;
+- indices `2..N` use `<dynamicContainer>-<i>` and each base port plus `i - 1`;
+- every gRPC, monitoring, and IC listener must be in range and unique across the shared static-container network namespace, including the static node's reserved IC port `19001`.
+- every configured dynamic container name must be distinct from the static container name.
+
+Tenant bootstrap publishes static gRPC and every configured dynamic gRPC port on loopback through the static container. One-off nodes do not alter those immutable bindings. Bootstrap and restart both reject a static container created for a smaller configured count before dynamic-node mutation. Restart's check-only preflight covers the image reference and ID, network, data mount, environment, restart policy, healthcheck, and exact loopback bindings without changing container state. A mismatch must be rebuilt deliberately with destroy followed by bootstrap.
+
+Tenant bootstrap and restart reconcile the complete configured set in index order. Readiness requires the exact Docker container to report `Running=true` and `Restarting=false`, then retain the same container ID and `RestartCount` for two consecutive checks while its IC port is present in nodelist. A matching port alone cannot prove which container registered it. Bootstrap and restart unconditionally remove and recreate each configured dynamic container, so a running, restarting, or stale suffix cannot short-circuit reconciliation. `local_ydb_start_dynamic_node` remains primary-only and idempotent. `local_ydb_add_dynamic_nodes` is runtime scaling: its default first index is `dynamicNodeCount + 1`, any explicit `startIndex` must be greater than `dynamicNodeCount`, and those higher suffixes are one-off nodes rather than declarative topology.
+
+Bootstrap, one-off add, and standalone primary start validate container names and the complete shared-network port set before returning or executing their plans. In particular, standalone start cannot bypass the static IC `19001` reservation. Storage reduction and version upgrade inspect the exact gRPC, monitoring, and IC ports of every one-off suffix before dump or destroy and abort the rebuild if a complete container definition cannot be recovered.
+
+Removal always protects the primary container. Without `containers`, `nodeIds`, or `startIndex`, only one-off suffixes from `dynamicNodeCount + 1` are eligible; no one-offs means the operation fails with `found 0`. Explicit containers and node IDs use suffix `2` as their default lower bound, while explicit `startIndex` overrides both defaults. Removing a configured suffix is therefore allowed only through deliberate targeting and creates runtime drift. The next tenant bootstrap, restart, storage rebuild, or version rebuild restores the configured node. Rollback guidance names bootstrap/restart for configured targets and add with matching suffixes/ports for one-off targets. Restart reports missing configured names and unexpected suffixes above the configured count; it recreates configured nodes, preserves unexpected container identity, attempts every previously-running unexpected node even after a restart failure, leaves stopped unexpected nodes stopped, and never removes them.
+
+Inventory does not retain a removed configured container definition. Restart and auth-hardening rollback guidance therefore uses `local_ydb_restart_stack` or `local_ydb_bootstrap` after restoring static config rather than claiming that `docker start` can recover a removed configured node.
 
 ## Adding Dynamic Nodes After Mandatory Auth
 

@@ -1,12 +1,14 @@
 import { bash, shellQuote, type CommandResult } from "../api-client.js";
-import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { nodesCheck, requireInventory } from "./checks.js";
 import { dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
 import {
-  assertPort,
+  additionalDynamicNodePlans,
+  startDynamicNodePlans
+} from "./dynamic-node-topology.js";
+import { inspectDynamicNodePorts } from "./dynamic-node-inspect.js";
+import {
   assertPositiveInteger,
   delay,
-  escapeRegExp,
   extraDynamicNodeTarget,
   observedNodePorts
 } from "./helpers.js";
@@ -43,25 +45,9 @@ export async function addDynamicNodes(ctx: ToolkitContext, options: AddDynamicNo
     };
   }
 
-  const results: CommandResult[] = [];
-  const nodeChecks: DynamicNodeCheck[] = [];
-  let completedNodes = 0;
-
-  for (const plan of plans) {
-    for (const spec of dynamicNodeStartSpecs(ctx.profile, plan)) {
-      const result = await ctx.client.run(spec);
-      results.push(result);
-      if (!result.ok) {
-        return addDynamicNodesResponse(ctx, plans, nodeChecks, results, rollback, verification, completedNodes);
-      }
-    }
-
-    const check = await waitForDynamicNodePort(ctx, plan);
-    nodeChecks.push(check);
-    if (!check.ok) {
-      return addDynamicNodesResponse(ctx, plans, nodeChecks, results, rollback, verification, completedNodes);
-    }
-    completedNodes += 1;
+  const { results, nodeChecks, completedNodes } = await startDynamicNodePlans(ctx, plans);
+  if (completedNodes < plans.length) {
+    return addDynamicNodesResponse(ctx, plans, nodeChecks, results, rollback, verification, completedNodes);
   }
 
   results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
@@ -75,7 +61,12 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
     description: `Remove dynamic tenant node ${target.container}`
   }));
   const rollback = [
-    "Recreate removed nodes with local_ydb_add_dynamic_nodes using matching suffixes and ports if needed."
+    ...(targets.some((target) => target.index <= ctx.profile.dynamicNodeCount)
+      ? ["Restore configured nodes with local_ydb_restart_stack or local_ydb_bootstrap."]
+      : []),
+    ...(targets.some((target) => target.index > ctx.profile.dynamicNodeCount)
+      ? ["Recreate removed one-off nodes with local_ydb_add_dynamic_nodes using matching suffixes and ports if needed."]
+      : [])
   ];
   const verification = [
     "authenticated viewer/json/nodelist no longer includes each removed node IC port",
@@ -122,38 +113,9 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
   return removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes);
 }
 
-function additionalDynamicNodePlans(profile: ResolvedLocalYdbProfile, options: AddDynamicNodesOptions): DynamicNodePlan[] {
-  const count = options.count ?? 1;
-  const startIndex = options.startIndex ?? 2;
-  assertPositiveInteger("count", count);
-  assertPositiveInteger("startIndex", startIndex);
-  if (count > 10) {
-    throw new Error("count must be 10 or less");
-  }
-  if (startIndex < 2) {
-    throw new Error("startIndex must be 2 or greater to avoid the profile dynamicContainer");
-  }
-
-  const grpcPortStart = options.grpcPortStart ?? profile.ports.dynamicGrpc + startIndex - 1;
-  const monitoringPortStart = options.monitoringPortStart ?? profile.ports.dynamicMonitoring + startIndex - 1;
-  const icPortStart = options.icPortStart ?? profile.ports.dynamicIc + startIndex - 1;
-  [grpcPortStart, monitoringPortStart, icPortStart].forEach((port) => assertPort(port));
-
-  const plans = Array.from({ length: count }, (_, offset) => ({
-    container: `${profile.dynamicContainer}-${startIndex + offset}`,
-    index: startIndex + offset,
-    grpcPort: grpcPortStart + offset,
-    monitoringPort: monitoringPortStart + offset,
-    icPort: icPortStart + offset
-  }));
-  plans.forEach((plan) => {
-    [plan.grpcPort, plan.monitoringPort, plan.icPort].forEach((port) => assertPort(port));
-  });
-  return plans;
-}
-
 async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveDynamicNodesOptions): Promise<DynamicNodeTarget[]> {
-  const startIndex = options.startIndex ?? 2;
+  const hasExplicitTargets = Boolean(options.nodeIds?.length || options.containers?.length);
+  const startIndex = options.startIndex ?? (hasExplicitTargets ? 2 : ctx.profile.dynamicNodeCount + 1);
   if (startIndex < 2) {
     throw new Error("startIndex must be 2 or greater to avoid the profile dynamicContainer");
   }
@@ -174,7 +136,7 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
   let targets: DynamicNodeTarget[];
   if (options.nodeIds && options.nodeIds.length > 0) {
     const requestedNodeIds = validateNodeIds(options.nodeIds);
-    const inspectByContainer = await inspectDynamicNodeTargets(ctx, available.map((target) => target.container));
+    const inspectByContainer = await inspectDynamicNodePorts(ctx, available.map((target) => target.container));
     targets = await targetsForNodeIds(ctx, available, inspectByContainer, requestedNodeIds);
     return targets.sort((left, right) => right.index - left.index);
   } else if (options.containers && options.containers.length > 0) {
@@ -183,7 +145,7 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
     if (targets.length !== requested.size) {
       const resolved = new Set(targets.map((target) => target.container));
       const missing = Array.from(requested).filter((container) => !resolved.has(container));
-      throw new Error(`Requested dynamic-node containers were not found or were not removable extras: ${missing.join(", ")}`);
+      throw new Error(`Requested dynamic-node containers were not found or were not removable suffixes: ${missing.join(", ")}`);
     }
   } else {
     const count = options.count ?? 1;
@@ -199,7 +161,7 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
     }
   }
 
-  const inspectByContainer = await inspectDynamicNodeTargets(ctx, targets.map((target) => target.container));
+  const inspectByContainer = await inspectDynamicNodePorts(ctx, targets.map((target) => target.container));
   return targets
     .sort((left, right) => right.index - left.index)
     .map((target) => ({
@@ -260,14 +222,14 @@ async function targetsForNodeIds(
     }
     const target = targetsByPort.get(icPort);
     if (!target) {
-      missing.push(`${nodeId} (port ${icPort} is not a removable extra dynamic node)`);
+      missing.push(`${nodeId} (port ${icPort} is not a removable dynamic-node suffix)`);
       continue;
     }
     targets.push({ ...target, nodeId });
   }
 
   if (missing.length > 0) {
-    throw new Error(`Requested dynamic-node IDs were not found or were not removable extras: ${missing.join(", ")}`);
+    throw new Error(`Requested dynamic-node IDs were not found or were not removable suffixes: ${missing.join(", ")}`);
   }
   return targets;
 }
@@ -283,69 +245,6 @@ function readNodeIdAndPort(node: unknown): { nodeId: number; icPort: number } | 
     return undefined;
   }
   return { nodeId, icPort };
-}
-
-async function inspectDynamicNodeTargets(ctx: ToolkitContext, containers: string[]): Promise<Map<string, { icPort?: number }>> {
-  const inspect = await ctx.client.dockerInspect(containers);
-  const byContainer = new Map<string, { icPort?: number }>();
-  for (const item of inspect) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-    const obj = item as Record<string, unknown>;
-    const name = typeof obj.Name === "string" ? obj.Name.replace(/^\//, "") : undefined;
-    if (!name) {
-      continue;
-    }
-    byContainer.set(name, {
-      icPort: readCommandPort(obj, "--ic-port")
-    });
-  }
-  return byContainer;
-}
-
-function readCommandPort(value: Record<string, unknown>, flag: string): number | undefined {
-  const args = Array.isArray(value.Args) ? value.Args : [];
-  const fromArgs = readPortFromArgs(args, flag);
-  if (typeof fromArgs === "number") {
-    return fromArgs;
-  }
-  const config = value.Config;
-  if (!config || typeof config !== "object") {
-    return undefined;
-  }
-  const cmd = Array.isArray((config as Record<string, unknown>).Cmd) ? (config as Record<string, unknown>).Cmd as unknown[] : [];
-  return readPortFromArgs(cmd, flag);
-}
-
-function readPortFromArgs(args: unknown[], flag: string): number | undefined {
-  const strings = args.filter((arg): arg is string => typeof arg === "string");
-  for (let index = 0; index < strings.length; index += 1) {
-    if (strings[index] === flag) {
-      const port = Number(strings[index + 1]);
-      return Number.isFinite(port) ? port : undefined;
-    }
-  }
-  const joined = strings.join(" ");
-  const match = new RegExp(`${escapeRegExp(flag)}\\s+(\\d+)`).exec(joined);
-  return match ? Number(match[1]) : undefined;
-}
-
-async function waitForDynamicNodePort(ctx: ToolkitContext, plan: DynamicNodePlan): Promise<DynamicNodeCheck> {
-  let observedPorts: number[] = [];
-  let error: string | undefined;
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
-    const check = await nodesCheck(ctx);
-    observedPorts = observedNodePorts(check.nodes);
-    error = check.error;
-    if (observedPorts.includes(plan.icPort)) {
-      return { container: plan.container, icPort: plan.icPort, ok: true, attempts: attempt, observedPorts };
-    }
-    if (attempt < 5) {
-      await delay(2_000);
-    }
-  }
-  return { container: plan.container, icPort: plan.icPort, ok: false, attempts: 5, observedPorts, error };
 }
 
 async function waitForDynamicNodePortAbsence(ctx: ToolkitContext, target: DynamicNodeTarget & { icPort: number }): Promise<DynamicNodeCheck> {

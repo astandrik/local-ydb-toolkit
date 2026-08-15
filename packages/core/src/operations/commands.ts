@@ -7,15 +7,24 @@ import type { DynamicNodePlan } from "./types.js";
 
 const YDB_CLI_RETRYABLE_ERRORS = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
 
+interface StaticCompatibilityOptions {
+  requireGraphShard?: boolean;
+  publishedDynamicGrpcPorts?: readonly number[];
+}
+
+interface StaticEnsureOptions extends StaticCompatibilityOptions {
+  enableGraphShard?: boolean;
+}
+
 export function commandForStaticRun(
   profile: ResolvedLocalYdbProfile,
-  options: { enableGraphShard?: boolean; publishDynamicGrpc?: boolean } = {}
+  options: { enableGraphShard?: boolean; publishedDynamicGrpcPorts?: readonly number[] } = {}
 ): string {
   const enableGraphShard = options.enableGraphShard ?? true;
-  const publishDynamicGrpc = options.publishDynamicGrpc ?? false;
-  validatePublishedHostPorts(profile, publishDynamicGrpc);
+  const publishedDynamicGrpcPorts = options.publishedDynamicGrpcPorts ?? [];
+  validatePublishedHostPorts(profile, publishedDynamicGrpcPorts);
   const mount = profile.bindMountPath ? `${profile.bindMountPath}:/ydb_data` : `${profile.volume}:/ydb_data`;
-  const grpcPortMappings = requiredPublishedGrpcPorts(profile, publishDynamicGrpc)
+  const grpcPortMappings = requiredPublishedGrpcPorts(profile, publishedDynamicGrpcPorts)
     .flatMap((port) => ["-p", `127.0.0.1:${port}:${port}`]);
   return [
     "docker", "run", "-d",
@@ -39,14 +48,29 @@ export function commandForStaticRun(
 
 export function commandForStaticEnsureRun(
   profile: ResolvedLocalYdbProfile,
-  options: { enableGraphShard?: boolean; requireGraphShard?: boolean; publishDynamicGrpc?: boolean } = {}
+  options: StaticEnsureOptions = {}
+): string {
+  return commandForStaticContainer(profile, { ...options, mode: "ensure" });
+}
+
+export function commandForStaticCompatibilityCheck(
+  profile: ResolvedLocalYdbProfile,
+  options: StaticCompatibilityOptions = {}
+): string {
+  return commandForStaticContainer(profile, { ...options, mode: "check" });
+}
+
+function commandForStaticContainer(
+  profile: ResolvedLocalYdbProfile,
+  options: StaticEnsureOptions & { mode: "ensure" | "check" }
 ): string {
   const enableGraphShard = options.enableGraphShard ?? true;
+  const checkOnly = options.mode === "check";
   const requireGraphShard = options.requireGraphShard ?? false;
-  const publishDynamicGrpc = options.publishDynamicGrpc ?? false;
-  validatePublishedHostPorts(profile, publishDynamicGrpc);
+  const publishedDynamicGrpcPorts = options.publishedDynamicGrpcPorts ?? [];
+  validatePublishedHostPorts(profile, publishedDynamicGrpcPorts);
   const container = shellQuote(profile.staticContainer);
-  const grpcPorts = requiredPublishedGrpcPorts(profile, publishDynamicGrpc);
+  const grpcPorts = requiredPublishedGrpcPorts(profile, publishedDynamicGrpcPorts);
   const expectedPortBindings = [
     ...grpcPorts.map((port) => ({ containerPort: port, hostPort: port })),
     { containerPort: 8765, hostPort: profile.ports.monitoring }
@@ -105,21 +129,26 @@ export function commandForStaticEnsureRun(
     ...staticContainerMismatchLines(profile, "container inspection", "  "),
     "fi",
     `if ! printf '%s\\n' \"$existing_containers\" | grep -Fxq ${shellQuote(profile.staticContainer)}; then`,
-    `  ${commandForStaticRun(profile, { enableGraphShard, publishDynamicGrpc })}`,
-    "  exit 0",
+    ...(checkOnly
+      ? staticContainerMismatchLines(profile, "container inspection", "  ")
+      : [`  ${commandForStaticRun(profile, { enableGraphShard, publishedDynamicGrpcPorts })}`, "  exit 0"]),
     "fi",
     ...compatibilityLines,
-    `if ! observed=$(docker inspect --type container --format ${shellQuote("{{.State.Running}}")} ${container} 2>/dev/null); then`,
-    ...staticContainerMismatchLines(profile, "running state", "  "),
-    "fi",
-    "if [ \"$observed\" = true ]; then",
-    "  exit 0",
-    "fi",
-    "if [ \"$observed\" != false ]; then",
-    ...staticContainerMismatchLines(profile, "running state", "  "),
-    "fi",
-    `docker start ${container} >/dev/null`,
-    "exit 0"
+    ...(checkOnly
+      ? ["exit 0"]
+      : [
+        `if ! observed=$(docker inspect --type container --format ${shellQuote("{{.State.Running}}")} ${container} 2>/dev/null); then`,
+        ...staticContainerMismatchLines(profile, "running state", "  "),
+        "fi",
+        "if [ \"$observed\" = true ]; then",
+        "  exit 0",
+        "fi",
+        "if [ \"$observed\" != false ]; then",
+        ...staticContainerMismatchLines(profile, "running state", "  "),
+        "fi",
+        `docker start ${container} >/dev/null`,
+        "exit 0"
+      ])
   ].join("\n");
 }
 
@@ -152,19 +181,14 @@ function staticContainerMismatchLines(
   ];
 }
 
-function requiredPublishedGrpcPorts(profile: ResolvedLocalYdbProfile, publishDynamicGrpc: boolean): number[] {
-  return [
-    profile.ports.staticGrpc,
-    ...(publishDynamicGrpc && profile.ports.dynamicGrpc !== profile.ports.staticGrpc ? [profile.ports.dynamicGrpc] : [])
-  ];
+function requiredPublishedGrpcPorts(profile: ResolvedLocalYdbProfile, publishedDynamicGrpcPorts: readonly number[]): number[] {
+  return [profile.ports.staticGrpc, ...publishedDynamicGrpcPorts];
 }
 
-function validatePublishedHostPorts(profile: ResolvedLocalYdbProfile, publishDynamicGrpc: boolean): void {
+function validatePublishedHostPorts(profile: ResolvedLocalYdbProfile, publishedDynamicGrpcPorts: readonly number[]): void {
   const bindings = [
     { name: "staticGrpc", port: profile.ports.staticGrpc },
-    ...(publishDynamicGrpc && profile.ports.dynamicGrpc !== profile.ports.staticGrpc
-      ? [{ name: "dynamicGrpc", port: profile.ports.dynamicGrpc }]
-      : []),
+    ...publishedDynamicGrpcPorts.map((port, offset) => ({ name: `dynamicGrpc[${offset + 1}]`, port })),
     { name: "monitoring", port: profile.ports.monitoring }
   ];
   const seen = new Map<number, string>();
@@ -245,10 +269,20 @@ export function commandForDynamicEnsureRun(profile: ResolvedLocalYdbProfile, nod
   ].join("\n");
 }
 
-export function dynamicNodeStartSpecs(profile: ResolvedLocalYdbProfile, plan: DynamicNodePlan): CommandSpec[] {
+export function dynamicNodeStartSpecs(
+  profile: ResolvedLocalYdbProfile,
+  plan: DynamicNodePlan,
+  mode: "ensure" | "recreate" = "ensure"
+): CommandSpec[] {
+  const startCommand = mode === "ensure"
+    ? commandForDynamicEnsureRun(profile, plan)
+    : [
+        `docker rm -f ${shellQuote(plan.container)} 2>/dev/null || true`,
+        commandForDynamicNodeRun(profile, plan)
+      ].join("\n");
   return [
     ensureImagePresentSpec(profile.image),
-    bash(commandForDynamicEnsureRun(profile, plan), {
+    bash(startCommand, {
       timeoutMs: 60_000,
       description: `Start dynamic tenant node ${plan.container}`
     }),

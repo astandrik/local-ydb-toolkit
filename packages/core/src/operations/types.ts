@@ -393,6 +393,11 @@ export interface DestroyStackResponse extends OperationResponse {
   removesDumpHostPath: boolean;
 }
 
+export interface RestartStackResponse extends OperationResponse {
+  missingDynamicContainers: string[];
+  unexpectedDynamicContainers: string[];
+}
+
 export interface PrerequisiteCheck {
   name: string;
   kind: "command" | "file" | "service";

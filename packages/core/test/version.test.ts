@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   commandToShell,
   createContext,
@@ -35,6 +35,17 @@ class RecordingExecutor implements CommandExecutor {
       timedOut: false
     };
   }
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+async function withRunTimers<T>(operation: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  const pending = operation();
+  await vi.runAllTimersAsync();
+  return pending;
 }
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
@@ -78,7 +89,7 @@ function writeTempConfig(rawConfig: unknown): { configPath: string; cleanup: () 
 function stubUpgradeExecutor(
   executor: RecordingExecutor,
   inventoryImage: string,
-  options: { failDockerPsCall?: number; containerNames?: string[] } = {}
+  options: { failDockerPsCall?: number; containerNames?: string[]; inspectedNodes?: unknown[]; nodePorts?: number[] } = {}
 ): void {
   let dockerPsCalls = 0;
   executor.run = async (_profile, spec) => {
@@ -116,14 +127,27 @@ function stubUpgradeExecutor(
     if (command.includes("docker volume ls")) {
       return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
     }
+    if (command.includes("{{.RestartCount}}")) {
+      return { command, exitCode: 0, stdout: "container-id\ttrue\tfalse\t0", stderr: "", ok: true, timedOut: false };
+    }
     if (command.includes("docker inspect")) {
-      return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+      return {
+        command,
+        exitCode: 0,
+        stdout: JSON.stringify(options.inspectedNodes ?? [
+          { Name: "/ydb-dyn-example-2", Args: ["--grpc-port", "2138", "--mon-port", "8767", "--ic-port", "19003"] },
+          { Name: "/ydb-dyn-example-4", Args: ["--grpc-port", "2140", "--mon-port", "8769", "--ic-port", "19005"] }
+        ]),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
     }
     if (command.includes("viewer/json/nodelist")) {
       return {
         command,
         exitCode: 0,
-        stdout: "[{\"Port\":19003}]",
+        stdout: JSON.stringify((options.nodePorts ?? [19002, 19003]).map((Port) => ({ Port }))),
         stderr: "",
         ok: true,
         timedOut: false
@@ -331,6 +355,77 @@ describe("version operations", () => {
     }
   });
 
+  it("treats only suffixes above dynamicNodeCount as one-off nodes during upgrade", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({ dynamicNodeCount: 3 });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.1.6", {
+        containerNames: [
+          "ydb-dyn-example-4",
+          "ydb-dyn-example-3",
+          "ydb-dyn-example-2",
+          "ydb-dyn-example",
+          "ydb-local"
+        ],
+        inspectedNodes: [{
+          Name: "/ydb-dyn-example-4",
+          Args: ["--grpc-port", "32004", "--mon-port", "9204", "--ic-port", "19204"]
+        }]
+      });
+
+      const response = await upgradeVersion(ctx, { version: "26.1.2.0" });
+      const plan = response.plannedCommands.join("\n");
+
+      expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
+      expect(plan).toContain("--name ydb-dyn-example-2 ");
+      expect(plan).toContain("--name ydb-dyn-example-3 ");
+      expect(plan).toContain("--name ydb-dyn-example-4 ");
+      expect(plan).toContain("-e GRPC_PORT=32004");
+      expect(plan).toContain("-e MON_PORT=9204");
+      expect(plan).toContain("--grpc-port 32004");
+      expect(plan).toContain("--mon-port 9204");
+      expect(plan).toContain("--ic-port 19204");
+      for (const port of [2137, 2138, 2139]) {
+        expect(plan).toContain(`127.0.0.1:${port}:${port}`);
+      }
+      expect(response.verification.join("\n")).toContain("ydb-dyn-example, ydb-dyn-example-2, ydb-dyn-example-3, ydb-dyn-example-4");
+      expect(response.verification.join("\n")).toContain("19002, 19003, 19004, 19204");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects version upgrade before dump or destroy when one-off ports cannot be inspected", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({ dynamicNodeCount: 3 });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.1.6", {
+        containerNames: [
+          "ydb-dyn-example-4",
+          "ydb-dyn-example-3",
+          "ydb-dyn-example-2",
+          "ydb-dyn-example",
+          "ydb-local"
+        ],
+        inspectedNodes: []
+      });
+
+      await expect(upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-smoke"
+      })).rejects.toThrow(/inspect exact gRPC, monitoring, and IC ports.*before destructive rebuild/i);
+      expect(executor.commands.some((command) => command.includes("/dump/upgrade-smoke"))).toBe(false);
+      expect(executor.commands.some((command) => command.includes("docker rm -f"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("executes a version upgrade and verifies target image usage", async () => {
     const executor = new RecordingExecutor();
     const rawConfig = upgradeConfig();
@@ -339,11 +434,11 @@ describe("version operations", () => {
       const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
       stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0");
 
-      const response = await upgradeVersion(ctx, {
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
         confirm: true,
         version: "26.1.2.0",
         dumpName: "upgrade-smoke"
-      });
+      }));
       expect(response.executed).toBe(true);
       expect(response.targetImage).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
       expect(response.dumpName).toBe("upgrade-smoke");
@@ -371,6 +466,44 @@ describe("version operations", () => {
       expect(commands.some((command) => command.includes("--name ydb-dyn-example-2") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("verify profile containers use image ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("verifies configured and one-off container images after a multi-node upgrade", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({ dynamicNodeCount: 3 });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: [
+          "ydb-dyn-example-4",
+          "ydb-dyn-example-3",
+          "ydb-dyn-example-2",
+          "ydb-dyn-example",
+          "ydb-local"
+        ],
+        nodePorts: [19002, 19003, 19004, 19005]
+      });
+
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-multi-node"
+      }));
+
+      expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
+      expect(response.imageVerification).toEqual({
+        expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        missing: [],
+        mismatches: []
+      });
+      const imageResult = response.results?.find((result) => result.command.includes("verify profile containers use image"));
+      expect(imageResult?.stdout).toContain("ydb-dyn-example-2=ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(imageResult?.stdout).toContain("ydb-dyn-example-3=ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(imageResult?.stdout).toContain("ydb-dyn-example-4=ghcr.io/ydb-platform/local-ydb:26.1.2.0");
     } finally {
       cleanup();
     }
@@ -407,11 +540,11 @@ describe("version operations", () => {
     const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
     stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0");
 
-    const response = await upgradeVersion(ctx, {
+    const response = await withRunTimers(() => upgradeVersion(ctx, {
       confirm: true,
       version: "26.1.2.0",
       dumpName: "upgrade-smoke"
-    });
+    }));
 
     expect(response.imageVerification).toEqual({
       expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
@@ -449,11 +582,11 @@ describe("version operations", () => {
         containerNames: ["ydb-dyn-example", "ydb-local"]
       });
 
-      const response = await upgradeVersion(ctx, {
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
         confirm: true,
         version: "26.1.2.0",
         dumpName: "upgrade-smoke"
-      });
+      }));
 
       expect(response.imageVerification).toEqual({
         expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
@@ -488,11 +621,11 @@ describe("version operations", () => {
         containerNames: ["ydb-dyn-example", "ydb-local"]
       });
 
-      const response = await upgradeVersion(ctx, {
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
         confirm: true,
         version: "26.1.2.0",
         dumpName: "upgrade-smoke"
-      });
+      }));
       expect(response.executed).toBe(true);
       expect(response.imageVerification).toBeUndefined();
       expect(response.profileImageUpdate).toMatchObject({
@@ -526,11 +659,11 @@ describe("version operations", () => {
       containerNames: ["ydb-dyn-example", "ydb-local"]
     });
 
-    const response = await upgradeVersion(ctx, {
+    const response = await withRunTimers(() => upgradeVersion(ctx, {
       confirm: true,
       version: "26.1.2.0",
       dumpName: "upgrade-smoke"
-    });
+    }));
 
     expect(response.imageVerification).toBeUndefined();
     expect(response.profileImageUpdate).toMatchObject({

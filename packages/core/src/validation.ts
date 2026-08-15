@@ -25,6 +25,7 @@ export const ProfileSchema = z.object({
   image: z.string().min(1).default(DEFAULT_IMAGE),
   staticContainer: z.string().min(1).default("ydb-local"),
   dynamicContainer: z.string().min(1).optional(),
+  dynamicNodeCount: z.number().int().min(1).max(11).default(1),
   authConfigPath: z.string().min(1).optional(),
   dynamicNodeAuthTokenFile: z.string().min(1).optional(),
   dynamicNodeAuthSid: z.string().min(1).optional(),

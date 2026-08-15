@@ -4,7 +4,9 @@ import { ConfigSchema, sanitizeTenantName, type ResolvedLocalYdbProfile } from "
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
 import { inventory, requireInventory } from "./checks.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
-import { assertPositiveInteger, extraDynamicNodeTarget } from "./helpers.js";
+import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
+import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
+import { assertPositiveInteger } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
 import { bootstrap, destroyStack } from "./stack.js";
 import { dumpTenant, restoreTenant } from "./tenant.js";
@@ -234,10 +236,10 @@ export async function upgradeVersion(
   const dumpName = options.dumpName ?? buildUpgradeDumpName(ctx.profile, sourceImage, version);
   const profileImageUpdate = plannedProfileImageUpdate(ctx.configPath, ctx.profile.name, sourceImage, targetImage);
   const inventoryState = await requireInventory(ctx);
-  const extraDynamicNodes = inventoryState.containers
-    .map((container) => extraDynamicNodeTarget(ctx.profile, container.names))
-    .filter((target): target is NonNullable<typeof target> => Boolean(target))
-    .sort((left, right) => left.index - right.index);
+  const extraDynamicNodes = await inspectExtraDynamicNodePlans(
+    ctx,
+    inventoryState.containers.map((container) => container.names)
+  );
   const rebuildCtx = upgradeContext(ctx, targetImage, false);
   const finalCtx = authReapplyPlanned ? upgradeContext(ctx, targetImage, true) : rebuildCtx;
 
@@ -262,7 +264,10 @@ export async function upgradeVersion(
     extraDynamicPlans.push(await addDynamicNodes(finalCtx, {
       confirm: false,
       count: 1,
-      startIndex: node.index
+      startIndex: node.index,
+      grpcPortStart: node.grpcPort,
+      monitoringPortStart: node.monitoringPort,
+      icPortStart: node.icPort
     }));
   }
 
@@ -285,7 +290,14 @@ export async function upgradeVersion(
   const verification = [
     `scheme ls ${ctx.profile.tenantPath}`,
     authReapplyPlanned ? "anonymous viewer/json returns 401 again after auth reapply" : "viewer/json/whoami remains reachable anonymously",
-    extraDynamicNodes.length ? "previous extra dynamic-node suffixes appear in nodelist again" : "base dynamic node remains reachable",
+    `configured and restored one-off dynamic containers are present: ${[
+      ...configuredDynamicNodePlans(finalCtx.profile).map((plan) => plan.container),
+      ...extraDynamicNodes.map((node) => node.container)
+    ].join(", ")}`,
+    `nodelist includes configured and restored one-off IC ports: ${[
+      ...configuredDynamicNodePlans(finalCtx.profile).map((plan) => plan.icPort),
+      ...extraDynamicNodes.map((node) => node.icPort)
+    ].join(", ")}`,
     `profile containers use image ${targetImage}`,
     `profiles.${ctx.profile.name}.image in ${ctx.configPath} is ${targetImage}`
   ];
@@ -375,7 +387,10 @@ export async function upgradeVersion(
     if (!await runOperation(results, await addDynamicNodes(finalCtx, {
       confirm: true,
       count: 1,
-      startIndex: node.index
+      startIndex: node.index,
+      grpcPortStart: node.grpcPort,
+      monitoringPortStart: node.monitoringPort,
+      icPortStart: node.icPort
     }))) {
       return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
     }
@@ -744,7 +759,7 @@ async function verifyProfileImages(
   }
   const targetNames = [
     ctx.profile.staticContainer,
-    ctx.profile.dynamicContainer,
+    ...configuredDynamicNodePlans(ctx.profile).map((plan) => plan.container),
     ...extraDynamicContainers
   ];
   const imageByName = new Map(

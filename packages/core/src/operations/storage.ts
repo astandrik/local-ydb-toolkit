@@ -9,11 +9,13 @@ import {
 } from "../api-client.js";
 import { sanitizeTenantName } from "../validation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
-import { requireInventory } from "./checks.js";
+import { inventory, requireInventory } from "./checks.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
+import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
+import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { runMutating } from "./execution.js";
-import { assertPositiveInteger, assertSafeCleanupTarget, extraDynamicNodeTarget } from "./helpers.js";
+import { assertPositiveInteger, assertSafeCleanupTarget } from "./helpers.js";
 import { bootstrap, destroyStack } from "./stack.js";
 import { dumpTenant, restoreTenant } from "./tenant.js";
 import type {
@@ -159,10 +161,10 @@ export async function reduceStorageGroups(
   const dumpName = options.dumpName ?? `shrink-${sanitizeTenantName(ctx.profile.tenantPath)}-${pool.numGroups}-to-${targetNumGroups}`;
   const rebuildCtx = rebuildContext(ctx, targetNumGroups);
   const inventoryState = await requireInventory(ctx);
-  const extraDynamicNodes = inventoryState.containers
-    .map((container) => extraDynamicNodeTarget(ctx.profile, container.names))
-    .filter((target): target is NonNullable<typeof target> => Boolean(target))
-    .sort((left, right) => left.index - right.index);
+  const extraDynamicNodes = await inspectExtraDynamicNodePlans(
+    ctx,
+    inventoryState.containers.map((container) => container.names)
+  );
   const finalCtx = authReapplyPlanned ? ctx : rebuildCtx;
 
   const dumpPlan = await dumpTenant(ctx, { confirm: false, dumpName });
@@ -178,7 +180,14 @@ export async function reduceStorageGroups(
     : [];
   const extraDynamicPlans = [];
   for (const node of extraDynamicNodes) {
-    extraDynamicPlans.push(await addDynamicNodes(finalCtx, { confirm: false, count: 1, startIndex: node.index }));
+    extraDynamicPlans.push(await addDynamicNodes(finalCtx, {
+      confirm: false,
+      count: 1,
+      startIndex: node.index,
+      grpcPortStart: node.grpcPort,
+      monitoringPortStart: node.monitoringPort,
+      icPortStart: node.icPort
+    }));
   }
 
   const plannedCommands = [
@@ -197,7 +206,8 @@ export async function reduceStorageGroups(
     `ReadStoragePool for ${pool.name} reports NumGroups: ${targetNumGroups}`,
     `scheme ls ${ctx.profile.tenantPath}`,
     authReapplyPlanned ? "anonymous viewer/json returns 401 again after auth reapply" : "viewer/json/whoami remains reachable anonymously",
-    extraDynamicNodes.length ? "previous extra dynamic-node suffixes appear in authenticated nodelist again" : "base dynamic node remains reachable"
+    `configured and restored one-off containers are present with image ${finalCtx.profile.image}: ${expectedProfileContainerNames(finalCtx, extraDynamicNodes).join(", ")}`,
+    `authenticated nodelist includes configured and restored one-off IC ports: ${expectedDynamicNodePorts(finalCtx, extraDynamicNodes).join(", ")}`
   ];
 
   if (!options.confirm) {
@@ -253,7 +263,14 @@ export async function reduceStorageGroups(
   }
 
   for (const node of extraDynamicNodes) {
-    if (!await runOperation(results, await addDynamicNodes(finalCtx, { confirm: true, count: 1, startIndex: node.index }))) {
+    if (!await runOperation(results, await addDynamicNodes(finalCtx, {
+      confirm: true,
+      count: 1,
+      startIndex: node.index,
+      grpcPortStart: node.grpcPort,
+      monitoringPortStart: node.monitoringPort,
+      icPortStart: node.icPort
+    }))) {
       return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
     }
   }
@@ -278,8 +295,73 @@ export async function reduceStorageGroups(
     finalCtx.profile.tenantPath,
     "Wait for tenant metadata"
   )));
+  if (results.at(-1)?.ok) {
+    results.push(await verifyRebuiltProfileContainers(finalCtx, extraDynamicNodes));
+  }
 
   return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results);
+}
+
+function expectedProfileContainerNames(
+  ctx: ToolkitContext,
+  extraDynamicNodes: Array<{ container: string }>
+): string[] {
+  return [
+    ctx.profile.staticContainer,
+    ...configuredDynamicNodePlans(ctx.profile).map((plan) => plan.container),
+    ...extraDynamicNodes.map((node) => node.container)
+  ];
+}
+
+function expectedDynamicNodePorts(
+  ctx: ToolkitContext,
+  extraDynamicNodes: Array<{ icPort: number }>
+): number[] {
+  return [
+    ...configuredDynamicNodePlans(ctx.profile).map((plan) => plan.icPort),
+    ...extraDynamicNodes.map((node) => node.icPort)
+  ];
+}
+
+async function verifyRebuiltProfileContainers(
+  ctx: ToolkitContext,
+  extraDynamicNodes: Array<{ container: string }>
+): Promise<CommandResult> {
+  const expected = expectedProfileContainerNames(ctx, extraDynamicNodes);
+  const result = await inventory(ctx);
+  if (!result.ok) {
+    return {
+      command: `verify rebuilt profile containers use image ${ctx.profile.image}`,
+      exitCode: 1,
+      stdout: "",
+      stderr: "Docker inventory was unavailable during final rebuild verification.",
+      ok: false,
+      timedOut: false
+    };
+  }
+  const imageByName = new Map(
+    result.containers
+      .filter((container) => container.names && container.image)
+      .map((container) => [container.names as string, container.image as string])
+  );
+  const missing = expected.filter((name) => !imageByName.has(name));
+  const mismatches = expected
+    .filter((name) => imageByName.has(name) && imageByName.get(name) !== ctx.profile.image)
+    .map((name) => `${name} -> ${imageByName.get(name)}`);
+  const ok = missing.length === 0 && mismatches.length === 0;
+  return {
+    command: `verify rebuilt profile containers use image ${ctx.profile.image}`,
+    exitCode: ok ? 0 : 1,
+    stdout: expected.map((name) => `${name}=${imageByName.get(name) ?? "<missing>"}`).join("\n"),
+    stderr: ok
+      ? ""
+      : [
+          missing.length ? `Missing containers: ${missing.join(", ")}` : "",
+          mismatches.length ? `Image mismatches: ${mismatches.join(", ")}` : ""
+        ].filter(Boolean).join("\n"),
+    ok,
+    timedOut: false
+  };
 }
 
 export async function cleanupStorage(ctx: ToolkitContext, options: MutatingOptions & { paths?: string[]; volumes?: string[] } = {}) {

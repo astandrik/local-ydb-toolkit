@@ -43,8 +43,37 @@ interface ReleasePleaseConfig {
   }>;
 }
 
+interface MintlifyConfig {
+  navigation: {
+    groups: Array<{
+      group: string;
+      pages: string[];
+    }>;
+  };
+}
+
 function readJson<T>(url: URL): T {
   return JSON.parse(readFileSync(url, "utf8")) as T;
+}
+
+function managedBlock(text: string, name: string): string {
+  const startMarker = `<!-- BEGIN ${name} -->`;
+  const endMarker = `<!-- END ${name} -->`;
+  const start = text.indexOf(startMarker);
+  const end = text.indexOf(endMarker);
+  if (start < 0 || end < 0 || end < start) {
+    throw new Error(`Managed block ${name} was not found`);
+  }
+  return text.slice(start, end + endMarker.length);
+}
+
+function sectionRange(text: string, startHeading: string, endHeading: string): string {
+  const start = text.indexOf(startHeading);
+  const end = text.indexOf(endHeading, start + startHeading.length);
+  if (start < 0 || end < 0) {
+    throw new Error(`Section range ${startHeading}..${endHeading} was not found`);
+  }
+  return text.slice(start, end).trim();
 }
 
 describe("MCP Registry metadata", () => {
@@ -116,5 +145,124 @@ describe("MCP Registry metadata", () => {
     expect(configuredPaths).toContain("/package-lock.json");
     expect(configuredPaths).toContain("/server.json");
     expect(configuredPaths.every((configuredPath) => !configuredPath.includes(".."))).toBe(true);
+  });
+});
+
+describe("repository skill consistency", () => {
+  it("keeps the declarative topology contract identical in both scenario copies", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+
+    const rootContract = managedBlock(rootScenarios, "DECLARATIVE TOPOLOGY CONTRACT");
+    expect(rootContract).toBe(managedBlock(skillScenarios, "DECLARATIVE TOPOLOGY CONTRACT"));
+    expect(rootContract).toContain("Static IC port `19001` is reserved");
+    expect(rootContract).toContain("every configured dynamic gRPC port on loopback");
+    expect(rootContract).toContain("matching nodelist port alone is insufficient");
+    expect(rootContract).toContain("Before any restart mutation");
+    expect(rootContract).toContain("requires destroy/bootstrap");
+    expect(rootContract).toContain("including containers observed restarting");
+    expect(rootContract).toContain("standalone primary start validate names and the complete shared-network port set");
+    expect(rootContract).toContain("inventory does not retain removed configured container definitions");
+    expect(rootContract).toContain("restores configured nodes through restart or bootstrap");
+    expect(rootContract).toContain("before any config or container mutation");
+    expect(rootContract).toContain("without a dynamic-node token file");
+    expect(rootContract).toContain("preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy");
+  });
+
+  it("keeps the declarative topology acceptance flow identical", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootFlow = sectionRange(rootScenarios, "## Declarative Topology Acceptance Flow", "<!-- BEGIN MANAGED SQL SCENARIOS -->");
+    const skillFlow = sectionRange(skillScenarios, "## Declarative Topology Acceptance Flow", "<!-- BEGIN MANAGED SQL SCENARIOS -->");
+
+    expect(rootFlow).toBe(skillFlow);
+    expect(rootFlow).toContain("Bootstrap with `dynamicNodeCount: 1`");
+    expect(rootFlow).toContain("Change the same profile to `dynamicNodeCount: 3`");
+    expect(rootFlow).toContain("full static compatibility check before every mutation");
+    expect(rootFlow).toContain("without changing saved IDs/states or creating `-2`/`-3`");
+    expect(rootFlow).toContain("tenant bootstrap must reject the same shared compatibility contract");
+    expect(rootFlow).toContain("non-default gRPC, monitoring, and IC ports");
+    expect(rootFlow).toContain("failure before dump or destroy");
+  });
+
+  it("keeps dynamic-node scenarios 11 and 12 identical and topology-aware", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootSection = sectionRange(rootScenarios, "## Scenario 11: Add Extra Dynamic Nodes", "## Scenario 13: Add Storage Groups");
+    const skillSection = sectionRange(skillScenarios, "## Scenario 11: Add Extra Dynamic Nodes", "## Scenario 13: Add Storage Groups");
+
+    expect(rootSection).toBe(skillSection);
+    expect(rootSection).toContain("ydb-dyn-example-ghcr261-4");
+    expect(rootSection).toContain("ydb-dyn-example-ghcr261-5");
+    expect(rootSection).toContain("2260/9069/19305");
+    expect(rootSection).toContain("2261/9070/19306");
+    expect(rootSection).toContain("five dynamic nodes total");
+    expect(rootSection).toContain("docker rm -f ydb-dyn-example-ghcr261-4 ydb-dyn-example-ghcr261-5");
+    expect(rootSection).toContain("explicit `startIndex: 2` is rejected before a mutating plan");
+    expect(rootSection).toContain("exact container is stably running");
+    expect(rootSection).toContain("default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`");
+    expect(rootSection).toContain("Configured suffix `-2` is removable only through an explicit");
+    expect(rootSection).toContain("rollback for the removed one-off node uses `local_ydb_add_dynamic_nodes`");
+    expect(rootSection).toContain("rollback uses `local_ydb_restart_stack` or `local_ydb_bootstrap`");
+    expect(rootSection).not.toContain("docker rm -f ydb-dyn-example-ghcr261-2 ydb-dyn-example-ghcr261-3");
+  });
+});
+
+describe("Mintlify declarative topology documentation", () => {
+  const configuration = readFileSync(
+    new URL("../../../docs/get-started/configure.mdx", import.meta.url),
+    "utf8",
+  );
+  const index = readFileSync(
+    new URL("../../../docs/index.mdx", import.meta.url),
+    "utf8",
+  );
+  const workflow = readFileSync(
+    new URL("../../../docs/workflows/dynamic-node-topology.mdx", import.meta.url),
+    "utf8",
+  );
+  const tools = readFileSync(
+    new URL("../../../docs/reference/tools.mdx", import.meta.url),
+    "utf8",
+  );
+  const mintlifyConfig = readJson<MintlifyConfig>(
+    new URL("../../../docs/docs.json", import.meta.url),
+  );
+
+  it("publishes the declarative topology workflow in navigation", () => {
+    const workflows = mintlifyConfig.navigation.groups.find(
+      ({ group }) => group === "Workflows",
+    );
+
+    expect(workflows?.pages).toContain("workflows/dynamic-node-topology");
+    expect(index).toContain('href="/workflows/dynamic-node-topology"');
+    expect(configuration).toContain('"dynamicNodeCount": 3');
+    expect(configuration).toContain("total configured tenant-node count");
+    expect(configuration).toContain("defaults to `1`");
+    expect(configuration).toContain("Static IC port `19001` is");
+  });
+
+  it("keeps configured, one-off, and readiness contracts explicit", () => {
+    expect(workflow).toContain("`dynamicNodeCount + 1`");
+    expect(workflow).toContain("greater than `dynamicNodeCount`");
+    expect(workflow).toContain("`Running=true` and `Restarting=false`");
+    expect(workflow).toContain("same container ID and `RestartCount`");
+    expect(workflow).toContain("matching nodelist port alone is insufficient");
+    expect(workflow).toContain("every configured dynamic gRPC port");
+    expect(workflow).toMatch(/before any\s+stop, remove, or start command/);
+    expect(workflow).toContain("requires destroy followed by bootstrap");
+    expect(workflow).toContain("including containers observed");
+    expect(workflow).toContain("restarting.");
+    expect(workflow).toContain("`local_ydb_restart_stack` or `local_ydb_bootstrap`");
+    expect(workflow).toContain("`local_ydb_add_dynamic_nodes`");
+    expect(workflow).toContain("distinct from the static container name");
+    expect(workflow).toContain("Before copying config or changing");
+    expect(workflow).toContain("exact gRPC, monitoring, and IC ports");
+    expect(workflow).toContain("inventory does not");
+    expect(workflow).toContain("retain removed configured definitions");
+    expect(workflow).toContain("never removes unexpected one-off containers");
+    expect(workflow).toContain("still attempts every preflight-running one-off container");
+    expect(workflow).toContain("restore only one-off suffixes above");
+    expect(tools).toContain("bootstrap/restart configured nodes; add/remove one-off nodes");
   });
 });
