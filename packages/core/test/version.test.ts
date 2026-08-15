@@ -89,7 +89,7 @@ function writeTempConfig(rawConfig: unknown): { configPath: string; cleanup: () 
 function stubUpgradeExecutor(
   executor: RecordingExecutor,
   inventoryImage: string,
-  options: { failDockerPsCall?: number; containerNames?: string[]; nodePorts?: number[] } = {}
+  options: { failDockerPsCall?: number; containerNames?: string[]; inspectedNodes?: unknown[]; nodePorts?: number[] } = {}
 ): void {
   let dockerPsCalls = 0;
   executor.run = async (_profile, spec) => {
@@ -131,7 +131,17 @@ function stubUpgradeExecutor(
       return { command, exitCode: 0, stdout: "container-id\ttrue\tfalse\t0", stderr: "", ok: true, timedOut: false };
     }
     if (command.includes("docker inspect")) {
-      return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+      return {
+        command,
+        exitCode: 0,
+        stdout: JSON.stringify(options.inspectedNodes ?? [
+          { Name: "/ydb-dyn-example-2", Args: ["--grpc-port", "2138", "--mon-port", "8767", "--ic-port", "19003"] },
+          { Name: "/ydb-dyn-example-4", Args: ["--grpc-port", "2140", "--mon-port", "8769", "--ic-port", "19005"] }
+        ]),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
     }
     if (command.includes("viewer/json/nodelist")) {
       return {
@@ -358,7 +368,11 @@ describe("version operations", () => {
           "ydb-dyn-example-2",
           "ydb-dyn-example",
           "ydb-local"
-        ]
+        ],
+        inspectedNodes: [{
+          Name: "/ydb-dyn-example-4",
+          Args: ["--grpc-port", "32004", "--mon-port", "9204", "--ic-port", "19204"]
+        }]
       });
 
       const response = await upgradeVersion(ctx, { version: "26.1.2.0" });
@@ -368,10 +382,45 @@ describe("version operations", () => {
       expect(plan).toContain("--name ydb-dyn-example-2 ");
       expect(plan).toContain("--name ydb-dyn-example-3 ");
       expect(plan).toContain("--name ydb-dyn-example-4 ");
+      expect(plan).toContain("-e GRPC_PORT=32004");
+      expect(plan).toContain("-e MON_PORT=9204");
+      expect(plan).toContain("--grpc-port 32004");
+      expect(plan).toContain("--mon-port 9204");
+      expect(plan).toContain("--ic-port 19204");
       for (const port of [2137, 2138, 2139]) {
         expect(plan).toContain(`127.0.0.1:${port}:${port}`);
       }
       expect(response.verification.join("\n")).toContain("ydb-dyn-example, ydb-dyn-example-2, ydb-dyn-example-3, ydb-dyn-example-4");
+      expect(response.verification.join("\n")).toContain("19002, 19003, 19004, 19204");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects version upgrade before dump or destroy when one-off ports cannot be inspected", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({ dynamicNodeCount: 3 });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.1.6", {
+        containerNames: [
+          "ydb-dyn-example-4",
+          "ydb-dyn-example-3",
+          "ydb-dyn-example-2",
+          "ydb-dyn-example",
+          "ydb-local"
+        ],
+        inspectedNodes: []
+      });
+
+      await expect(upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-smoke"
+      })).rejects.toThrow(/inspect exact gRPC, monitoring, and IC ports.*before destructive rebuild/i);
+      expect(executor.commands.some((command) => command.includes("/dump/upgrade-smoke"))).toBe(false);
+      expect(executor.commands.some((command) => command.includes("docker rm -f"))).toBe(false);
     } finally {
       cleanup();
     }

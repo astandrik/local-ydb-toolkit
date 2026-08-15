@@ -38,7 +38,7 @@ export function dynamicNodePlan(profile: ResolvedLocalYdbProfile, index: number)
     monitoringPort: profile.ports.dynamicMonitoring + offset,
     icPort: profile.ports.dynamicIc + offset
   };
-  validatePlanPorts(plan);
+  validatePlan(profile, plan);
   return plan;
 }
 
@@ -46,6 +46,11 @@ export function configuredDynamicNodePlans(profile: ResolvedLocalYdbProfile): Dy
   const plans = Array.from({ length: profile.dynamicNodeCount }, (_, offset) => dynamicNodePlan(profile, offset + 1));
   validateSharedNetworkPorts(profile, plans);
   return plans;
+}
+
+export function validateDynamicNodePlans(profile: ResolvedLocalYdbProfile, plans: DynamicNodePlan[]): void {
+  plans.forEach((plan) => validatePlan(profile, plan));
+  validateSharedNetworkPorts(profile, plans);
 }
 
 export function additionalDynamicNodePlans(
@@ -73,9 +78,7 @@ export function additionalDynamicNodePlans(
     monitoringPort: monitoringPortStart + offset,
     icPort: icPortStart + offset
   }));
-  plans.forEach(validatePlanPorts);
-
-  validateSharedNetworkPorts(profile, [...configuredDynamicNodePlans(profile), ...plans]);
+  validateDynamicNodePlans(profile, [...configuredDynamicNodePlans(profile), ...plans]);
   return plans;
 }
 
@@ -189,7 +192,10 @@ async function inspectDynamicContainer(
   return { sample: { id, restartCount } };
 }
 
-function validatePlanPorts(plan: DynamicNodePlan): void {
+function validatePlan(profile: ResolvedLocalYdbProfile, plan: DynamicNodePlan): void {
+  if (plan.container === profile.staticContainer) {
+    throw new Error(`Configured dynamic node ${plan.container} aliases the static container name.`);
+  }
   [plan.grpcPort, plan.monitoringPort, plan.icPort].forEach(assertPort);
 }
 

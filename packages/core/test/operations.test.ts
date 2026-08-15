@@ -1804,6 +1804,8 @@ describe("mutating operations", () => {
     expect(plan).not.toContain("docker start ydb-dyn-example-5");
     expect(plan).not.toMatch(/docker rm -f ydb-dyn-example-4(?:\s|$)/);
     expect(plan).not.toMatch(/docker rm -f ydb-dyn-example-5(?:\s|$)/);
+    expect(response.rollback.join("\n")).toMatch(/local_ydb_(restart_stack|bootstrap)/);
+    expect(response.rollback.join("\n")).not.toContain("configured container definitions captured by local_ydb_inventory");
     expect(response.rollback).toContain("docker start ydb-dyn-example-4");
   });
 
@@ -2122,6 +2124,16 @@ describe("mutating operations", () => {
     const response = await startDynamicNode(ctx, {});
 
     expect(response.plannedCommands.join("\n")).toContain(".State.Running");
+  });
+
+  it("rejects standalone primary start when its ports collide with the static node", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { ports: { dynamicIc: 19001 } } }
+    }));
+
+    await expect(startDynamicNode(ctx, {})).rejects.toThrow(/static IC.*19001|19001.*static IC/i);
+    expect(executor.commands).toEqual([]);
   });
 
   it("rejects default removal when a three-node topology has no one-off nodes", async () => {
@@ -2579,7 +2591,17 @@ describe("mutating operations", () => {
         return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
       }
       if (command.includes("docker inspect")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+        return {
+          command,
+          exitCode: 0,
+          stdout: JSON.stringify([{
+            Name: "/ydb-dyn-example-4",
+            Args: ["--grpc-port", "32004", "--mon-port", "9204", "--ic-port", "19204"]
+          }]),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
       }
       return {
         command,
@@ -2604,9 +2626,82 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-3");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-4");
+    expect(response.plannedCommands.join("\n")).toContain("-e GRPC_PORT=32004");
+    expect(response.plannedCommands.join("\n")).toContain("-e MON_PORT=9204");
+    expect(response.plannedCommands.join("\n")).toContain("--grpc-port 32004");
+    expect(response.plannedCommands.join("\n")).toContain("--mon-port 9204");
+    expect(response.plannedCommands.join("\n")).toContain("--ic-port 19204");
+    expect(response.verification.join("\n")).toContain("19204");
     for (const port of [2137, 2138, 2139]) {
       expect(response.plannedCommands.join("\n")).toContain(`127.0.0.1:${port}:${port}`);
     }
+  });
+
+  it("rejects storage reduction before dump or destroy when one-off ports cannot be inspected", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example",
+          dynamicNodeCount: 3,
+          staticContainer: "ydb-local",
+          tenantPath: "/local/example",
+          storagePoolKind: "hdd"
+        }
+      }
+    }));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("ReadStoragePool")) {
+        return commandResult(command, {
+          stdout: `Status {
+  StoragePool {
+    BoxId: 1
+    StoragePoolId: 2
+    Name: "/local/example:hdd"
+    ErasureSpecies: "none"
+    VDiskKind: "Default"
+    Kind: "hdd"
+    NumGroups: 2
+    PDiskFilter {
+      Property {
+        Type: ROT
+      }
+    }
+    ScopeId {
+      X1: 72057594046678944
+      X2: 38
+    }
+    ItemConfigGeneration: 3
+  }
+}`
+        });
+      }
+      if (command.includes("docker ps -a --format")) {
+        return commandResult(command, {
+          stdout: [
+            JSON.stringify({ Names: "ydb-dyn-example-4" }),
+            JSON.stringify({ Names: "ydb-dyn-example-3" }),
+            JSON.stringify({ Names: "ydb-dyn-example-2" }),
+            JSON.stringify({ Names: "ydb-dyn-example" }),
+            JSON.stringify({ Names: "ydb-local" })
+          ].join("\n")
+        });
+      }
+      if (command.includes("docker volume ls")) {
+        return commandResult(command, { stdout: "ydb-local-data\n" });
+      }
+      if (command.includes("docker inspect")) {
+        return commandResult(command, { stdout: "[]" });
+      }
+      return commandResult(command);
+    };
+
+    await expect(reduceStorageGroups(ctx, { confirm: true, dumpName: "shrink-smoke" }))
+      .rejects.toThrow(/inspect exact gRPC, monitoring, and IC ports.*before destructive rebuild/i);
+    expect(executor.commands.some((command) => command.includes("/dump/shrink-smoke"))).toBe(false);
+    expect(executor.commands.some((command) => command.includes("docker rm -f"))).toBe(false);
   });
 
   it("executes storage-group reduction rebuild and reapplies auth before re-adding extra dynamic nodes", async () => {
@@ -2709,7 +2804,10 @@ describe("mutating operations", () => {
         return {
           command,
           exitCode: 0,
-          stdout: "[]",
+          stdout: JSON.stringify([{
+            Name: "/ydb-dyn-example-4",
+            Args: ["--grpc-port", "2140", "--mon-port", "8769", "--ic-port", "19005"]
+          }]),
           stderr: "",
           ok: true,
           timedOut: false
@@ -3153,6 +3251,61 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.some((command) => command.includes("--auth-token-file /run/local-ydb/dynamic-node-auth.pb"))).toBe(true);
     expect(response.plannedCommands.join("\n")).toContain("SCHEME_ERROR|No database found");
     expect(response.plannedCommands.join("\n")).toContain("Group fit error|failed to allocate group|no group options");
+    expect(response.rollback.join("\n")).toMatch(/local_ydb_(restart_stack|bootstrap)/);
+    expect(response.rollback.join("\n")).not.toMatch(/docker start ydb-dyn-example(?:-|$)/m);
+  });
+
+  it("checks static compatibility before any auth-hardening mutation", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.yaml",
+          dynamicNodeCount: 3
+        }
+      }
+    }));
+
+    const plan = await applyAuthHardening(ctx, {});
+    const compatibilityIndex = plan.plannedCommands.findIndex((command) => (
+      command.includes("HostConfig.PortBindings")
+      && command.includes("does not match profile published ports")
+    ));
+    const firstMutationIndex = plan.plannedCommands.findIndex((command) => (
+      command.startsWith("bash -lc 'docker cp ")
+      || command.startsWith("bash -lc 'docker stop ")
+      || command.startsWith("bash -lc 'docker restart ")
+      || command.includes("docker rm -f ydb-dyn-example 2>/dev/null")
+    ));
+
+    expect(compatibilityIndex).toBeGreaterThanOrEqual(0);
+    expect(compatibilityIndex).toBeLessThan(firstMutationIndex);
+
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("does not match profile published ports")) {
+        return commandResult(command, {
+          exitCode: 1,
+          stderr: "Existing static container ydb-local does not match profile published ports.",
+          ok: false
+        });
+      }
+      return commandResult(command, {
+        exitCode: 1,
+        stderr: "auth mutation reached before compatibility preflight",
+        ok: false
+      });
+    };
+
+    const confirmed = await applyAuthHardening(ctx, { confirm: true });
+    expect(confirmed.results?.at(-1)?.stderr).toContain("does not match profile published ports");
+    expect(executor.commands.some((command) => (
+      command.startsWith("bash -lc 'docker cp ")
+      || command.startsWith("bash -lc 'docker stop ")
+      || command.startsWith("bash -lc 'docker restart ")
+      || command.includes("docker rm -f ydb-dyn-example 2>/dev/null")
+    ))).toBe(false);
   });
 
   it("recreates every configured dynamic node during auth hardening", async () => {

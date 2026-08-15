@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
 import { pathRedactions } from "../redactions.js";
-import { createTenantSpec, dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
+import { commandForStaticCompatibilityCheck, createTenantSpec, dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
 import { configuredDynamicNodePlans, startDynamicNodePlans } from "./dynamic-node-topology.js";
 import { planOnly, runCommandSpecs, runMutating } from "./execution.js";
 import { commandForStaticGeneratedConfigPath } from "./generated-config.js";
@@ -19,6 +19,10 @@ export async function applyAuthHardening(
   const targetCommand = commandForStaticGeneratedConfigPath(ctx.profile.staticContainer);
   const plans = configuredDynamicNodePlans(ctx.profile);
   const preDynamicSpecs: CommandSpec[] = [
+    bash(commandForStaticCompatibilityCheck(ctx.profile, {
+      requireGraphShard: true,
+      publishedDynamicGrpcPorts: plans.map((plan) => plan.grpcPort)
+    }), { timeoutMs: 60_000, description: "Verify static local-ydb node compatibility before auth hardening" }),
     bash(`docker cp ${shellQuote(configHostPath)} ${shellQuote(`${ctx.profile.staticContainer}:/tmp/local-ydb-toolkit-config.yaml`)}`, {
       redactions: pathRedactions(configHostPath)
     }),
@@ -50,7 +54,7 @@ export async function applyAuthHardening(
   const rollback = [
     `target=$(${targetCommand}) && docker exec ${shellQuote(ctx.profile.staticContainer)} cp "$target.before-local-ydb-toolkit-auth" "$target"`,
     `docker restart ${shellQuote(ctx.profile.staticContainer)}`,
-    ...plans.map((plan) => `docker start ${plan.container}`)
+    "Run local_ydb_restart_stack or local_ydb_bootstrap to recreate configured dynamic nodes against the restored static config."
   ];
   const verification = [
     "anonymous viewer/json returns 401",

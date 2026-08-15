@@ -5,10 +5,10 @@ import {
   additionalDynamicNodePlans,
   startDynamicNodePlans
 } from "./dynamic-node-topology.js";
+import { inspectDynamicNodePorts } from "./dynamic-node-inspect.js";
 import {
   assertPositiveInteger,
   delay,
-  escapeRegExp,
   extraDynamicNodeTarget,
   observedNodePorts
 } from "./helpers.js";
@@ -136,7 +136,7 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
   let targets: DynamicNodeTarget[];
   if (options.nodeIds && options.nodeIds.length > 0) {
     const requestedNodeIds = validateNodeIds(options.nodeIds);
-    const inspectByContainer = await inspectDynamicNodeTargets(ctx, available.map((target) => target.container));
+    const inspectByContainer = await inspectDynamicNodePorts(ctx, available.map((target) => target.container));
     targets = await targetsForNodeIds(ctx, available, inspectByContainer, requestedNodeIds);
     return targets.sort((left, right) => right.index - left.index);
   } else if (options.containers && options.containers.length > 0) {
@@ -161,7 +161,7 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
     }
   }
 
-  const inspectByContainer = await inspectDynamicNodeTargets(ctx, targets.map((target) => target.container));
+  const inspectByContainer = await inspectDynamicNodePorts(ctx, targets.map((target) => target.container));
   return targets
     .sort((left, right) => right.index - left.index)
     .map((target) => ({
@@ -245,52 +245,6 @@ function readNodeIdAndPort(node: unknown): { nodeId: number; icPort: number } | 
     return undefined;
   }
   return { nodeId, icPort };
-}
-
-async function inspectDynamicNodeTargets(ctx: ToolkitContext, containers: string[]): Promise<Map<string, { icPort?: number }>> {
-  const inspect = await ctx.client.dockerInspect(containers);
-  const byContainer = new Map<string, { icPort?: number }>();
-  for (const item of inspect) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-    const obj = item as Record<string, unknown>;
-    const name = typeof obj.Name === "string" ? obj.Name.replace(/^\//, "") : undefined;
-    if (!name) {
-      continue;
-    }
-    byContainer.set(name, {
-      icPort: readCommandPort(obj, "--ic-port")
-    });
-  }
-  return byContainer;
-}
-
-function readCommandPort(value: Record<string, unknown>, flag: string): number | undefined {
-  const args = Array.isArray(value.Args) ? value.Args : [];
-  const fromArgs = readPortFromArgs(args, flag);
-  if (typeof fromArgs === "number") {
-    return fromArgs;
-  }
-  const config = value.Config;
-  if (!config || typeof config !== "object") {
-    return undefined;
-  }
-  const cmd = Array.isArray((config as Record<string, unknown>).Cmd) ? (config as Record<string, unknown>).Cmd as unknown[] : [];
-  return readPortFromArgs(cmd, flag);
-}
-
-function readPortFromArgs(args: unknown[], flag: string): number | undefined {
-  const strings = args.filter((arg): arg is string => typeof arg === "string");
-  for (let index = 0; index < strings.length; index += 1) {
-    if (strings[index] === flag) {
-      const port = Number(strings[index + 1]);
-      return Number.isFinite(port) ? port : undefined;
-    }
-  }
-  const joined = strings.join(" ");
-  const match = new RegExp(`${escapeRegExp(flag)}\\s+(\\d+)`).exec(joined);
-  return match ? Number(match[1]) : undefined;
 }
 
 async function waitForDynamicNodePortAbsence(ctx: ToolkitContext, target: DynamicNodeTarget & { icPort: number }): Promise<DynamicNodeCheck> {

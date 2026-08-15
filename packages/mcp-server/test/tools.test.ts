@@ -1080,14 +1080,24 @@ describe("mcp tools", () => {
     const bootstrapTool = localYdbTools.find((tool) => tool.name === "local_ydb_bootstrap");
     const restartTool = localYdbTools.find((tool) => tool.name === "local_ydb_restart_stack");
     const authTool = localYdbTools.find((tool) => tool.name === "local_ydb_apply_auth_hardening");
+    const startTool = localYdbTools.find((tool) => tool.name === "local_ydb_start_dynamic_node");
+    const reduceTool = localYdbTools.find((tool) => tool.name === "local_ydb_reduce_storage_groups");
+    const upgradeTool = localYdbTools.find((tool) => tool.name === "local_ydb_upgrade_version");
     expect(bootstrapTool?.description).toContain("stable by container ID and RestartCount across two checks");
     expect(bootstrapTool?.description).toContain("every configured dynamic gRPC port");
+    expect(bootstrapTool?.description).toContain("configured container names must be distinct from the static container");
+    expect(startTool?.description).toContain("including static IC port 19001");
     expect(restartTool?.description).toContain("full check-only static compatibility preflight");
     expect(restartTool?.description).toContain("Before stopping any container");
     expect(restartTool?.description).toContain("configured binding changes require destroy followed by bootstrap");
     expect(restartTool?.description).toContain("exact Docker container to be stably running plus registered by IC port");
     expect(restartTool?.description).toContain("including containers observed restarting");
+    expect(restartTool?.description).toContain("rollback uses restart or bootstrap reconciliation");
+    expect(authTool?.description).toContain("before any config or container mutation");
     expect(authTool?.description).toContain("even when no dynamic-node token file is configured");
+    expect(authTool?.description).toContain("rollback uses restart or bootstrap reconciliation");
+    expect(reduceTool?.description).toContain("preserves its exact gRPC, monitoring, and IC ports");
+    expect(upgradeTool?.description).toContain("preserves its exact gRPC, monitoring, and IC ports");
 
     const removeTool = localYdbTools.find((tool) => tool.name === "local_ydb_remove_dynamic_nodes");
     const removeStartIndex = removeTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;

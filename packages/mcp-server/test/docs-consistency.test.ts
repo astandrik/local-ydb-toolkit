@@ -161,8 +161,12 @@ describe("repository skill consistency", () => {
     expect(rootContract).toContain("Before any restart mutation");
     expect(rootContract).toContain("requires destroy/bootstrap");
     expect(rootContract).toContain("including containers observed restarting");
+    expect(rootContract).toContain("standalone primary start validate names and the complete shared-network port set");
+    expect(rootContract).toContain("inventory does not retain removed configured container definitions");
     expect(rootContract).toContain("restores configured nodes through restart or bootstrap");
+    expect(rootContract).toContain("before any config or container mutation");
     expect(rootContract).toContain("without a dynamic-node token file");
+    expect(rootContract).toContain("preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy");
   });
 
   it("keeps the declarative topology acceptance flow identical", () => {
@@ -177,6 +181,8 @@ describe("repository skill consistency", () => {
     expect(rootFlow).toContain("full static compatibility check before every mutation");
     expect(rootFlow).toContain("without changing saved IDs/states or creating `-2`/`-3`");
     expect(rootFlow).toContain("tenant bootstrap must reject the same shared compatibility contract");
+    expect(rootFlow).toContain("non-default gRPC, monitoring, and IC ports");
+    expect(rootFlow).toContain("failure before dump or destroy");
   });
 
   it("keeps dynamic-node scenarios 11 and 12 identical and topology-aware", () => {
@@ -249,6 +255,11 @@ describe("Mintlify declarative topology documentation", () => {
     expect(workflow).toContain("restarting.");
     expect(workflow).toContain("`local_ydb_restart_stack` or `local_ydb_bootstrap`");
     expect(workflow).toContain("`local_ydb_add_dynamic_nodes`");
+    expect(workflow).toContain("distinct from the static container name");
+    expect(workflow).toContain("Before copying config or changing");
+    expect(workflow).toContain("exact gRPC, monitoring, and IC ports");
+    expect(workflow).toContain("inventory does not");
+    expect(workflow).toContain("retain removed configured definitions");
     expect(workflow).toContain("never removes unexpected one-off containers");
     expect(workflow).toContain("still attempts every preflight-running one-off container");
     expect(workflow).toContain("restore only one-off suffixes above");

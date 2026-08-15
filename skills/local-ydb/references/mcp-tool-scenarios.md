@@ -74,6 +74,7 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 
 - `dynamicNodeCount` is the total configured tenant-node count, including primary, and defaults to `1`.
 - Configured node `1` uses `dynamicContainer`; nodes `2..N` use `dynamicContainer-<index>` and base ports plus `index - 1`.
+- Configured dynamic names must be distinct from the static container; bootstrap, add, and standalone primary start validate names and the complete shared-network port set before returning a plan.
 - Static IC port `19001` is reserved; all configured and one-off ports share the static node's network namespace and must not collide with it.
 - The static container publishes the static gRPC port and every configured dynamic gRPC port on loopback. One-off nodes do not change those bindings.
 - Tenant bootstrap recreates configured containers in index order, even when a stale container is already running. Readiness requires a stable running exact container plus IC registration; a matching nodelist port alone is insufficient.
@@ -81,8 +82,10 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Default `local_ydb_remove_dynamic_nodes` considers only suffixes above `dynamicNodeCount`; explicit selectors or `startIndex` can remove a configured suffix and create drift.
 - Before any restart mutation, the existing static container must pass the full profile check, including exact configured loopback bindings. A mismatch leaves all container IDs and states unchanged and requires destroy/bootstrap.
 - Restart unconditionally recreates every configured container, including containers observed restarting. It reports missing configured and unexpected one-off containers, never removes unexpected containers, and attempts to restore every preflight-running unexpected container even when restart fails.
+- Restart rollback uses restart or bootstrap reconciliation because inventory does not retain removed configured container definitions.
 - Removal rollback restores configured nodes through restart or bootstrap and recreates one-off nodes through add; a mixed selection returns both instructions.
-- Auth hardening recreates and verifies every configured node in index order, including profiles without a dynamic-node token file.
+- Auth hardening runs the full static compatibility preflight before any config or container mutation, then recreates and verifies every configured node in index order, including profiles without a dynamic-node token file; rollback also uses restart or bootstrap reconciliation.
+- Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy; an incomplete container definition aborts the rebuild before destructive work.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
 
 ## Declarative Topology Acceptance Flow
@@ -95,7 +98,7 @@ Use only a disposable profile with unique container/network/volume names and non
 4. Call `local_ydb_add_dynamic_nodes` without `startIndex`. It must plan and create `-4`. Save its Docker ID and running state from inventory.
 5. Remove configured container `-2` explicitly. Call restart plan-only and require `missingDynamicContainers=["<dynamicContainer>-2"]` and `unexpectedDynamicContainers=["<dynamicContainer>-4"]`. The plan must not contain `docker rm -f <dynamicContainer>-4`.
 6. Replace configured `-2` with a same-name restart-looping fixture. Restart plan-only must contain an unconditional remove/run for `-2`; confirmed restart must give it a new Docker ID. The preflight-running `-4` must retain its saved Docker ID and running state. Exact configured IC ports and tenant metadata must pass again.
-7. While `-4` exists, plan a storage reduction or version upgrade rebuild. Only `-4` may appear in `extraDynamicNodes`; configured `-2` and `-3` come from bootstrap/auth reconciliation. Final container/image and nodelist verification must cover configured nodes plus `-4`.
+7. While `-4` exists with non-default gRPC, monitoring, and IC ports, plan a storage reduction or version upgrade rebuild. Only `-4` may appear in `extraDynamicNodes`; its exact inspected ports must be reused, while configured `-2` and `-3` come from bootstrap/auth reconciliation. Withhold one inspected port as a negative control and require failure before dump or destroy. Final container/image and nodelist verification must cover configured nodes plus `-4`.
 8. Confirm destroy, then bootstrap again. Inventory must contain exactly the three configured dynamic containers and no `-4`.
 9. In `finally`, destroy the disposable stack and independently remove any leftover disposable containers, network, and volume.
 
@@ -496,6 +499,7 @@ Expected:
 - after a successful preflight, the static node restarts first
 - tenant status is checked before dynamic node is started again
 - every configured dynamic node is unconditionally recreated, including a container observed in Docker's restarting state
+- rollback uses `local_ydb_restart_stack` or `local_ydb_bootstrap`, not an inventory claim about removed configured definitions
 - post-restart `status_report` returns `tenant=ok`, `nodes=ok`
 
 Avoid:
@@ -595,6 +599,7 @@ Calls:
 
 Expected:
 
+- the full check-only static compatibility preflight runs before config copy or any container mutation; a mismatch leaves IDs/states unchanged and requires destroy/bootstrap
 - the reviewed config is copied into the static container
 - dynamic node is stopped
 - static node is restarted
@@ -603,6 +608,7 @@ Expected:
   `--auth-token-file /run/local-ydb/dynamic-node-auth.pb`
   sanitized dynamic config
   TLS disabled for local mode
+- rollback restores the static config and uses `local_ydb_restart_stack` or `local_ydb_bootstrap` to recreate configured nodes, never `docker start` for removed definitions
 
 Avoid:
 
@@ -831,6 +837,7 @@ Expected:
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
 - extra dynamic-node suffixes are re-added after restore/auth reapply
+- every one-off node keeps its inspected gRPC, monitoring, and IC ports; an incomplete inspect aborts before dump or destroy
 
 Avoid:
 
@@ -861,6 +868,7 @@ Expected:
 - the plan starts with source and target image preflight checks
 - if either image is missing, run `local_ydb_pull_image` first and retry after `local_ydb_pull_status` reports completion
 - after image preflight, the upgrade path performs dump, destroy, bootstrap, restore, auth reapply, and extra dynamic-node recreation in that order
+- before dump or destroy, every one-off node's exact gRPC, monitoring, and IC ports are inspected and retained; an incomplete definition aborts the rebuild
 - auth-enabled profiles re-run:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`

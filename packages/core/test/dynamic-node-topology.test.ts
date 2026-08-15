@@ -87,4 +87,21 @@ describe("dynamic-node topology", () => {
   it("accepts a dynamic IC range adjacent to the static IC port", () => {
     expect(configuredDynamicNodePlans(profile(1, { dynamicIc: 19000 }))).toHaveLength(1);
   });
+
+  it.each([
+    { staticContainer: "ydb-dyn-example", dynamicNodeCount: 1 },
+    { staticContainer: "ydb-dyn-example-2", dynamicNodeCount: 2 }
+  ])("rejects a configured container name that aliases $staticContainer", ({ staticContainer, dynamicNodeCount }) => {
+    const resolved = resolveProfile(ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "ydb-dyn-example",
+          dynamicNodeCount,
+          staticContainer
+        }
+      }
+    }));
+
+    expect(() => configuredDynamicNodePlans(resolved)).toThrow(/static container.*configured dynamic node|configured dynamic node.*static container/i);
+  });
 });

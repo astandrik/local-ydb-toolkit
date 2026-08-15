@@ -26,7 +26,10 @@ For a profile with `dynamicContainer: "ydb-dynamic"`, base ports
 The processes share the static container's network namespace. Static gRPC,
 static monitoring, and internal static IC port `19001` are already occupied.
 Configured and one-off nodes must use valid, unique gRPC, monitoring, and IC
-ports that do not collide with those listeners.
+ports that do not collide with those listeners. Every configured dynamic
+container name must also be distinct from the static container name. Tenant
+bootstrap validates both contracts before returning or executing its plan, and
+the primary-only `local_ydb_start_dynamic_node` applies the same validation.
 
 Tenant bootstrap publishes static gRPC and every configured dynamic gRPC port
 on `127.0.0.1` through the static container. One-off nodes do not change these
@@ -58,11 +61,18 @@ A matching nodelist port alone is insufficient because it does not identify the
 container that registered it. Bootstrap, restart, and auth hardening stop at the
 first configured-node command or readiness failure instead of starting another
 configured node. Auth hardening recreates and verifies all configured nodes
-even when no dynamic-node token file is set.
+even when no dynamic-node token file is set. Before copying config or changing
+container state, it runs the same full check-only static compatibility
+preflight. An immutable mismatch leaves the stack untouched and requires
+destroy followed by bootstrap. After restoring the static config during
+rollback, use `local_ydb_restart_stack` or `local_ydb_bootstrap` to recreate
+configured nodes instead of trying to start removed container definitions.
 
 Storage reduction and version upgrade rebuild the configured topology from the
 profile, reapply auth when configured, and restore only one-off suffixes above
-`dynamicNodeCount`.
+`dynamicNodeCount`. Before dump or destroy, both operations inspect and retain
+each one-off node's exact gRPC, monitoring, and IC ports; an absent or incomplete
+container definition aborts the rebuild before destructive work.
 
 ## Keep one-off scaling separate
 
@@ -84,7 +94,9 @@ Restart never removes unexpected one-off containers. It restarts those that
 were running before the restart, preserves their container identity, and leaves
 previously stopped one-off containers stopped. If configured reconciliation
 fails, restart still attempts every preflight-running one-off container and
-keeps the original failure before recovery results. Destroy followed by
+keeps the original failure before recovery results. Because inventory does not
+retain removed configured definitions, restart rollback uses declarative
+restart or bootstrap reconciliation. Destroy followed by
 bootstrap creates exactly the configured count and does not recreate prior
 one-off nodes.
 

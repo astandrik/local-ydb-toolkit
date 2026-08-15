@@ -13,7 +13,9 @@ import {
 import {
   classifyDynamicTopologyDrift,
   configuredDynamicNodePlans,
-  startDynamicNodePlans
+  dynamicNodePlan,
+  startDynamicNodePlans,
+  validateDynamicNodePlans
 } from "./dynamic-node-topology.js";
 import { normalizeExpectedYdbResult, runCommandSpecs, runMutating } from "./execution.js";
 import { findExtraDynamicContainers } from "./helpers.js";
@@ -114,12 +116,14 @@ export async function bootstrapRootDatabase(ctx: ToolkitContext, options: Mutati
 }
 
 export async function startDynamicNode(ctx: ToolkitContext, options: MutatingOptions = {}) {
+  const plan = dynamicNodePlan(ctx.profile, 1);
+  validateDynamicNodePlans(ctx.profile, [plan]);
   return runMutating(ctx, {
     summary: `Start dynamic node ${ctx.profile.dynamicContainer}.`,
     risk: "medium",
     specs: [
       ensureImagePresentSpec(ctx.profile.image),
-      bash(commandForDynamicEnsureRun(ctx.profile), { timeoutMs: 60_000 })
+      bash(commandForDynamicEnsureRun(ctx.profile, plan), { timeoutMs: 60_000 })
     ],
     rollback: [`docker rm -f ${ctx.profile.dynamicContainer}`],
     verification: ["container is Up", "viewer/json/nodelist includes the dynamic node", `scheme ls ${ctx.profile.tenantPath}`]
@@ -294,7 +298,7 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
   const finalSpecs = [...unexpectedStartSpecs, metadataSpec];
   const specs = [...preflightSpecs, ...mutationSpecs, ...nodeSpecs, ...finalSpecs];
   const rollback = [
-    "Start previous configured container definitions captured by local_ydb_inventory.",
+    "Recreate configured nodes with local_ydb_restart_stack or local_ydb_bootstrap; local_ydb_inventory does not retain removed container definitions.",
     ...runningUnexpected.map((container) => `docker start ${container}`)
   ];
   const verification = [

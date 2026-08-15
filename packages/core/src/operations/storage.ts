@@ -12,9 +12,10 @@ import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } fro
 import { inventory, requireInventory } from "./checks.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
 import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
+import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { runMutating } from "./execution.js";
-import { assertPositiveInteger, assertSafeCleanupTarget, extraDynamicNodeTarget } from "./helpers.js";
+import { assertPositiveInteger, assertSafeCleanupTarget } from "./helpers.js";
 import { bootstrap, destroyStack } from "./stack.js";
 import { dumpTenant, restoreTenant } from "./tenant.js";
 import type {
@@ -160,11 +161,10 @@ export async function reduceStorageGroups(
   const dumpName = options.dumpName ?? `shrink-${sanitizeTenantName(ctx.profile.tenantPath)}-${pool.numGroups}-to-${targetNumGroups}`;
   const rebuildCtx = rebuildContext(ctx, targetNumGroups);
   const inventoryState = await requireInventory(ctx);
-  const extraDynamicNodes = inventoryState.containers
-    .map((container) => extraDynamicNodeTarget(ctx.profile, container.names))
-    .filter((target): target is NonNullable<typeof target> => Boolean(target))
-    .filter((target) => target.index > ctx.profile.dynamicNodeCount)
-    .sort((left, right) => left.index - right.index);
+  const extraDynamicNodes = await inspectExtraDynamicNodePlans(
+    ctx,
+    inventoryState.containers.map((container) => container.names)
+  );
   const finalCtx = authReapplyPlanned ? ctx : rebuildCtx;
 
   const dumpPlan = await dumpTenant(ctx, { confirm: false, dumpName });
@@ -180,7 +180,14 @@ export async function reduceStorageGroups(
     : [];
   const extraDynamicPlans = [];
   for (const node of extraDynamicNodes) {
-    extraDynamicPlans.push(await addDynamicNodes(finalCtx, { confirm: false, count: 1, startIndex: node.index }));
+    extraDynamicPlans.push(await addDynamicNodes(finalCtx, {
+      confirm: false,
+      count: 1,
+      startIndex: node.index,
+      grpcPortStart: node.grpcPort,
+      monitoringPortStart: node.monitoringPort,
+      icPortStart: node.icPort
+    }));
   }
 
   const plannedCommands = [
@@ -256,7 +263,14 @@ export async function reduceStorageGroups(
   }
 
   for (const node of extraDynamicNodes) {
-    if (!await runOperation(results, await addDynamicNodes(finalCtx, { confirm: true, count: 1, startIndex: node.index }))) {
+    if (!await runOperation(results, await addDynamicNodes(finalCtx, {
+      confirm: true,
+      count: 1,
+      startIndex: node.index,
+      grpcPortStart: node.grpcPort,
+      monitoringPortStart: node.monitoringPort,
+      icPortStart: node.icPort
+    }))) {
       return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
     }
   }
@@ -301,11 +315,11 @@ function expectedProfileContainerNames(
 
 function expectedDynamicNodePorts(
   ctx: ToolkitContext,
-  extraDynamicNodes: Array<{ index: number }>
+  extraDynamicNodes: Array<{ icPort: number }>
 ): number[] {
   return [
     ...configuredDynamicNodePlans(ctx.profile).map((plan) => plan.icPort),
-    ...extraDynamicNodes.map((node) => ctx.profile.ports.dynamicIc + node.index - 1)
+    ...extraDynamicNodes.map((node) => node.icPort)
   ];
 }
 
