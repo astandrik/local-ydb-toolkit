@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.16.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.4...mcp-server-v0.16.0) (2026-08-15)
+
+
+### Features
+
+* add declarative dynamic node topology ([9bdd83e](https://github.com/astandrik/local-ydb-toolkit/commit/9bdd83edc72dcf7c1d88e565e3231e07e198638a))
+* make tenant dynamic-node count declarative ([99797e8](https://github.com/astandrik/local-ydb-toolkit/commit/99797e8195e4318994d0e6297ecd5e604816fb21))
+
+
+### Bug Fixes
+
+* address declarative topology review feedback ([0e77b9e](https://github.com/astandrik/local-ydb-toolkit/commit/0e77b9eaf22634414ada1220b053675984f25f26))
+* harden dynamic node reconciliation ([1313ac3](https://github.com/astandrik/local-ydb-toolkit/commit/1313ac365139243bfd368bba17676642ca034bfa))
+* preflight static compatibility before restart ([b32eb4a](https://github.com/astandrik/local-ydb-toolkit/commit/b32eb4a8c1f409e5fccb8fbcb79f6260d02a2739))
+* reconcile configured dynamic node topology ([fa5f9d3](https://github.com/astandrik/local-ydb-toolkit/commit/fa5f9d3f5041c8c312a48e9bac1b522a4aac8979))
+
 ## [0.15.4](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.3...mcp-server-v0.15.4) (2026-08-12)
 
 
