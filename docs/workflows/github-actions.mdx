@@ -1,0 +1,43 @@
+---
+title: "Use local YDB in GitHub Actions"
+description: "Start a disposable local YDB tenant in CI and consume its exported connection values."
+---
+
+Use `astandrik/setup-local-ydb@v1` when a GitHub Actions job needs a disposable
+YDB database.
+
+```yaml
+steps:
+  - uses: astandrik/setup-local-ydb@v1
+    id: ydb
+    with:
+      version: 26.1.1.6
+      tenant: /local/test
+
+  - name: Run integration tests
+    env:
+      YDB_ENDPOINT: ${{ env.LOCAL_YDB_ENDPOINT }}
+      YDB_DATABASE: ${{ env.LOCAL_YDB_DATABASE }}
+    run: npm test
+```
+
+The action exports `LOCAL_YDB_ENDPOINT`, `LOCAL_YDB_DATABASE`, and
+`LOCAL_YDB_MONITORING_URL` for later steps.
+
+## Authenticated CI
+
+Set `auth: true` only when the tests need native YDB authentication:
+
+```yaml
+- uses: astandrik/setup-local-ydb@v1
+  with:
+    version: 26.1.1.6
+    tenant: /local/test
+    auth: true
+```
+
+Authenticated mode also exports `LOCAL_YDB_USER` and
+`LOCAL_YDB_PASSWORD_FILE`. Consume the file path; do not print the password.
+
+See the action's [README](https://github.com/astandrik/setup-local-ydb) for its
+complete input and output contract.

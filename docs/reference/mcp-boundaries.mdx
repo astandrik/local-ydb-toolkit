@@ -1,0 +1,37 @@
+---
+title: "MCP boundaries"
+description: "Distinguish the local operational MCP server from the hosted discovery and documentation MCP endpoints."
+---
+
+The project uses separate MCP surfaces for separate trust boundaries.
+
+| Surface | Purpose | Authority |
+| --- | --- | --- |
+| `@astandrik/local-ydb-mcp` | Operate a configured Docker-based local YDB target | Local process, Docker, files, SSH, and YDB credentials available to the client |
+| Project website `/mcp` | Product discovery and installation guidance | Hosted, read-only, no local YDB access |
+| This documentation site's `/mcp` | Search and read published documentation | Hosted by Mintlify, no local YDB access |
+| `https://mcp.mintlify.com` | Edit Mintlify content and propose pull requests | OAuth access to one Mintlify deployment |
+
+## Operational MCP
+
+Run the stdio package when an agent must inspect or operate a real target. It
+does not become remote merely because public documentation or registry metadata
+exists.
+
+## Documentation MCP
+
+Mintlify generates a read-only documentation MCP endpoint at `/mcp` on the docs
+domain. It can search and retrieve published pages. It cannot inspect Docker or
+execute `local_ydb_*` operations.
+
+## Mintlify editing MCP
+
+The Mintlify editing MCP is an administrator tool for maintainers. Its OAuth
+session is scoped to one deployment, works on a branch, and can create a pull
+request. Review every resulting diff before merge.
+
+<Warning>
+  Do not describe any hosted MCP endpoint as an operational local YDB server.
+  Local credentials and private paths stay in the user's MCP process, CI runner,
+  or chosen SSH target.
+</Warning>

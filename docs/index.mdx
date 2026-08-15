@@ -1,0 +1,53 @@
+---
+title: "local-ydb-toolkit"
+description: "Choose the right path for operating Docker-based local YDB in an agent, an MCP client, or GitHub Actions."
+---
+
+`local-ydb-toolkit` provides one operational model across local AI agents and CI:
+
+- an Agent Plugin with a reusable `local-ydb` skill and a pinned local MCP server;
+- the `@astandrik/local-ydb-mcp` stdio server for MCP clients;
+- the `astandrik/setup-local-ydb@v1` GitHub Action for disposable CI databases.
+
+<Info>
+  The toolkit operates Docker-based local YDB environments. Use the official
+  [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) for general
+  database-level work against an existing arbitrary YDB endpoint.
+</Info>
+
+## Choose an integration
+
+| Need | Use |
+| --- | --- |
+| Skill and operational tools in Codex | Repository Agent Plugin |
+| Operational tools in another MCP client | `@astandrik/local-ydb-mcp` |
+| Disposable YDB in a GitHub Actions job | `astandrik/setup-local-ydb@v1` |
+| Reusable guidance without tool execution | Standalone `local-ydb` skill |
+
+<CardGroup cols={2}>
+  <Card title="Install" icon="download" href="/get-started/install">
+    Add the plugin, MCP server, skill, or GitHub Action.
+  </Card>
+  <Card title="Configure a target" icon="settings" href="/get-started/configure">
+    Create a local profile without committing credentials or private paths.
+  </Card>
+  <Card title="Diagnose a deployment" icon="stethoscope" href="/workflows/diagnostics">
+    Start with bounded, read-only evidence before proposing a repair.
+  </Card>
+  <Card title="Understand the safety boundary" icon="shield" href="/reference/safety">
+    Review process authority, confirmation, rollback, and secret handling.
+  </Card>
+</CardGroup>
+
+## Execution boundary
+
+The operational MCP server runs on your machine and inherits the permissions of
+its process. It can reach only the Docker daemon, files, SSH targets, and YDB
+credentials available to that process. Mutating tools return a plan first and
+execute only when the caller supplies `confirm: true`.
+
+<Warning>
+  `confirm: true` is an application-level gate. It is not an operating-system
+  sandbox or a replacement for least-privilege Docker, SSH, filesystem, and YDB
+  credentials.
+</Warning>

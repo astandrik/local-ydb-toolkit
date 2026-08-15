@@ -1,0 +1,59 @@
+---
+title: "Configure a target"
+description: "Create a minimal local-ydb-toolkit target profile and keep credentials outside the repository."
+---
+
+The MCP server loads a JSON file with a default profile and one or more target
+profiles. Store the real file outside the repository.
+
+## Minimal local profile
+
+```json
+{
+  "defaultProfile": "local",
+  "profiles": {
+    "local": {
+      "mode": "local",
+      "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+      "tenantPath": "/local/example",
+      "ports": {}
+    }
+  }
+}
+```
+
+The empty `ports` object selects the defaults: static gRPC `2136`, monitoring
+`8765`, dynamic gRPC `2137`, dynamic monitoring `8766`, and dynamic interconnect
+`19002`.
+
+## Select the configuration
+
+Use one of these mechanisms:
+
+1. Set `LOCAL_YDB_TOOLKIT_CONFIG` in the MCP client environment to an absolute path.
+2. Pass an absolute `configPath` to a profile-based tool call that supports it.
+
+Agent Plugin MCP processes start from the installed plugin root. Do not rely on
+a `local-ydb.config.json` in the caller's repository being the current working
+directory.
+
+## Root database or tenant topology
+
+Use `local_ydb_bootstrap_root_database` for a plain `/local` database with one
+static node. Use `local_ydb_bootstrap` only when you need a CMS tenant such as
+`/local/example`, GraphShard, dump and restore, or dynamic-node behavior.
+
+<Info>
+  Prefer exact image patch tags. Do not mix static and dynamic nodes from
+  different YDB image versions in one stack.
+</Info>
+
+## Add credentials only when needed
+
+Auth-enabled profiles may reference `rootPasswordFile`, `authConfigPath`, and
+`dynamicNodeAuthTokenFile`. These values are file paths, not password contents.
+Restrict file permissions and never paste secret values into prompts or commit
+them to the repository.
+
+See the complete public example in
+[`examples/local-ydb.config.example.json`](https://github.com/astandrik/local-ydb-toolkit/blob/main/examples/local-ydb.config.example.json).
