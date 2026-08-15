@@ -1,0 +1,50 @@
+---
+title: "Safety model"
+description: "Review the local process trust boundary, plan-first mutations, rollback expectations, and secret-handling rules."
+---
+
+## Process authority
+
+The local MCP server inherits the permissions of its process:
+
+- Docker daemon access can control containers and may imply broad host privileges.
+- SSH profiles execute with the selected remote identity.
+- YDB operations use the endpoint and credentials available to the process.
+- Configuration, password, dump, restore, and auth files follow filesystem permissions.
+
+Run the server with the least-privileged operating-system account and target
+credentials that can complete the task.
+
+## Plan-first mutations
+
+Mutating tools return planned commands, risk, rollback, and verification without
+executing when `confirm` is absent or false. Supply `confirm: true` only after
+reviewing the exact target and plan.
+
+```json
+{
+  "confirm": true
+}
+```
+
+`confirm: true` does not replace operating-system sandboxing, authentication,
+authorization, branch protection, backups, or least-privilege credentials.
+
+## Destructive workflows
+
+Inspect exact targets before cleanup, destroy, storage reduction, restore, or
+version upgrade. Prefer dump, fresh rebuild, restore, and verification over an
+unrehearsed in-place data migration. Keep a recoverable rollback artifact until
+tenant metadata, table reads, auth, node state, and storage placement pass.
+
+## Secrets and private data
+
+Keep these values outside the repository and out of prompts:
+
+- passwords, tokens, and password-file contents;
+- SSH private keys and private host details;
+- local config paths that identify private infrastructure;
+- dump, restore, and backup paths from real environments.
+
+Use placeholders in public examples and report vulnerabilities through
+[GitHub Private Vulnerability Reporting](https://github.com/astandrik/local-ydb-toolkit/security/advisories/new).

@@ -1,0 +1,88 @@
+---
+title: "Install"
+description: "Install local-ydb-toolkit as an Agent Plugin, a local MCP server, a standalone skill, or a GitHub Action."
+---
+
+Choose one integration based on where the local YDB deployment will run.
+
+## Prerequisites
+
+- Node.js 20.19 or newer and `npx` for the Agent Plugin and stdio MCP server.
+- Docker CLI and a reachable Docker daemon on the target host for local operations.
+- An absolute path to a target configuration file, unless every tool call supplies `configPath`.
+
+<Tabs>
+  <Tab title="Codex Agent Plugin">
+    Add the repository marketplace and install the plugin:
+
+    ```bash
+    codex plugin marketplace add astandrik/local-ydb-toolkit --ref main
+    codex plugin add local-ydb-toolkit@local-ydb-toolkit
+    ```
+
+    Start a new Codex task after installation so the bundled skill and pinned
+    MCP server are loaded.
+  </Tab>
+  <Tab title="MCP server">
+    Configure an MCP client to start the local stdio package:
+
+    ```json
+    {
+      "mcpServers": {
+        "local-ydb": {
+          "command": "npx",
+          "args": ["-y", "@astandrik/local-ydb-mcp@latest"],
+          "env": {
+            "LOCAL_YDB_TOOLKIT_CONFIG": "/absolute/path/to/local-ydb.config.json"
+          }
+        }
+      }
+    }
+    ```
+
+    For project-scoped Codex configuration, use `.codex/config.toml` in a
+    trusted project:
+
+    ```toml
+    [mcp_servers.local-ydb]
+    command = "npx"
+    args = ["-y", "@astandrik/local-ydb-mcp@latest"]
+    env = { LOCAL_YDB_TOOLKIT_CONFIG = "/absolute/path/to/local-ydb.config.json" }
+    default_tools_approval_mode = "writes"
+    ```
+  </Tab>
+  <Tab title="Codex skill">
+    Install only the reusable guidance when the current environment cannot or
+    should not run the MCP server:
+
+    ```text
+    $skill-installer install https://github.com/astandrik/local-ydb-toolkit/tree/main/skills/local-ydb
+    ```
+  </Tab>
+  <Tab title="GitHub Action">
+    Add the stable major action to a workflow:
+
+    ```yaml
+    - uses: astandrik/setup-local-ydb@v1
+      id: ydb
+      with:
+        version: 26.1.1.6
+        tenant: /local/test
+    ```
+
+    Continue with [GitHub Actions](/workflows/github-actions) for exported values
+    and authenticated jobs.
+  </Tab>
+</Tabs>
+
+## Verify the local MCP connection
+
+Use the client to list tools, then call `local_ydb_check_prerequisites` without
+`confirm`. A successful response distinguishes an available Docker CLI from a
+reachable Docker daemon and does not mutate the host.
+
+<Warning>
+  Keep `local-ydb.config.json`, SSH identities, password files, auth artifacts,
+  and dump paths out of the repository. Use absolute paths and least-privilege
+  credentials.
+</Warning>

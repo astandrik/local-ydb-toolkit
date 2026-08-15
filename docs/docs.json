@@ -1,0 +1,45 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "local-ydb-toolkit",
+  "description": "Operate Docker-based local YDB deployments through an agent plugin, a local MCP server, and a GitHub Action.",
+  "colors": {
+    "primary": "#0b4f85",
+    "light": "#5db5ff",
+    "dark": "#1677c8"
+  },
+  "logo": {
+    "light": "/images/icon.svg",
+    "dark": "/images/icon.svg",
+    "href": "https://local-ydb-toolkit.ydb-qdrant.tech/"
+  },
+  "favicon": "/images/icon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": [
+          "index",
+          "get-started/install",
+          "get-started/configure"
+        ]
+      },
+      {
+        "group": "Workflows",
+        "pages": [
+          "workflows/diagnostics",
+          "workflows/github-actions"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/mcp-boundaries",
+          "reference/tools",
+          "reference/safety",
+          "diagnostics-coverage"
+        ]
+      }
+    ]
+  }
+}

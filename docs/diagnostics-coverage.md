@@ -1,4 +1,7 @@
-# local-ydb Diagnostics Coverage
+---
+title: "Diagnostics coverage"
+description: "Map local-ydb-toolkit checks to upstream YDB diagnostic surfaces and known scope boundaries."
+---
 
 This audit covers the current local-ydb-toolkit diagnostic surface against upstream YDB diagnostics that are practical for Docker-based `local-ydb` targets.
 
