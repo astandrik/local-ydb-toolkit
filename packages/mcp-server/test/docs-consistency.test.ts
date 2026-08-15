@@ -43,6 +43,15 @@ interface ReleasePleaseConfig {
   }>;
 }
 
+interface MintlifyConfig {
+  navigation: {
+    groups: Array<{
+      group: string;
+      pages: string[];
+    }>;
+  };
+}
+
 function readJson<T>(url: URL): T {
   return JSON.parse(readFileSync(url, "utf8")) as T;
 }
@@ -169,5 +178,52 @@ describe("repository skill consistency", () => {
     expect(rootSection).toContain("default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`");
     expect(rootSection).toContain("Configured suffix `-2` is removable only through an explicit");
     expect(rootSection).not.toContain("docker rm -f ydb-dyn-example-ghcr261-2 ydb-dyn-example-ghcr261-3");
+  });
+});
+
+describe("Mintlify declarative topology documentation", () => {
+  const configuration = readFileSync(
+    new URL("../../../docs/get-started/configure.mdx", import.meta.url),
+    "utf8",
+  );
+  const index = readFileSync(
+    new URL("../../../docs/index.mdx", import.meta.url),
+    "utf8",
+  );
+  const workflow = readFileSync(
+    new URL("../../../docs/workflows/dynamic-node-topology.mdx", import.meta.url),
+    "utf8",
+  );
+  const tools = readFileSync(
+    new URL("../../../docs/reference/tools.mdx", import.meta.url),
+    "utf8",
+  );
+  const mintlifyConfig = readJson<MintlifyConfig>(
+    new URL("../../../docs/docs.json", import.meta.url),
+  );
+
+  it("publishes the declarative topology workflow in navigation", () => {
+    const workflows = mintlifyConfig.navigation.groups.find(
+      ({ group }) => group === "Workflows",
+    );
+
+    expect(workflows?.pages).toContain("workflows/dynamic-node-topology");
+    expect(index).toContain('href="/workflows/dynamic-node-topology"');
+    expect(configuration).toContain('"dynamicNodeCount": 3');
+    expect(configuration).toContain("total configured tenant-node count");
+    expect(configuration).toContain("defaults to `1`");
+    expect(configuration).toContain("Static IC port `19001` is");
+  });
+
+  it("keeps configured, one-off, and readiness contracts explicit", () => {
+    expect(workflow).toContain("`dynamicNodeCount + 1`");
+    expect(workflow).toContain("greater than `dynamicNodeCount`");
+    expect(workflow).toContain("`Running=true` and `Restarting=false`");
+    expect(workflow).toContain("same container ID and `RestartCount`");
+    expect(workflow).toContain("matching nodelist port alone is insufficient");
+    expect(workflow).toContain("never removes unexpected one-off containers");
+    expect(workflow).toContain("still attempts every preflight-running one-off container");
+    expect(workflow).toContain("restore only one-off suffixes above");
+    expect(tools).toContain("bootstrap/restart configured nodes; add/remove one-off nodes");
   });
 });

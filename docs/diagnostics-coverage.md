@@ -16,7 +16,7 @@ The main missing database-level signal was YDB's built-in self-diagnostic health
 | Upstream diagnostic area | Toolkit coverage | Gap before this change | Action |
 | --- | --- | --- | --- |
 | YDB SelfCheck / `monitoring healthcheck` | `local_ydb_healthcheck`; included in `local_ydb_status_report` | No first-class tool for official database health status or issue hierarchy | Added read-only tool and database diagnostics prompt |
-| Docker process and log state | `local_ydb_inventory`, `local_ydb_container_logs` | Covered for configured static and primary dynamic containers | Keep as first local-runtime checks |
+| Docker process and log state | `local_ydb_inventory`, `local_ydb_container_logs` | Covered for the configured static and dynamic containers plus inventoried one-off suffixes | Keep as first local-runtime checks |
 | Tenant and database status | `local_ydb_database_status`, `local_ydb_tenant_check`, `local_ydb_status_report` | Covered, but `status_report` lacked official health status | Additive healthcheck field in status report |
 | Scheme and metadata inspection | `local_ydb_scheme`, `local_ydb_permissions` | Covered for list/describe and ACL diagnostics | No change |
 | Dynamic node registration | `local_ydb_nodes_check` using viewer nodelist and tenantinfo | Covered for local tenant topology | No change |

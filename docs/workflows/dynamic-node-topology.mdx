@@ -1,0 +1,85 @@
+---
+title: "Declarative dynamic-node topology"
+description: "Declare tenant nodes in the profile, scale with one-off suffixes, and reconcile runtime drift safely."
+---
+
+Tenant profiles can declare the complete configured dynamic-node topology with
+`dynamicNodeCount`. The value is the total node count, including the primary
+dynamic node. It defaults to `1`, accepts `1..11`, and does not affect root-only
+bootstrap.
+
+## Derive names and ports
+
+Node 1 uses `dynamicContainer` and the base `dynamicGrpc`,
+`dynamicMonitoring`, and `dynamicIc` ports. Node 2..N use
+`<dynamicContainer>-<index>` and each base port plus `index - 1`.
+
+For a profile with `dynamicContainer: "ydb-dynamic"`, base ports
+`2137/8766/19002`, and `dynamicNodeCount: 3`:
+
+| Index | Container | gRPC | Monitoring | Interconnect |
+| --- | --- | ---: | ---: | ---: |
+| 1 | `ydb-dynamic` | `2137` | `8766` | `19002` |
+| 2 | `ydb-dynamic-2` | `2138` | `8767` | `19003` |
+| 3 | `ydb-dynamic-3` | `2139` | `8768` | `19004` |
+
+The processes share the static container's network namespace. Static gRPC,
+static monitoring, and internal static IC port `19001` are already occupied.
+Configured and one-off nodes must use valid, unique gRPC, monitoring, and IC
+ports that do not collide with those listeners.
+
+## Reconcile the configured topology
+
+`local_ydb_bootstrap` creates the tenant and then recreates configured nodes
+1..N in index order. `local_ydb_restart_stack` inventories the runtime first,
+reports the preflight state in `missingDynamicContainers` and
+`unexpectedDynamicContainers`, and then recreates the configured set from the
+current profile.
+
+After each start, readiness requires all of the following:
+
+- the exact Docker container reports `Running=true` and `Restarting=false`;
+- two consecutive samples retain the same container ID and `RestartCount`;
+- the expected IC port is present in `viewer/json/nodelist`.
+
+A matching nodelist port alone is insufficient because it does not identify the
+container that registered it. Bootstrap, restart, and auth hardening stop at the
+first configured-node command or readiness failure instead of starting another
+configured node. Auth hardening recreates and verifies all configured nodes
+even when no dynamic-node token file is set.
+
+Storage reduction and version upgrade rebuild the configured topology from the
+profile, reapply auth when configured, and restore only one-off suffixes above
+`dynamicNodeCount`.
+
+## Keep one-off scaling separate
+
+`local_ydb_add_dynamic_nodes` creates runtime-only nodes above the configured
+range. Its default first index is `dynamicNodeCount + 1`; an explicit
+`startIndex` must also be greater than `dynamicNodeCount`. Port overrides remain
+available for deliberate non-contiguous one-off layouts.
+
+Default `local_ydb_remove_dynamic_nodes` considers only one-off suffixes and
+removes the highest eligible index. Explicit container, node ID, or
+`startIndex` selectors can remove a configured suffix, but that deliberately
+creates drift. The next tenant bootstrap or restart restores the configured
+node from the profile.
+
+Restart never removes unexpected one-off containers. It restarts those that
+were running before the restart, preserves their container identity, and leaves
+previously stopped one-off containers stopped. If configured reconciliation
+fails, restart still attempts every preflight-running one-off container and
+keeps the original failure before recovery results. Destroy followed by
+bootstrap creates exactly the configured count and does not recreate prior
+one-off nodes.
+
+## Verify before and after mutation
+
+Use plan-only calls first, then verify the confirmed operation with:
+
+1. `local_ydb_inventory` for the exact configured and retained one-off container set.
+2. `local_ydb_nodes_check` for every expected configured IC port.
+3. `local_ydb_tenant_check` for the final tenant metadata read.
+
+Use `local_ydb_restart_stack` when inventory shows missing configured nodes or
+when profile changes need to replace stale configured containers.

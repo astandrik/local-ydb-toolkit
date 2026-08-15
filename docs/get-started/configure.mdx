@@ -16,15 +16,23 @@ profiles. Store the real file outside the repository.
       "mode": "local",
       "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
       "tenantPath": "/local/example",
+      "dynamicNodeCount": 3,
       "ports": {}
     }
   }
 }
 ```
 
-The empty `ports` object selects the defaults: static gRPC `2136`, monitoring
+`dynamicNodeCount` is the total configured tenant-node count, including the
+primary dynamic node. It accepts `1..11` and defaults to `1` when omitted.
+
+The empty `ports` object selects base ports: static gRPC `2136`, monitoring
 `8765`, dynamic gRPC `2137`, dynamic monitoring `8766`, and dynamic interconnect
-`19002`.
+`19002`. Node 1 uses the dynamic base ports. Nodes 2..N add `index - 1` to each
+dynamic base port, so this three-node profile uses gRPC `2137..2139`, monitoring
+`8766..8768`, and interconnect `19002..19004`. Static IC port `19001` is
+reserved by the static node; every listener in the shared network namespace
+must remain unique.
 
 ## Select the configuration
 
@@ -42,6 +50,10 @@ directory.
 Use `local_ydb_bootstrap_root_database` for a plain `/local` database with one
 static node. Use `local_ydb_bootstrap` only when you need a CMS tenant such as
 `/local/example`, GraphShard, dump and restore, or dynamic-node behavior.
+Root-only bootstrap ignores `dynamicNodeCount`.
+
+See [Declarative dynamic-node topology](/workflows/dynamic-node-topology) for
+container naming, one-off scaling, drift reconciliation, and readiness checks.
 
 <Info>
   Prefer exact image patch tags. Do not mix static and dynamic nodes from
