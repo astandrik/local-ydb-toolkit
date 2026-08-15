@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   commandToShell,
   createContext,
@@ -35,6 +35,17 @@ class RecordingExecutor implements CommandExecutor {
       timedOut: false
     };
   }
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+async function withRunTimers<T>(operation: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  const pending = operation();
+  await vi.runAllTimersAsync();
+  return pending;
 }
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
@@ -115,6 +126,9 @@ function stubUpgradeExecutor(
     }
     if (command.includes("docker volume ls")) {
       return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+    }
+    if (command.includes("{{.RestartCount}}")) {
+      return { command, exitCode: 0, stdout: "container-id\ttrue\tfalse\t0", stderr: "", ok: true, timedOut: false };
     }
     if (command.includes("docker inspect")) {
       return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
@@ -368,11 +382,11 @@ describe("version operations", () => {
       const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
       stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0");
 
-      const response = await upgradeVersion(ctx, {
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
         confirm: true,
         version: "26.1.2.0",
         dumpName: "upgrade-smoke"
-      });
+      }));
       expect(response.executed).toBe(true);
       expect(response.targetImage).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
       expect(response.dumpName).toBe("upgrade-smoke");
@@ -422,11 +436,11 @@ describe("version operations", () => {
         nodePorts: [19002, 19003, 19004, 19005]
       });
 
-      const response = await upgradeVersion(ctx, {
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
         confirm: true,
         version: "26.1.2.0",
         dumpName: "upgrade-multi-node"
-      });
+      }));
 
       expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
       expect(response.imageVerification).toEqual({
@@ -474,11 +488,11 @@ describe("version operations", () => {
     const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
     stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0");
 
-    const response = await upgradeVersion(ctx, {
+    const response = await withRunTimers(() => upgradeVersion(ctx, {
       confirm: true,
       version: "26.1.2.0",
       dumpName: "upgrade-smoke"
-    });
+    }));
 
     expect(response.imageVerification).toEqual({
       expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
@@ -516,11 +530,11 @@ describe("version operations", () => {
         containerNames: ["ydb-dyn-example", "ydb-local"]
       });
 
-      const response = await upgradeVersion(ctx, {
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
         confirm: true,
         version: "26.1.2.0",
         dumpName: "upgrade-smoke"
-      });
+      }));
 
       expect(response.imageVerification).toEqual({
         expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
@@ -555,11 +569,11 @@ describe("version operations", () => {
         containerNames: ["ydb-dyn-example", "ydb-local"]
       });
 
-      const response = await upgradeVersion(ctx, {
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
         confirm: true,
         version: "26.1.2.0",
         dumpName: "upgrade-smoke"
-      });
+      }));
       expect(response.executed).toBe(true);
       expect(response.imageVerification).toBeUndefined();
       expect(response.profileImageUpdate).toMatchObject({
@@ -593,11 +607,11 @@ describe("version operations", () => {
       containerNames: ["ydb-dyn-example", "ydb-local"]
     });
 
-    const response = await upgradeVersion(ctx, {
+    const response = await withRunTimers(() => upgradeVersion(ctx, {
       confirm: true,
       version: "26.1.2.0",
       dumpName: "upgrade-smoke"
-    });
+    }));
 
     expect(response.imageVerification).toBeUndefined();
     expect(response.profileImageUpdate).toMatchObject({

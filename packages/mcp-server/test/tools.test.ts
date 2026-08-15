@@ -1074,6 +1074,15 @@ describe("mcp tools", () => {
     const addTool = localYdbTools.find((tool) => tool.name === "local_ydb_add_dynamic_nodes");
     const startIndexSchema = addTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;
     expect(startIndexSchema?.description).toContain("profile.dynamicNodeCount + 1");
+    expect(startIndexSchema?.description).toContain("must be greater than profile.dynamicNodeCount");
+    expect(addTool?.description).toContain("stable running exact Docker container");
+
+    const bootstrapTool = localYdbTools.find((tool) => tool.name === "local_ydb_bootstrap");
+    const restartTool = localYdbTools.find((tool) => tool.name === "local_ydb_restart_stack");
+    const authTool = localYdbTools.find((tool) => tool.name === "local_ydb_apply_auth_hardening");
+    expect(bootstrapTool?.description).toContain("stable by container ID and RestartCount across two checks");
+    expect(restartTool?.description).toContain("exact Docker container to be stably running plus registered by IC port");
+    expect(authTool?.description).toContain("even when no dynamic-node token file is configured");
 
     const removeTool = localYdbTools.find((tool) => tool.name === "local_ydb_remove_dynamic_nodes");
     const removeStartIndex = removeTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;

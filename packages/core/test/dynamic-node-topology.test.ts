@@ -46,6 +46,20 @@ describe("dynamic-node topology", () => {
     ]);
   });
 
+  it("rejects an explicit one-off range that overlaps configured nodes", () => {
+    expect(() => additionalDynamicNodePlans(profile(3), {
+      startIndex: 2,
+      grpcPortStart: 30_000,
+      monitoringPortStart: 30_001,
+      icPortStart: 30_002
+    })).toThrow(/startIndex.*greater than dynamicNodeCount.*3/);
+  });
+
+  it("accepts an explicit one-off range immediately after configured nodes", () => {
+    expect(additionalDynamicNodePlans(profile(1), { startIndex: 2 })).toHaveLength(1);
+    expect(additionalDynamicNodePlans(profile(3), { startIndex: 4 })).toHaveLength(1);
+  });
+
   it("rejects dynamic port overflow", () => {
     expect(() => configuredDynamicNodePlans(profile(11, { dynamicIc: 65530 }))).toThrow(/65536/);
   });
@@ -62,5 +76,15 @@ describe("dynamic-node topology", () => {
       staticGrpc: 2137,
       dynamicGrpc: 2137
     }))).toThrow(/static gRPC.*ydb-dyn-example gRPC.*2137/);
+  });
+
+  it("reserves the static node IC port in the shared network namespace", () => {
+    expect(() => configuredDynamicNodePlans(profile(2, {
+      dynamicIc: 19000
+    }))).toThrow(/static IC.*ydb-dyn-example-2 IC.*19001/);
+  });
+
+  it("accepts a dynamic IC range adjacent to the static IC port", () => {
+    expect(configuredDynamicNodePlans(profile(1, { dynamicIc: 19000 }))).toHaveLength(1);
   });
 });

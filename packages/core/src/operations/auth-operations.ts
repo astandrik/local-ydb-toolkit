@@ -42,12 +42,7 @@ export async function applyAuthHardening(
     bash("sleep 5"),
     ctx.profile.rootPasswordFile ? waitForAuthenticatedTenantStatusSpec(ctx) : createTenantSpec(ctx.profile)
   ];
-  const dynamicSpecs = ctx.profile.dynamicNodeAuthTokenFile
-    ? plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan))
-    : plans.map((plan) => bash(`docker restart ${shellQuote(plan.container)} 2>/dev/null || true`, {
-        timeoutMs: 60_000,
-        description: `Restart configured dynamic tenant node ${plan.container}`
-      }));
+  const dynamicSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan, "recreate"));
   const finalSpecs = ctx.profile.rootPasswordFile
     ? [waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Wait for authenticated tenant metadata")]
     : [];
@@ -80,21 +75,11 @@ export async function applyAuthHardening(
     return authHardeningResponse(ctx, summary, specs, rollback, verification, results, 0, plans.length);
   }
 
-  let completedNodes = 0;
-  if (ctx.profile.dynamicNodeAuthTokenFile) {
-    const topology = await startDynamicNodePlans(ctx, plans);
-    results.push(...topology.results);
-    completedNodes = topology.completedNodes;
-    if (completedNodes < plans.length) {
-      return authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length);
-    }
-  } else {
-    const dynamicResults = await runCommandSpecs(ctx, dynamicSpecs);
-    results.push(...dynamicResults);
-    completedNodes = dynamicResults.filter((result) => result.ok).length;
-    if (!completedAll(dynamicSpecs, dynamicResults)) {
-      return authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length);
-    }
+  const topology = await startDynamicNodePlans(ctx, plans, "recreate");
+  results.push(...topology.results);
+  const completedNodes = topology.completedNodes;
+  if (completedNodes < plans.length) {
+    return authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length);
   }
 
   results.push(...await runCommandSpecs(ctx, finalSpecs));

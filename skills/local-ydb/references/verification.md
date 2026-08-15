@@ -99,15 +99,16 @@ docker logs --tail 80 <dynamic-node-container>
 
 Treat a node as healthy only after all of these are true:
 
-- the container is `Up`, not `Restarting`
+- the exact container reports `Running=true` and `Restarting=false`
+- two consecutive samples retain the same Docker container ID and `RestartCount`
 - logs show `Successfully applied dynamic config from YAML`
 - logs show `serve as dynamic node`
-- authenticated `nodelist` includes the node ID and IC port
+- authenticated `nodelist` includes the expected IC port; this port match is not sufficient without the exact-container checks above
 - tenant metadata checks still pass
 
 For declarative topology verification, start with `local_ydb_inventory` and require `ok=true`. Build the expected container set from `dynamicContainer`, suffixes `-2..-dynamicNodeCount`, and any explicitly retained one-off suffixes above the count. Compare that exact set and each container's running/stopped state before interpreting restart or rebuild results.
 
-Do not validate a multi-node topology by node count alone. Derive the exact expected IC ports as `dynamicIc + index - 1`, verify every configured port in authenticated `nodelist`, and then run the tenant metadata read. For `dynamicNodeCount: 3` with base IC `19002`, the required configured ports are `19002`, `19003`, and `19004`.
+Do not validate a multi-node topology by node count alone. Reserve the static IC port `19001`, derive the exact expected dynamic IC ports as `dynamicIc + index - 1`, verify every configured container's stable Docker state plus its port in authenticated `nodelist`, and then run the tenant metadata read. For `dynamicNodeCount: 3` with base IC `19002`, the required configured ports are `19002`, `19003`, and `19004`.
 
 For removal, record configured container IDs before a default plan. With no suffix above `dynamicNodeCount`, require a `found 0` error and unchanged IDs. Explicit removal of a configured suffix is a drift fixture, not the default path. For failed restart verification, locate the first failed command/readiness result, then require a later recovery result for every unexpected container that was running at preflight; stopped unexpected containers must have no `docker start`, and no unexpected container may have a `docker rm` command.
 

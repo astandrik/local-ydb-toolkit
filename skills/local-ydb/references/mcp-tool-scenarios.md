@@ -74,10 +74,12 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 
 - `dynamicNodeCount` is the total configured tenant-node count, including primary, and defaults to `1`.
 - Configured node `1` uses `dynamicContainer`; nodes `2..N` use `dynamicContainer-<index>` and base ports plus `index - 1`.
-- Tenant bootstrap recreates configured containers in index order, even when a stale container is already running, and verifies each exact IC port.
-- Default `local_ydb_add_dynamic_nodes` starts at `dynamicNodeCount + 1`; higher suffixes are one-off runtime nodes.
+- Static IC port `19001` is reserved; all configured and one-off ports share the static node's network namespace and must not collide with it.
+- Tenant bootstrap recreates configured containers in index order, even when a stale container is already running. Readiness requires a stable running exact container plus IC registration; a matching nodelist port alone is insufficient.
+- Default `local_ydb_add_dynamic_nodes` starts at `dynamicNodeCount + 1`; an explicit `startIndex` must be greater than `dynamicNodeCount`, and higher suffixes are one-off runtime nodes.
 - Default `local_ydb_remove_dynamic_nodes` considers only suffixes above `dynamicNodeCount`; explicit selectors or `startIndex` can remove a configured suffix and create drift.
 - Restart reports missing configured and unexpected one-off containers, never removes unexpected containers, and attempts to restore every preflight-running unexpected container even when restart fails.
+- Auth hardening recreates and verifies every configured node in index order, including profiles without a dynamic-node token file.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
 
 ## Declarative Topology Acceptance Flow
@@ -670,6 +672,7 @@ Calls:
 ```json
 { "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "count": 2, "confirm": false } }
 { "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "count": 2, "confirm": true } }
+{ "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "startIndex": 2, "confirm": false } }
 { "tool": "local_ydb_nodes_check", "arguments": { "profile": "ghcr261-auth" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-auth" } }
 { "tool": "local_ydb_container_logs", "arguments": { "profile": "ghcr261-auth", "target": "dynamic", "lines": 80 } }
@@ -681,13 +684,14 @@ Expected:
 - default ports are derived from the profile:
   `2260/9069/19305` and `2261/9070/19306`
 - dynamic containers mount `/tmp/local-ydb-auth/dynamic-node-auth.pb` when auth is enabled
-- `confirm=true` starts one node, verifies its IC port appears in `nodelist`, then starts the next
+- `confirm=true` starts one node, verifies its exact container is stably running and its IC port appears in `nodelist`, then starts the next
+- explicit `startIndex: 2` is rejected before a mutating plan because configured indexes `1..3` cannot be used for one-off add; configured container IDs remain unchanged
 - `nodes_check` reports five dynamic nodes total: three configured nodes plus the two one-off nodes
 - tenant metadata remains reachable
 
 Avoid:
 
-- using `startIndex: 1`; that conflicts with the profile's main dynamic container
+- using any `startIndex <= 3`; configured indexes belong to the declarative topology
 - adding many nodes at once on a live auth stack without first checking logs and `nodelist`
 
 Rollback:

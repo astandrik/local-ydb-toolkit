@@ -41,6 +41,8 @@ import {
 } from "../src/index.js";
 import { ConfigSchema } from "../src/validation.js";
 
+const STABLE_DYNAMIC_CONTAINER_STATE = "container-id\ttrue\tfalse\t0";
+
 class RecordingExecutor implements CommandExecutor {
   readonly commands: string[] = [];
 
@@ -54,7 +56,7 @@ class RecordingExecutor implements CommandExecutor {
     return {
       command,
       exitCode: 0,
-      stdout: "",
+      stdout: command.includes("{{.RestartCount}}") ? STABLE_DYNAMIC_CONTAINER_STATE : "",
       stderr: "",
       ok: true,
       timedOut: false
@@ -65,6 +67,13 @@ class RecordingExecutor implements CommandExecutor {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+async function withRunTimers<T>(operation: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  const pending = operation();
+  await vi.runAllTimersAsync();
+  return pending;
+}
 
 function confirmDynamicPorts(ctx: ReturnType<typeof createContext>, ports: number[]): void {
   ctx.client.viewerGet = async (path) => path.includes("nodelist")
@@ -1066,7 +1075,7 @@ describe("mutating operations", () => {
       return {
         command,
         exitCode: 0,
-        stdout: "",
+        stdout: command.includes("{{.RestartCount}}") ? STABLE_DYNAMIC_CONTAINER_STATE : "",
         stderr: command.includes("/viewer/json/capabilities") ? "curl probe failed" : "",
         ok: true,
         timedOut: false
@@ -1074,7 +1083,7 @@ describe("mutating operations", () => {
     };
     confirmDynamicPorts(ctx, [19002]);
 
-    const response = await bootstrap(ctx, { confirm: true });
+    const response = await withRunTimers(() => bootstrap(ctx, { confirm: true }));
     expect(response.executed).toBe(true);
     expect(response.results?.at(-1)?.command).toContain("|| true");
   });
@@ -1207,12 +1216,102 @@ describe("mutating operations", () => {
     }));
     confirmDynamicPorts(ctx, [19002, 19003, 19004]);
 
-    const response = await bootstrap(ctx, { confirm: true });
+    const response = await withRunTimers(() => bootstrap(ctx, { confirm: true }));
     const commands = executor.commands.join("\n");
 
     expect(response.summary).toContain("verified 3/3 configured dynamic nodes");
     expect(commands.indexOf("--name ydb-dyn-example ")).toBeLessThan(commands.indexOf("--name ydb-dyn-example-2 "));
     expect(commands.indexOf("--name ydb-dyn-example-2 ")).toBeLessThan(commands.indexOf("--name ydb-dyn-example-3 "));
+  });
+
+  it("does not accept a matching IC port from a restarting configured container", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 2 } }
+    }));
+    confirmDynamicPorts(ctx, [19002, 19003]);
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("{{.State.Running}}") && command.includes("{{.RestartCount}}")) {
+        const restarting = command.includes("ydb-dyn-example-2");
+        return {
+          command,
+          exitCode: 0,
+          stdout: `container-id\ttrue\t${restarting}\t4`,
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await withRunTimers(() => bootstrap(ctx, { confirm: true }));
+
+    expect(response.summary).toContain("verified 1/2 configured dynamic nodes");
+    expect(response.results?.at(-1)).toMatchObject({ ok: false });
+    expect(response.results?.at(-1)?.stderr).toContain("matching IC port does not confirm the exact container");
+  });
+
+  it("does not accept a matching IC port when the configured container is missing", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    confirmDynamicPorts(ctx, [19002]);
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("{{.RestartCount}}")) {
+        return { command, exitCode: 1, stdout: "", stderr: "No such container", ok: false, timedOut: false };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await withRunTimers(() => bootstrap(ctx, { confirm: true }));
+
+    expect(response.summary).toContain("verified 0/1 configured dynamic nodes");
+    expect(response.results?.at(-1)?.stderr).toContain("is missing or could not be inspected");
+    expect(response.results?.at(-1)?.stderr).toContain("matching IC port does not confirm the exact container");
+  });
+
+  it("accepts a healthy exact container after two stable samples", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    confirmDynamicPorts(ctx, [19002]);
+
+    const response = await withRunTimers(() => bootstrap(ctx, { confirm: true }));
+
+    expect(response.summary).toContain("verified 1/1 configured dynamic nodes");
+    expect(executor.commands.filter((command) => command.includes("{{.RestartCount}}"))).toHaveLength(2);
+  });
+
+  it("requires two stable exact-container samples after RestartCount changes", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    confirmDynamicPorts(ctx, [19002]);
+    let inspectSamples = 0;
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("{{.State.Running}}") && command.includes("{{.RestartCount}}")) {
+        inspectSamples += 1;
+        const restartCount = inspectSamples === 1 ? 0 : 1;
+        return {
+          command,
+          exitCode: 0,
+          stdout: `container-id\ttrue\tfalse\t${restartCount}`,
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+    };
+
+    const response = await withRunTimers(() => bootstrap(ctx, { confirm: true }));
+
+    expect(response.summary).toContain("verified 1/1 configured dynamic nodes");
+    expect(inspectSamples).toBe(3);
   });
 
   it("plans unconditional recreation for every configured dynamic node", async () => {
@@ -1238,7 +1337,7 @@ describe("mutating operations", () => {
     }));
     confirmDynamicPorts(ctx, [19002, 19003, 19004]);
 
-    const response = await bootstrap(ctx, { confirm: true });
+    const response = await withRunTimers(() => bootstrap(ctx, { confirm: true }));
     const dynamicCommands = executor.commands.filter((command) => command.includes("--name ydb-dyn-example"));
 
     expect(response.summary).toContain("verified 3/3 configured dynamic nodes");
@@ -1260,10 +1359,11 @@ describe("mutating operations", () => {
       const command = executor.display(profile, spec);
       executor.commands.push(command);
       const ok = !command.includes("--name ydb-dyn-example-2 ");
-      return { command, exitCode: ok ? 0 : 1, stdout: "", stderr: ok ? "" : "node 2 failed", ok, timedOut: false };
+      const stdout = command.includes("{{.RestartCount}}") ? STABLE_DYNAMIC_CONTAINER_STATE : "";
+      return { command, exitCode: ok ? 0 : 1, stdout, stderr: ok ? "" : "node 2 failed", ok, timedOut: false };
     };
 
-    const response = await bootstrap(ctx, { confirm: true });
+    const response = await withRunTimers(() => bootstrap(ctx, { confirm: true }));
 
     expect(response.summary).toContain("verified 1/3 configured dynamic nodes");
     expect(response.results?.at(-1)?.stderr).toBe("node 2 failed");
@@ -1628,6 +1728,9 @@ describe("mutating operations", () => {
           timedOut: false
         };
       }
+      if (command.includes("{{.RestartCount}}")) {
+        return { command, exitCode: 0, stdout: STABLE_DYNAMIC_CONTAINER_STATE, stderr: "", ok: true, timedOut: false };
+      }
       if (command.startsWith("docker inspect ")) {
         return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
       }
@@ -1637,7 +1740,7 @@ describe("mutating operations", () => {
       return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
     };
 
-    const response = await restartStack(ctx, { confirm: true });
+    const response = await withRunTimers(() => restartStack(ctx, { confirm: true }));
     const commands = executor.commands.join("\n");
     const configuredStart = executor.commands.findIndex((command) => command.includes("--name ydb-dyn-example "));
     const unexpectedStart = executor.commands.findIndex((command) => command.includes("docker start ydb-dyn-example-2"));
@@ -1691,7 +1794,7 @@ describe("mutating operations", () => {
     vi.useFakeTimers();
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
-    ctx.client.viewerGet = async () => ({ status: "ok", data: [] });
+    confirmDynamicPorts(ctx, [19002]);
     executor.run = async (profile, spec) => {
       const command = executor.display(profile, spec);
       executor.commands.push(command);
@@ -1709,6 +1812,16 @@ describe("mutating operations", () => {
           timedOut: false
         };
       }
+      if (command.includes("{{.RestartCount}}")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: "container-id\ttrue\ttrue\t1",
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
       return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
     };
 
@@ -1719,6 +1832,7 @@ describe("mutating operations", () => {
     const recoveryIndex = response.results?.findIndex((result) => result.command.includes("docker start ydb-dyn-example-2")) ?? -1;
 
     expect(response.results?.[failureIndex]).toMatchObject({ ok: false });
+    expect(response.results?.[failureIndex]?.stderr).toContain("matching IC port does not confirm the exact container");
     expect(recoveryIndex).toBeGreaterThan(failureIndex);
   });
 
@@ -1748,10 +1862,11 @@ describe("mutating operations", () => {
       if (command.includes("docker start ydb-dyn-example-2")) {
         return { command, exitCode: 1, stdout: "", stderr: "first recovery failed", ok: false, timedOut: false };
       }
-      return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+      const stdout = command.includes("{{.RestartCount}}") ? STABLE_DYNAMIC_CONTAINER_STATE : "";
+      return { command, exitCode: 0, stdout, stderr: "", ok: true, timedOut: false };
     };
 
-    const response = await restartStack(ctx, { confirm: true });
+    const response = await withRunTimers(() => restartStack(ctx, { confirm: true }));
     const recoveryCommands = response.results
       ?.filter((result) => result.command.includes("docker start ydb-dyn-example-"));
 
@@ -2377,6 +2492,17 @@ describe("mutating operations", () => {
         };
       }
 
+      if (command.includes("{{.RestartCount}}")) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: STABLE_DYNAMIC_CONTAINER_STATE,
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+
       if (command.includes("docker inspect")) {
         return {
           command,
@@ -2409,7 +2535,7 @@ describe("mutating operations", () => {
       };
     };
 
-    const response = await reduceStorageGroups(ctx, { confirm: true, dumpName: "shrink-smoke" });
+    const response = await withRunTimers(() => reduceStorageGroups(ctx, { confirm: true, dumpName: "shrink-smoke" }));
     expect(response.executed).toBe(true);
     expect(response.dumpName).toBe("shrink-smoke");
     expect(response.authReapplyPlanned).toBe(true);
@@ -2849,6 +2975,49 @@ describe("mutating operations", () => {
     expect(plan).toContain("--name ydb-dyn-example-2 ");
     expect(plan).toContain("--name ydb-dyn-example-3 ");
     expect(response.verification.join("\n")).toContain("19002, 19003, 19004");
+  });
+
+  it("recreates every configured dynamic node during no-token auth hardening", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.yaml",
+          dynamicNodeCount: 3
+        }
+      }
+    }));
+
+    const response = await applyAuthHardening(ctx, {});
+    const dynamicPlan = response.plannedCommands
+      .filter((command) => command.includes("ydb-dyn-example"))
+      .join("\n");
+
+    expect(dynamicPlan).not.toContain("docker restart ydb-dyn-example");
+    expect(dynamicPlan).toContain("docker rm -f ydb-dyn-example");
+    expect(dynamicPlan).toContain("--name ydb-dyn-example ");
+    expect(dynamicPlan).toContain("--name ydb-dyn-example-2 ");
+    expect(dynamicPlan).toContain("--name ydb-dyn-example-3 ");
+  });
+
+  it("restores a missing configured node during confirmed no-token auth hardening", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb/config.yaml",
+          dynamicNodeCount: 2
+        }
+      }
+    }));
+    confirmDynamicPorts(ctx, [19002, 19003]);
+
+    const response = await withRunTimers(() => applyAuthHardening(ctx, { confirm: true }));
+
+    expect(response.summary).toContain("restored 2/2 configured dynamic nodes");
+    expect(executor.commands.some((command) => command.includes("docker rm -f ydb-dyn-example-2"))).toBe(true);
+    expect(executor.commands.some((command) => command.includes("--name ydb-dyn-example-2 "))).toBe(true);
+    expect(executor.commands.join("\n")).not.toContain("docker restart ydb-dyn-example");
   });
 
   it("adds an authenticated tenant metadata wait for auth-hardening profiles with rootPasswordFile", async () => {

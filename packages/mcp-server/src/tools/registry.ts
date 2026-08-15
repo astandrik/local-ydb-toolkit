@@ -440,7 +440,7 @@ export const toolDefinitions = [
     instructionOrder: 2,
     name: "local_ydb_bootstrap",
     description:
-      "Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and all dynamic nodes declared by profile.dynamicNodeCount. Nodes start in index order and each IC port must appear in viewer/json nodelist before the next node starts. An existing running or stopped static container is reused only after the full profile compatibility check, including GraphShard and static/dynamic gRPC bindings. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
+      "Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and all dynamic nodes declared by profile.dynamicNodeCount. Nodes start in index order; before the next node starts, readiness requires the exact Docker container to be running, not restarting, stable by container ID and RestartCount across two checks, and registered by its IC port in viewer/json nodelist. An existing running or stopped static container is reused only after the full profile compatibility check, including GraphShard and static/dynamic gRPC bindings. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -487,7 +487,7 @@ export const toolDefinitions = [
     group: "dynamic nodes",
     name: "local_ydb_add_dynamic_nodes",
     description:
-      "Add one-off dynamic tenant nodes beyond the declarative profile.dynamicNodeCount topology, one at a time. By default the first suffix is dynamicNodeCount + 1; explicit startIndex and port overrides remain available. Without confirm=true it returns container/port plans; with confirm=true it starts each node, verifies its IC port appears in viewer/json nodelist, and checks tenant metadata.",
+      "Add one-off dynamic tenant nodes beyond the declarative profile.dynamicNodeCount topology, one at a time. By default the first suffix is dynamicNodeCount + 1; an explicit startIndex must be greater than dynamicNodeCount, and port overrides remain available. Without confirm=true it returns container/port plans; with confirm=true each node must have a stable running exact Docker container and its IC port in viewer/json nodelist before tenant metadata is checked.",
     inputSchema: addDynamicNodesSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(AddDynamicNodesArgs, (context, parsed) =>
@@ -510,7 +510,7 @@ export const toolDefinitions = [
     instructionOrder: 5,
     name: "local_ydb_restart_stack",
     description:
-      "Reconcile and restart the selected profile after an inventory preflight: report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, recreate configured nodes in index order with nodelist checks, and restore only previously running unexpected containers without removing them. Use after config changes or runtime drift; without confirm=true this returns the restart plan only.",
+      "Reconcile and restart the selected profile after an inventory preflight: report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, recreate configured nodes in index order, require each exact Docker container to be stably running plus registered by IC port, and restore only previously running unexpected containers without removing them. Use after config changes or runtime drift; without confirm=true this returns the restart plan only.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -587,7 +587,7 @@ export const toolDefinitions = [
     group: "auth",
     name: "local_ydb_apply_auth_hardening",
     description:
-      "Apply a reviewed hardened YDB config file and restart local-ydb so auth settings take effect. Use only after preparing and reviewing the config; without confirm=true this returns the apply/restart plan only.",
+      "Apply a reviewed hardened YDB config file, restart the static node, then recreate and verify every configured dynamic node in index order even when no dynamic-node token file is configured. Exact-container running stability and IC registration must both pass before metadata verification. Use only after preparing and reviewing the config; without confirm=true this returns the apply/recreate plan only.",
     inputSchema: authHardeningSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(AuthHardeningArgs, (context, parsed) =>

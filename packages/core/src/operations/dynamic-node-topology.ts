@@ -1,4 +1,4 @@
-import type { CommandResult, DockerContainerSummary } from "../api-client.js";
+import { bash, shellQuote, type CommandResult, type DockerContainerSummary } from "../api-client.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { nodesCheck } from "./checks.js";
 import { dynamicNodeStartSpecs } from "./commands.js";
@@ -20,6 +20,13 @@ export interface DynamicTopologyDrift {
   missing: string[];
   unexpected: DockerContainerSummary[];
 }
+
+interface DynamicContainerSample {
+  id: string;
+  restartCount: number;
+}
+
+const STATIC_IC_PORT = 19_001;
 
 export function dynamicNodePlan(profile: ResolvedLocalYdbProfile, index: number): DynamicNodePlan {
   assertPositiveInteger("dynamic node index", index);
@@ -52,8 +59,8 @@ export function additionalDynamicNodePlans(
   if (count > 10) {
     throw new Error("count must be 10 or less");
   }
-  if (startIndex < 2) {
-    throw new Error("startIndex must be 2 or greater to avoid the profile dynamicContainer");
+  if (startIndex <= profile.dynamicNodeCount) {
+    throw new Error(`startIndex must be greater than dynamicNodeCount (${profile.dynamicNodeCount}) for one-off nodes`);
   }
 
   const grpcPortStart = options.grpcPortStart ?? profile.ports.dynamicGrpc + startIndex - 1;
@@ -68,10 +75,7 @@ export function additionalDynamicNodePlans(
   }));
   plans.forEach(validatePlanPorts);
 
-  const replacedIndexes = new Set(plans.map((plan) => plan.index));
-  const configuredPlans = configuredDynamicNodePlans(profile)
-    .filter((plan) => !replacedIndexes.has(plan.index));
-  validateSharedNetworkPorts(profile, [...configuredPlans, ...plans]);
+  validateSharedNetworkPorts(profile, [...configuredDynamicNodePlans(profile), ...plans]);
   return plans;
 }
 
@@ -133,18 +137,56 @@ export async function waitForDynamicNodePort(
 ): Promise<DynamicNodeCheck> {
   let observedPorts: number[] = [];
   let error: string | undefined;
+  let previousSample: DynamicContainerSample | undefined;
+  const containerIdentityWarning = "A matching IC port does not confirm the exact container state.";
   for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const container = await inspectDynamicContainer(ctx, plan.container);
     const check = await nodesCheck(ctx);
     observedPorts = observedNodePorts(check.nodes);
-    error = check.error;
-    if (observedPorts.includes(plan.icPort)) {
-      return { container: plan.container, icPort: plan.icPort, ok: true, attempts: attempt, observedPorts };
+    const portRegistered = observedPorts.includes(plan.icPort);
+    if (container.sample && portRegistered) {
+      if (previousSample?.id === container.sample.id && previousSample.restartCount === container.sample.restartCount) {
+        return { container: plan.container, icPort: plan.icPort, ok: true, attempts: attempt, observedPorts };
+      }
+      previousSample = container.sample;
+      error = `Exact container ${plan.container} has not yet remained stable for two consecutive checks. ${containerIdentityWarning}`;
+    } else {
+      previousSample = undefined;
+      const failure = container.error
+        ?? check.error
+        ?? `Configured IC port ${plan.icPort} did not appear in viewer/json/nodelist.`;
+      error = `${failure} ${containerIdentityWarning}`;
     }
     if (attempt < 5) {
       await delay(2_000);
     }
   }
   return { container: plan.container, icPort: plan.icPort, ok: false, attempts: 5, observedPorts, error };
+}
+
+async function inspectDynamicContainer(
+  ctx: ToolkitContext,
+  container: string
+): Promise<{ sample?: DynamicContainerSample; error?: string }> {
+  const result = await ctx.client.run(bash(
+    `docker inspect --type container --format '{{.Id}}\t{{.State.Running}}\t{{.State.Restarting}}\t{{.RestartCount}}' ${shellQuote(container)}`,
+    {
+      allowFailure: true,
+      description: `Inspect exact dynamic tenant node ${container}`
+    }
+  ));
+  if (!result.ok) {
+    return { error: `Exact container ${container} is missing or could not be inspected.` };
+  }
+  const [id, running, restarting, restartCountText] = result.stdout.trim().split("\t");
+  const restartCount = Number(restartCountText);
+  if (!id || !Number.isSafeInteger(restartCount) || restartCount < 0 || !["true", "false"].includes(running) || !["true", "false"].includes(restarting)) {
+    return { error: `Exact container ${container} returned an invalid Docker state sample.` };
+  }
+  if (running !== "true" || restarting !== "false") {
+    return { error: `Exact container ${container} is not stably running (Running=${running}, Restarting=${restarting}).` };
+  }
+  return { sample: { id, restartCount } };
 }
 
 function validatePlanPorts(plan: DynamicNodePlan): void {
@@ -155,6 +197,7 @@ function validateSharedNetworkPorts(profile: ResolvedLocalYdbProfile, plans: Dyn
   const bindings = [
     { label: "static gRPC", port: profile.ports.staticGrpc },
     { label: "static monitoring", port: 8765 },
+    { label: "static IC", port: STATIC_IC_PORT },
     ...plans.flatMap((plan) => [
       { label: `${plan.container} gRPC`, port: plan.grpcPort },
       { label: `${plan.container} monitoring`, port: plan.monitoringPort },

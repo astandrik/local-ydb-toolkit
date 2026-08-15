@@ -845,15 +845,34 @@ async function verifyDeclarativeTopologyLifecycle(client) {
     topologyDynamicIcPort + 1,
     topologyDynamicIcPort + 2,
   ];
-  const staleNodeContainer = `${topologyDynamicContainer}-2`;
-  const staleNodePorts = {
-    grpcPortStart: topologyDynamicGrpcPort + 4,
-    monitoringPortStart: topologyDynamicMonitoringPort + 4,
-    icPortStart: topologyDynamicIcPort + 4,
+  const collisionPorts = {
+    grpcPortStart: topologyDynamicGrpcPort + 1,
+    monitoringPortStart: topologyDynamicMonitoringPort + 1,
+    icPortStart: topologyDynamicIcPort + 1,
   };
   const topologyProfile = config.profiles[topologyProfileName];
   try {
     try {
+      topologyProfile.dynamicNodeCount = 2;
+      topologyProfile.ports.dynamicIc = 19_000;
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      const staticIcCollision = await client.callTool(
+        {
+          name: "local_ydb_bootstrap",
+          arguments: { profile: topologyProfileName },
+        },
+        undefined,
+        { timeout: 180_000 },
+      );
+      assert(staticIcCollision.isError === true, "topology using static IC port 19001 unexpectedly produced a bootstrap plan.");
+      assert(
+        toolText(staticIcCollision).includes("static IC") && toolText(staticIcCollision).includes("19001"),
+        "static IC collision did not identify the reserved port.",
+      );
+      topologyProfile.dynamicNodeCount = 1;
+      topologyProfile.ports.dynamicIc = topologyDynamicIcPort;
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
       const initialBootstrapPlan = await callTool(client, "local_ydb_bootstrap", {
         profile: topologyProfileName,
       });
@@ -863,7 +882,7 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         "initial declarative bootstrap plan omitted the primary dynamic node.",
       );
       assert(
-        !plannedCommandsText(initialBootstrapPlan).includes(`--name ${staleNodeContainer} `),
+        !plannedCommandsText(initialBootstrapPlan).includes(`--name ${topologyDynamicContainer}-2 `),
         "one-node declarative bootstrap plan included a suffix node.",
       );
 
@@ -874,20 +893,21 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       assertSuccessfulMutation(initialBootstrapResult, "one-node declarative bootstrap");
       await assertConfiguredTopology(client, [topologyDynamicContainer], [topologyDynamicIcPort]);
 
-      const staleAddResult = await callTool(client, "local_ydb_add_dynamic_nodes", {
+      const collisionAddResult = await callTool(client, "local_ydb_add_dynamic_nodes", {
         profile: topologyProfileName,
-        startIndex: 2,
-        ...staleNodePorts,
+        startIndex: 4,
+        ...collisionPorts,
         confirm: true,
       });
-      assertSuccessfulMutation(staleAddResult, "stale suffix-node fixture add");
-      const staleInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
-      const staleNode = findContainer(staleInventory, staleNodeContainer);
-      assert(staleNode?.id, "stale suffix-node fixture ID was not available.");
-      const staleNodes = await callTool(client, "local_ydb_nodes_check", { profile: topologyProfileName });
+      assertSuccessfulMutation(collisionAddResult, "matching-port collision fixture add");
+      const collisionInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      const collisionNode = findContainer(collisionInventory, oneOffContainer);
+      assert(collisionNode?.id, "matching-port collision fixture ID was not available.");
+      assert(collisionNode.state === "running", "matching-port collision fixture was not running.");
+      const collisionNodes = await callTool(client, "local_ydb_nodes_check", { profile: topologyProfileName });
       assert(
-        nodePorts(staleNodes).includes(staleNodePorts.icPortStart),
-        "stale suffix-node fixture IC port was not registered.",
+        nodePorts(collisionNodes).includes(collisionPorts.icPortStart),
+        "matching-port collision fixture IC port was not registered.",
       );
 
       topologyProfile.dynamicNodeCount = 3;
@@ -896,32 +916,77 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       const bootstrapPlan = await callTool(client, "local_ydb_bootstrap", {
         profile: topologyProfileName,
       });
-      const staleNodeRecreation = bootstrapPlan.plannedCommands?.find((command) => command.includes(`--name ${staleNodeContainer} `));
-      assert(staleNodeRecreation, "three-node bootstrap plan omitted suffix node 2.");
-      assert(staleNodeRecreation.includes(`docker rm -f ${staleNodeContainer}`), "bootstrap did not plan to remove stale suffix node 2.");
-      assert(!staleNodeRecreation.includes(".State.Running"), "bootstrap retained a running-container short circuit for suffix node 2.");
+      const nodeTwoRecreation = bootstrapPlan.plannedCommands?.find((command) => command.includes(`--name ${topologyDynamicContainer}-2 `));
+      assert(nodeTwoRecreation, "three-node bootstrap plan omitted suffix node 2.");
+      assert(nodeTwoRecreation.includes(`docker rm -f ${topologyDynamicContainer}-2`), "bootstrap did not plan to recreate suffix node 2.");
+      assert(!nodeTwoRecreation.includes(".State.Running"), "bootstrap retained a running-container short circuit for suffix node 2.");
+
+      const collisionBootstrap = await callTool(client, "local_ydb_bootstrap", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      const collisionFailureIndex = collisionBootstrap.results?.findIndex((result) => result.ok === false) ?? -1;
+      assert(collisionFailureIndex >= 0, "matching-port collision bootstrap unexpectedly succeeded.");
+      assert(
+        collisionBootstrap.results?.[collisionFailureIndex]?.stderr?.includes("matching IC port does not confirm the exact container"),
+        "matching-port collision did not fail exact-container readiness.",
+      );
+      assert(
+        !collisionBootstrap.results?.some((result) => result.command?.includes(`--name ${topologyDynamicContainer}-3 `)),
+        "bootstrap continued to configured node 3 after exact-container readiness failed.",
+      );
+      assert(
+        !collisionBootstrap.results?.some((result) => result.command?.includes("scheme ls /local/declarative-topology")),
+        "bootstrap checked tenant metadata after exact-container readiness failed.",
+      );
+      const afterCollisionBootstrap = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      assert(findContainer(afterCollisionBootstrap, oneOffContainer)?.id === collisionNode.id, "failed bootstrap changed the collision fixture identity.");
+      assert(findContainer(afterCollisionBootstrap, oneOffContainer)?.state === "running", "failed bootstrap stopped the collision fixture.");
+
+      const removeCollision = await runCommand("docker", ["rm", "-f", oneOffContainer]);
+      assert(removeCollision.exitCode === 0, `failed to remove matching-port collision fixture: ${removeCollision.stderr || removeCollision.stdout}`);
 
       const bootstrapResult = await callTool(client, "local_ydb_bootstrap", {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(bootstrapResult, "three-node declarative bootstrap");
+      assertSuccessfulMutation(bootstrapResult, "three-node declarative bootstrap after collision cleanup");
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
       const recreatedInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
-      assert(
-        findContainer(recreatedInventory, staleNodeContainer)?.id !== staleNode.id,
-        "bootstrap did not replace the stale suffix-node container.",
+
+      const configuredIdsBeforeRejectedAdd = configuredContainers.map((container) => findContainer(recreatedInventory, container)?.id);
+      const overlappingAdd = await client.callTool(
+        {
+          name: "local_ydb_add_dynamic_nodes",
+          arguments: { profile: topologyProfileName, startIndex: 2 },
+        },
+        undefined,
+        { timeout: 180_000 },
       );
-      for (let attempt = 0; attempt < 10; attempt += 1) {
-        const nodes = await callTool(client, "local_ydb_nodes_check", { profile: topologyProfileName });
-        if (!nodePorts(nodes).includes(staleNodePorts.icPortStart)) {
-          break;
-        }
-        if (attempt === 9) {
-          throw new Error("stale suffix-node IC port remained registered after bootstrap recreation.");
-        }
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_000));
+      assert(overlappingAdd.isError === true, "one-off add accepted an index inside the configured topology.");
+      assert(
+        toolText(overlappingAdd).includes("startIndex must be greater than dynamicNodeCount (3)"),
+        "configured-index add rejection did not report the dynamicNodeCount boundary.",
+      );
+      const afterRejectedAdd = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      assert(
+        JSON.stringify(configuredContainers.map((container) => findContainer(afterRejectedAdd, container)?.id)) === JSON.stringify(configuredIdsBeforeRejectedAdd),
+        "rejected configured-index add changed configured container identities.",
+      );
+
+      const noTokenAuthPlan = await callTool(client, "local_ydb_apply_auth_hardening", {
+        profile: topologyProfileName,
+        configHostPath: join(tempDir, "declarative-no-token-auth.yaml"),
+      });
+      const noTokenAuthCommands = plannedCommandsText(noTokenAuthPlan);
+      for (const container of configuredContainers) {
+        assert(noTokenAuthCommands.includes(`docker rm -f ${container}`), `no-token auth plan did not recreate ${container}.`);
+        assert(noTokenAuthCommands.includes(`--name ${container} `), `no-token auth plan did not run ${container}.`);
       }
+      assert(
+        !noTokenAuthCommands.includes(`docker restart ${topologyDynamicContainer}`),
+        "no-token auth plan retained the dynamic docker restart shortcut.",
+      );
 
       const configuredIdsBeforeDefaultRemove = configuredContainers.map((container) => findContainer(recreatedInventory, container)?.id);
       const defaultRemoveResult = await client.callTool(

@@ -144,8 +144,11 @@ describe("repository skill consistency", () => {
     const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
     const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
 
-    expect(managedBlock(rootScenarios, "DECLARATIVE TOPOLOGY CONTRACT"))
-      .toBe(managedBlock(skillScenarios, "DECLARATIVE TOPOLOGY CONTRACT"));
+    const rootContract = managedBlock(rootScenarios, "DECLARATIVE TOPOLOGY CONTRACT");
+    expect(rootContract).toBe(managedBlock(skillScenarios, "DECLARATIVE TOPOLOGY CONTRACT"));
+    expect(rootContract).toContain("Static IC port `19001` is reserved");
+    expect(rootContract).toContain("matching nodelist port alone is insufficient");
+    expect(rootContract).toContain("without a dynamic-node token file");
   });
 
   it("keeps dynamic-node scenarios 11 and 12 identical and topology-aware", () => {
@@ -161,6 +164,8 @@ describe("repository skill consistency", () => {
     expect(rootSection).toContain("2261/9070/19306");
     expect(rootSection).toContain("five dynamic nodes total");
     expect(rootSection).toContain("docker rm -f ydb-dyn-example-ghcr261-4 ydb-dyn-example-ghcr261-5");
+    expect(rootSection).toContain("explicit `startIndex: 2` is rejected before a mutating plan");
+    expect(rootSection).toContain("exact container is stably running");
     expect(rootSection).toContain("default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`");
     expect(rootSection).toContain("Configured suffix `-2` is removable only through an explicit");
     expect(rootSection).not.toContain("docker rm -f ydb-dyn-example-ghcr261-2 ydb-dyn-example-ghcr261-3");
