@@ -510,7 +510,7 @@ export const toolDefinitions = [
     instructionOrder: 5,
     name: "local_ydb_restart_stack",
     description:
-      "Reconcile and restart the selected profile after an inventory preflight: report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, unconditionally recreate every configured node in index order including containers observed restarting, require each exact Docker container to be stably running plus registered by IC port, and restore only previously running unexpected containers without removing them. Use after config changes or runtime drift; without confirm=true this returns the restart plan only.",
+      "Reconcile and restart the selected profile after inventory and a full check-only static compatibility preflight. Before stopping any container, require the existing static container to match the profile image, network, data mount, environment, restart policy, healthcheck, and exact loopback bindings for static gRPC, monitoring, and every configured dynamic gRPC port; configured binding changes require destroy followed by bootstrap. Then report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, unconditionally recreate every configured node in index order including containers observed restarting, require each exact Docker container to be stably running plus registered by IC port, and restore only previously running unexpected containers without removing them. Without confirm=true this returns the restart plan only.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(MutatingArgs, (context, parsed) =>

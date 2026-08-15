@@ -1694,10 +1694,74 @@ describe("mutating operations", () => {
     const response = await restartStack(ctx, {});
     expect(response.executed).toBe(false);
     const tenantCommandIndex = response.plannedCommands.findIndex((command) => command.includes("admin database /local/example"));
-    const dynamicCommandIndex = response.plannedCommands.findIndex((command) => command.includes("docker rm -f <redacted>") || command.includes("YDB_GRPC_ENABLE_TLS=0"));
+    const dynamicCommandIndex = response.plannedCommands.findIndex((command) => (
+      command.includes("docker rm -f") && command.includes("--name ydb-dyn-example ")
+    ));
     expect(tenantCommandIndex).toBeGreaterThan(-1);
     expect(dynamicCommandIndex).toBeGreaterThan(tenantCommandIndex);
     expect(response.plannedCommands[tenantCommandIndex]).toContain("SCHEME_ERROR|No database found");
+  });
+
+  it("checks static compatibility before planning any restart mutation", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+
+    const response = await restartStack(ctx, {});
+    const compatibilityIndex = response.plannedCommands.findIndex((command) => (
+      command.includes("HostConfig.PortBindings")
+      && command.includes("does not match profile published ports")
+    ));
+    const firstMutationIndex = response.plannedCommands.findIndex((command) => (
+      command.includes("docker stop ")
+    ));
+
+    expect(compatibilityIndex).toBeGreaterThanOrEqual(0);
+    expect(compatibilityIndex).toBeLessThan(firstMutationIndex);
+  });
+
+  it("rejects incompatible static bindings before mutating restart containers", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("does not match profile published ports")) {
+        return commandResult(command, {
+          exitCode: 1,
+          stderr: "Existing static container ydb-local does not match profile published ports.",
+          ok: false
+        });
+      }
+      if (command.includes("docker ps -a --format")) {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local","State":"running","ID":"static-id"}',
+            '{"Names":"ydb-dyn-example","State":"running","ID":"primary-id"}',
+            '{"Names":"ydb-dyn-example-4","State":"running","ID":"one-off-id"}'
+          ].join("\n")
+        });
+      }
+      if (command.includes("docker rm -f ydb-dyn-example")) {
+        return commandResult(command, { exitCode: 1, stderr: "mutation reached", ok: false });
+      }
+      return commandResult(command);
+    };
+
+    const response = await restartStack(ctx, { confirm: true });
+    const mutationCommands = executor.commands.filter((command) => (
+      !command.includes("does not match profile published ports")
+    ));
+
+    expect(response.results?.at(-1)?.stderr).toContain("does not match profile published ports");
+    expect(mutationCommands.some((command) => (
+      command.includes("docker stop ")
+      || command.includes("docker start ")
+      || command.includes("docker rm -f ")
+    ))).toBe(false);
   });
 
   it("reports restart drift and preserves unexpected container state without removing it", async () => {

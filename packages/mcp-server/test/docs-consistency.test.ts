@@ -158,9 +158,25 @@ describe("repository skill consistency", () => {
     expect(rootContract).toContain("Static IC port `19001` is reserved");
     expect(rootContract).toContain("every configured dynamic gRPC port on loopback");
     expect(rootContract).toContain("matching nodelist port alone is insufficient");
+    expect(rootContract).toContain("Before any restart mutation");
+    expect(rootContract).toContain("requires destroy/bootstrap");
     expect(rootContract).toContain("including containers observed restarting");
     expect(rootContract).toContain("restores configured nodes through restart or bootstrap");
     expect(rootContract).toContain("without a dynamic-node token file");
+  });
+
+  it("keeps the declarative topology acceptance flow identical", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootFlow = sectionRange(rootScenarios, "## Declarative Topology Acceptance Flow", "<!-- BEGIN MANAGED SQL SCENARIOS -->");
+    const skillFlow = sectionRange(skillScenarios, "## Declarative Topology Acceptance Flow", "<!-- BEGIN MANAGED SQL SCENARIOS -->");
+
+    expect(rootFlow).toBe(skillFlow);
+    expect(rootFlow).toContain("Bootstrap with `dynamicNodeCount: 1`");
+    expect(rootFlow).toContain("Change the same profile to `dynamicNodeCount: 3`");
+    expect(rootFlow).toContain("full static compatibility check before every mutation");
+    expect(rootFlow).toContain("without changing saved IDs/states or creating `-2`/`-3`");
+    expect(rootFlow).toContain("tenant bootstrap must reject the same shared compatibility contract");
   });
 
   it("keeps dynamic-node scenarios 11 and 12 identical and topology-aware", () => {
@@ -227,6 +243,8 @@ describe("Mintlify declarative topology documentation", () => {
     expect(workflow).toContain("same container ID and `RestartCount`");
     expect(workflow).toContain("matching nodelist port alone is insufficient");
     expect(workflow).toContain("every configured dynamic gRPC port");
+    expect(workflow).toMatch(/before any\s+stop, remove, or start command/);
+    expect(workflow).toContain("requires destroy followed by bootstrap");
     expect(workflow).toContain("including containers observed");
     expect(workflow).toContain("restarting.");
     expect(workflow).toContain("`local_ydb_restart_stack` or `local_ydb_bootstrap`");

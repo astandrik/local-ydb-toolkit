@@ -1082,6 +1082,9 @@ describe("mcp tools", () => {
     const authTool = localYdbTools.find((tool) => tool.name === "local_ydb_apply_auth_hardening");
     expect(bootstrapTool?.description).toContain("stable by container ID and RestartCount across two checks");
     expect(bootstrapTool?.description).toContain("every configured dynamic gRPC port");
+    expect(restartTool?.description).toContain("full check-only static compatibility preflight");
+    expect(restartTool?.description).toContain("Before stopping any container");
+    expect(restartTool?.description).toContain("configured binding changes require destroy followed by bootstrap");
     expect(restartTool?.description).toContain("exact Docker container to be stably running plus registered by IC port");
     expect(restartTool?.description).toContain("including containers observed restarting");
     expect(authTool?.description).toContain("even when no dynamic-node token file is configured");

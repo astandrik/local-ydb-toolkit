@@ -7,6 +7,15 @@ import type { DynamicNodePlan } from "./types.js";
 
 const YDB_CLI_RETRYABLE_ERRORS = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
 
+interface StaticCompatibilityOptions {
+  requireGraphShard?: boolean;
+  publishedDynamicGrpcPorts?: readonly number[];
+}
+
+interface StaticEnsureOptions extends StaticCompatibilityOptions {
+  enableGraphShard?: boolean;
+}
+
 export function commandForStaticRun(
   profile: ResolvedLocalYdbProfile,
   options: { enableGraphShard?: boolean; publishedDynamicGrpcPorts?: readonly number[] } = {}
@@ -39,9 +48,24 @@ export function commandForStaticRun(
 
 export function commandForStaticEnsureRun(
   profile: ResolvedLocalYdbProfile,
-  options: { enableGraphShard?: boolean; requireGraphShard?: boolean; publishedDynamicGrpcPorts?: readonly number[] } = {}
+  options: StaticEnsureOptions = {}
+): string {
+  return commandForStaticContainer(profile, { ...options, mode: "ensure" });
+}
+
+export function commandForStaticCompatibilityCheck(
+  profile: ResolvedLocalYdbProfile,
+  options: StaticCompatibilityOptions = {}
+): string {
+  return commandForStaticContainer(profile, { ...options, mode: "check" });
+}
+
+function commandForStaticContainer(
+  profile: ResolvedLocalYdbProfile,
+  options: StaticEnsureOptions & { mode: "ensure" | "check" }
 ): string {
   const enableGraphShard = options.enableGraphShard ?? true;
+  const checkOnly = options.mode === "check";
   const requireGraphShard = options.requireGraphShard ?? false;
   const publishedDynamicGrpcPorts = options.publishedDynamicGrpcPorts ?? [];
   validatePublishedHostPorts(profile, publishedDynamicGrpcPorts);
@@ -105,21 +129,26 @@ export function commandForStaticEnsureRun(
     ...staticContainerMismatchLines(profile, "container inspection", "  "),
     "fi",
     `if ! printf '%s\\n' \"$existing_containers\" | grep -Fxq ${shellQuote(profile.staticContainer)}; then`,
-    `  ${commandForStaticRun(profile, { enableGraphShard, publishedDynamicGrpcPorts })}`,
-    "  exit 0",
+    ...(checkOnly
+      ? staticContainerMismatchLines(profile, "container inspection", "  ")
+      : [`  ${commandForStaticRun(profile, { enableGraphShard, publishedDynamicGrpcPorts })}`, "  exit 0"]),
     "fi",
     ...compatibilityLines,
-    `if ! observed=$(docker inspect --type container --format ${shellQuote("{{.State.Running}}")} ${container} 2>/dev/null); then`,
-    ...staticContainerMismatchLines(profile, "running state", "  "),
-    "fi",
-    "if [ \"$observed\" = true ]; then",
-    "  exit 0",
-    "fi",
-    "if [ \"$observed\" != false ]; then",
-    ...staticContainerMismatchLines(profile, "running state", "  "),
-    "fi",
-    `docker start ${container} >/dev/null`,
-    "exit 0"
+    ...(checkOnly
+      ? ["exit 0"]
+      : [
+        `if ! observed=$(docker inspect --type container --format ${shellQuote("{{.State.Running}}")} ${container} 2>/dev/null); then`,
+        ...staticContainerMismatchLines(profile, "running state", "  "),
+        "fi",
+        "if [ \"$observed\" = true ]; then",
+        "  exit 0",
+        "fi",
+        "if [ \"$observed\" != false ]; then",
+        ...staticContainerMismatchLines(profile, "running state", "  "),
+        "fi",
+        `docker start ${container} >/dev/null`,
+        "exit 0"
+      ])
   ].join("\n");
 }
 

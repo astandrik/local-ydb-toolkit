@@ -2,6 +2,7 @@ import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-c
 import { requireInventory } from "./checks.js";
 import {
   commandForDynamicEnsureRun,
+  commandForStaticCompatibilityCheck,
   commandForStaticEnsureRun,
   createTenantSpec,
   dynamicNodeStartSpecs,
@@ -264,8 +265,14 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
       timeoutMs: 60_000,
       description: `Stop dynamic tenant node ${container}`
     }));
-  const baseSpecs = [
+  const preflightSpecs = [
     ensureImagePresentSpec(ctx.profile.image),
+    bash(commandForStaticCompatibilityCheck(ctx.profile, {
+      requireGraphShard: true,
+      publishedDynamicGrpcPorts: plans.map((plan) => plan.grpcPort)
+    }), { timeoutMs: 60_000, description: "Verify static local-ydb node compatibility" })
+  ];
+  const mutationSpecs = [
     ...stopSpecs,
     bash(`docker stop ${shellQuote(ctx.profile.staticContainer)} 2>/dev/null || true`),
     bash(`docker start ${shellQuote(ctx.profile.staticContainer)}`),
@@ -285,7 +292,7 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
     "Verify tenant metadata after restart"
   );
   const finalSpecs = [...unexpectedStartSpecs, metadataSpec];
-  const specs = [...baseSpecs, ...nodeSpecs, ...finalSpecs];
+  const specs = [...preflightSpecs, ...mutationSpecs, ...nodeSpecs, ...finalSpecs];
   const rollback = [
     "Start previous configured container definitions captured by local_ydb_inventory.",
     ...runningUnexpected.map((container) => `docker start ${container}`)
@@ -314,8 +321,13 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
     };
   }
 
-  const results = await runCommandSpecs(ctx, baseSpecs);
-  if (!completedAll(baseSpecs, results)) {
+  const results = await runCommandSpecs(ctx, preflightSpecs);
+  if (!completedAll(preflightSpecs, results)) {
+    return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length);
+  }
+  const mutationResults = await runCommandSpecs(ctx, mutationSpecs);
+  results.push(...mutationResults);
+  if (!completedAll(mutationSpecs, mutationResults)) {
     results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));
     return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length);
   }

@@ -888,12 +888,49 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       assertSuccessfulMutation(initialBootstrapResult, "one-node declarative bootstrap");
       await assertConfiguredTopology(client, [topologyDynamicContainer], [topologyDynamicIcPort]);
       const initialInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
-      const initialStaticId = findContainer(initialInventory, topologyStaticContainer)?.id;
-      const initialDynamicId = findContainer(initialInventory, topologyDynamicContainer)?.id;
-      assert(initialStaticId && initialDynamicId, "one-node bootstrap did not expose stable container IDs.");
+      const initialStatic = findContainer(initialInventory, topologyStaticContainer);
+      const initialDynamic = findContainer(initialInventory, topologyDynamicContainer);
+      assert(initialStatic?.id && initialDynamic?.id, "one-node bootstrap did not expose stable container IDs.");
+      const initialBindings = await inspectTopologyStaticBindings();
 
       topologyProfile.dynamicNodeCount = 3;
       await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+      const incompatibleRestartPlan = await callTool(client, "local_ydb_restart_stack", {
+        profile: topologyProfileName,
+      });
+      const compatibilityCommandIndex = incompatibleRestartPlan.plannedCommands?.findIndex(
+        (command) => command.includes("HostConfig.PortBindings"),
+      ) ?? -1;
+      const restartMutationIndex = incompatibleRestartPlan.plannedCommands?.findIndex(
+        (command) => command.includes("docker stop"),
+      ) ?? -1;
+      assert(compatibilityCommandIndex >= 0, "restart plan omitted the full static compatibility preflight.");
+      assert(restartMutationIndex >= 0, "restart plan omitted lifecycle mutations after the preflight.");
+      assert(compatibilityCommandIndex < restartMutationIndex, "restart plan placed static compatibility after a lifecycle mutation.");
+
+      const incompatibleRestart = await callTool(client, "local_ydb_restart_stack", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      const restartIncompatibilityIndex = incompatibleRestart.results?.findIndex((result) => result.ok === false) ?? -1;
+      assert(restartIncompatibilityIndex >= 0, "restart accepted a static container with incomplete configured gRPC bindings.");
+      assert(
+        incompatibleRestart.results?.[restartIncompatibilityIndex]?.stderr?.includes("does not match profile published ports"),
+        "restart static incompatibility did not identify the published-port mismatch.",
+      );
+      assert(
+        incompatibleRestart.results?.length === restartIncompatibilityIndex + 1,
+        "restart continued after static compatibility failed.",
+      );
+      const afterIncompatibleRestart = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      assert(findContainer(afterIncompatibleRestart, topologyStaticContainer)?.id === initialStatic.id, "failed restart changed the static container identity.");
+      assert(findContainer(afterIncompatibleRestart, topologyStaticContainer)?.state === initialStatic.state, "failed restart changed the static container state.");
+      assert(findContainer(afterIncompatibleRestart, topologyDynamicContainer)?.id === initialDynamic.id, "failed restart changed the configured container identity.");
+      assert(findContainer(afterIncompatibleRestart, topologyDynamicContainer)?.state === initialDynamic.state, "failed restart changed the configured container state.");
+      assert(!findContainer(afterIncompatibleRestart, `${topologyDynamicContainer}-2`), "failed restart created configured suffix node 2.");
+      assert(!findContainer(afterIncompatibleRestart, `${topologyDynamicContainer}-3`), "failed restart created configured suffix node 3.");
+      assert(await inspectTopologyStaticBindings() === initialBindings, "failed restart changed the static container bindings.");
 
       const bootstrapPlan = await callTool(client, "local_ydb_bootstrap", {
         profile: topologyProfileName,
@@ -918,8 +955,8 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         "bootstrap mutated a configured dynamic node after static compatibility failed.",
       );
       const afterIncompatibleBootstrap = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
-      assert(findContainer(afterIncompatibleBootstrap, topologyStaticContainer)?.id === initialStaticId, "failed bootstrap changed the static container identity.");
-      assert(findContainer(afterIncompatibleBootstrap, topologyDynamicContainer)?.id === initialDynamicId, "failed bootstrap changed the configured container identity.");
+      assert(findContainer(afterIncompatibleBootstrap, topologyStaticContainer)?.id === initialStatic.id, "failed bootstrap changed the static container identity.");
+      assert(findContainer(afterIncompatibleBootstrap, topologyDynamicContainer)?.id === initialDynamic.id, "failed bootstrap changed the configured container identity.");
 
       const rebuild = await callTool(client, "local_ydb_destroy_stack", {
         profile: topologyProfileName,
@@ -1218,16 +1255,7 @@ async function verifyDeclarativeTopologyLifecycle(client) {
 }
 
 async function assertConfiguredGrpcBindingsAndEndpoints() {
-  const inspect = await runCommand("docker", [
-    "inspect",
-    "--type",
-    "container",
-    "--format",
-    "{{json .HostConfig.PortBindings}}",
-    topologyStaticContainer,
-  ]);
-  assert(inspect.exitCode === 0, inspect.stderr || "failed to inspect configured gRPC bindings.");
-  const bindings = JSON.parse(inspect.stdout);
+  const bindings = JSON.parse(await inspectTopologyStaticBindings());
   const expectedBindings = new Map([
     [topologyStaticGrpcPort, topologyStaticGrpcPort],
     [topologyDynamicGrpcPort, topologyDynamicGrpcPort],
@@ -1257,6 +1285,19 @@ async function assertConfiguredGrpcBindingsAndEndpoints() {
     ]);
     assert(scheme.exitCode === 0, scheme.stderr || `scheme ls failed through configured dynamic gRPC port ${port}.`);
   }
+}
+
+async function inspectTopologyStaticBindings() {
+  const inspect = await runCommand("docker", [
+    "inspect",
+    "--type",
+    "container",
+    "--format",
+    "{{json .HostConfig.PortBindings}}",
+    topologyStaticContainer,
+  ]);
+  assert(inspect.exitCode === 0, inspect.stderr || "failed to inspect configured gRPC bindings.");
+  return inspect.stdout;
 }
 
 async function waitForRestartingContainer(container) {

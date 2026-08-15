@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { bash, ShellCommandExecutor, shellQuote } from "../src/index.js";
-import { commandForStaticEnsureRun, commandForStaticRun, waitForCommand } from "../src/operations/commands.js";
+import {
+  commandForStaticCompatibilityCheck,
+  commandForStaticEnsureRun,
+  commandForStaticRun,
+  waitForCommand
+} from "../src/operations/commands.js";
 import { ConfigSchema, resolveProfile } from "../src/validation.js";
 
 function createTempDir(): { path: string; cleanup: () => void } {
@@ -121,6 +126,7 @@ describe("waitForCommand", () => {
 });
 
 interface StaticContainerFixture {
+  exists: string;
   state: string;
   imageReference: string;
   imageId: string;
@@ -167,6 +173,7 @@ const STATIC_MISMATCH_CASES: Array<[string, Partial<StaticContainerFixture>]> = 
 async function runStaticEnsureCase(options: {
   fixture?: Partial<StaticContainerFixture>;
   profileOverrides?: Record<string, unknown>;
+  checkOnly?: boolean;
 } = {}) {
   const tempDir = createTempDir();
   try {
@@ -176,6 +183,7 @@ async function runStaticEnsureCase(options: {
       profiles: { default: options.profileOverrides ?? {} }
     }));
     const fixture: StaticContainerFixture = {
+      exists: "true",
       state: "false",
       imageReference: profile.image,
       imageId: "sha256:current-image",
@@ -209,7 +217,7 @@ async function runStaticEnsureCase(options: {
 printf '%s\\n' "$*" >> ${shellQuote(dockerLog)}
 if [ "$1" = "ps" ]; then
   [ "$FAKE_FAIL_ASPECT" != "container inspection" ] || return 1
-  printf '%s\\n' ydb-local
+  [ "$FAKE_EXISTS" != "true" ] || printf '%s\\n' ydb-local
   return 0
 fi
 if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
@@ -272,14 +280,22 @@ return 99
     const script = [
       ...fixtureExports,
       dockerFunction,
-      commandForStaticEnsureRun(profile, {
-        enableGraphShard: true,
-        requireGraphShard: true,
-        publishedDynamicGrpcPorts: Array.from(
-          { length: profile.dynamicNodeCount },
-          (_, offset) => profile.ports.dynamicGrpc + offset
-        )
-      })
+      options.checkOnly
+        ? commandForStaticCompatibilityCheck(profile, {
+            requireGraphShard: true,
+            publishedDynamicGrpcPorts: Array.from(
+              { length: profile.dynamicNodeCount },
+              (_, offset) => profile.ports.dynamicGrpc + offset
+            )
+          })
+        : commandForStaticEnsureRun(profile, {
+            enableGraphShard: true,
+            requireGraphShard: true,
+            publishedDynamicGrpcPorts: Array.from(
+              { length: profile.dynamicNodeCount },
+              (_, offset) => profile.ports.dynamicGrpc + offset
+            )
+          })
     ].join("\n");
     const result = await executor.run(profile, bash(script));
     const invocations = readFileSync(dockerLog, "utf8").trim().split("\n");
@@ -292,6 +308,63 @@ return 99
     tempDir.cleanup();
   }
 }
+
+function runStaticCompatibilityCase(options: {
+  fixture?: Partial<StaticContainerFixture>;
+  profileOverrides?: Record<string, unknown>;
+} = {}) {
+  return runStaticEnsureCase({ ...options, checkOnly: true });
+}
+
+describe("commandForStaticCompatibilityCheck", () => {
+  it.each([1, 3, 11])("validates all %i configured dynamic gRPC bindings without lifecycle commands", (dynamicNodeCount) => {
+    const profile = resolveProfile(ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount } }
+    }));
+    const publishedDynamicGrpcPorts = Array.from(
+      { length: dynamicNodeCount },
+      (_, offset) => profile.ports.dynamicGrpc + offset
+    );
+
+    const command = commandForStaticCompatibilityCheck(profile, {
+      requireGraphShard: true,
+      publishedDynamicGrpcPorts
+    });
+
+    for (const port of publishedDynamicGrpcPorts) {
+      expect(command).toContain(`PortBindings \"${port}/tcp\"`);
+    }
+    expect(command).toContain("{{len .HostConfig.PortBindings}}");
+    expect(command).toContain(`!= ${dynamicNodeCount + 2}`);
+    expect(command).not.toMatch(/^\s*docker (?:run|start|stop|rm)\b/m);
+  });
+
+  it.each(["true", "false"])("accepts a compatible container with Running=%s without changing its state", async (state) => {
+    const response = await runStaticCompatibilityCase({ fixture: { state } });
+
+    expect(response.result.ok).toBe(true);
+    expect(response.invocations.some((invocation) => /^(?:run|start|stop|rm)\b/.test(invocation))).toBe(false);
+  });
+
+  it("fails when the static container is missing without creating it", async () => {
+    const response = await runStaticCompatibilityCase({ fixture: { exists: "false" } });
+
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain("does not match profile container inspection");
+    expect(response.invocations.some((invocation) => /^(?:run|start|stop|rm)\b/.test(invocation))).toBe(false);
+  });
+
+  it("rejects bindings from a smaller configured topology without changing the container", async () => {
+    const response = await runStaticCompatibilityCase({
+      profileOverrides: { dynamicNodeCount: 3 },
+      fixture: { portCount: "3" }
+    });
+
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain("does not match profile published ports");
+    expect(response.invocations.some((invocation) => /^(?:run|start|stop|rm)\b/.test(invocation))).toBe(false);
+  });
+});
 
 describe("commandForStaticEnsureRun", () => {
   it.each([1, 3, 11])("publishes and validates all %i configured dynamic gRPC ports", (dynamicNodeCount) => {
