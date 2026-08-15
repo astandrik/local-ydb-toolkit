@@ -28,13 +28,19 @@ static monitoring, and internal static IC port `19001` are already occupied.
 Configured and one-off nodes must use valid, unique gRPC, monitoring, and IC
 ports that do not collide with those listeners.
 
+Tenant bootstrap publishes static gRPC and every configured dynamic gRPC port
+on `127.0.0.1` through the static container. One-off nodes do not change these
+immutable bindings. An existing static container created for a smaller count is
+rejected before dynamic-node mutation and must be deliberately rebuilt.
+
 ## Reconcile the configured topology
 
 `local_ydb_bootstrap` creates the tenant and then recreates configured nodes
 1..N in index order. `local_ydb_restart_stack` inventories the runtime first,
 reports the preflight state in `missingDynamicContainers` and
-`unexpectedDynamicContainers`, and then recreates the configured set from the
-current profile.
+`unexpectedDynamicContainers`, and then unconditionally recreates the
+configured set from the current profile, including containers observed
+restarting.
 
 After each start, readiness requires all of the following:
 
@@ -63,7 +69,10 @@ Default `local_ydb_remove_dynamic_nodes` considers only one-off suffixes and
 removes the highest eligible index. Explicit container, node ID, or
 `startIndex` selectors can remove a configured suffix, but that deliberately
 creates drift. The next tenant bootstrap or restart restores the configured
-node from the profile.
+node from the profile. Removal rollback therefore names
+`local_ydb_restart_stack` or `local_ydb_bootstrap` for configured targets and
+`local_ydb_add_dynamic_nodes` with matching suffixes and ports for one-off
+targets; a mixed selection returns both instructions.
 
 Restart never removes unexpected one-off containers. It restarts those that
 were running before the restart, preserves their container identity, and leaves

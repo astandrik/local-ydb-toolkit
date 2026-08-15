@@ -75,10 +75,12 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - `dynamicNodeCount` is the total configured tenant-node count, including primary, and defaults to `1`.
 - Configured node `1` uses `dynamicContainer`; nodes `2..N` use `dynamicContainer-<index>` and base ports plus `index - 1`.
 - Static IC port `19001` is reserved; all configured and one-off ports share the static node's network namespace and must not collide with it.
+- The static container publishes the static gRPC port and every configured dynamic gRPC port on loopback. One-off nodes do not change those bindings.
 - Tenant bootstrap recreates configured containers in index order, even when a stale container is already running. Readiness requires a stable running exact container plus IC registration; a matching nodelist port alone is insufficient.
 - Default `local_ydb_add_dynamic_nodes` starts at `dynamicNodeCount + 1`; an explicit `startIndex` must be greater than `dynamicNodeCount`, and higher suffixes are one-off runtime nodes.
 - Default `local_ydb_remove_dynamic_nodes` considers only suffixes above `dynamicNodeCount`; explicit selectors or `startIndex` can remove a configured suffix and create drift.
-- Restart reports missing configured and unexpected one-off containers, never removes unexpected containers, and attempts to restore every preflight-running unexpected container even when restart fails.
+- Restart unconditionally recreates every configured container, including containers observed restarting. It reports missing configured and unexpected one-off containers, never removes unexpected containers, and attempts to restore every preflight-running unexpected container even when restart fails.
+- Removal rollback restores configured nodes through restart or bootstrap and recreates one-off nodes through add; a mixed selection returns both instructions.
 - Auth hardening recreates and verifies every configured node in index order, including profiles without a dynamic-node token file.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
 
@@ -86,10 +88,10 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 
 Use only a disposable profile with `dynamicNodeCount: 3`, unique container/network/volume names, and non-overlapping contiguous port ranges. Keep cleanup in `finally`.
 
-1. Call `local_ydb_bootstrap` plan-only, then with `confirm: true`. Inventory must contain the primary, `-2`, and `-3`; authenticated `nodelist` must contain all three derived IC ports; `local_ydb_tenant_check` must pass.
+1. Call `local_ydb_bootstrap` plan-only, then with `confirm: true`. Inventory must contain the primary, `-2`, and `-3`; the static container must publish exactly the static and all three configured dynamic gRPC ports on loopback; authenticated `nodelist` must contain all three derived IC ports; `scheme ls` through every configured dynamic gRPC endpoint and `local_ydb_tenant_check` must pass.
 2. Call `local_ydb_add_dynamic_nodes` without `startIndex`. It must plan and create `-4`. Save its Docker ID and running state from inventory.
 3. Remove configured container `-2` explicitly. Call restart plan-only and require `missingDynamicContainers=["<dynamicContainer>-2"]` and `unexpectedDynamicContainers=["<dynamicContainer>-4"]`. The plan must not contain `docker rm -f <dynamicContainer>-4`.
-4. Confirm restart. Inventory must show restored `-2`; `-4` must retain the saved Docker ID and preflight running state. Exact configured IC ports and tenant metadata must pass again.
+4. Replace configured `-2` with a same-name restart-looping fixture. Restart plan-only must contain an unconditional remove/run for `-2`; confirmed restart must give it a new Docker ID. The preflight-running `-4` must retain its saved Docker ID and running state. Exact configured IC ports and tenant metadata must pass again.
 5. While `-4` exists, plan a storage reduction or version upgrade rebuild. Only `-4` may appear in `extraDynamicNodes`; configured `-2` and `-3` come from bootstrap/auth reconciliation. Final container/image and nodelist verification must cover configured nodes plus `-4`.
 6. Confirm destroy, then bootstrap again. Inventory must contain exactly the three configured dynamic containers and no `-4`.
 7. In `finally`, destroy the disposable stack and independently remove any leftover disposable containers, network, and volume.
@@ -405,7 +407,8 @@ Expected:
 
 - bootstrap applies the same compatibility checks to running and stopped containers and never relies on `docker port`
 - the exact image reference and current image ID, selected network, `/ydb_data` volume or bind source/type/RW, complete loopback gRPC and monitoring bindings without extras, required environment, `unless-stopped` policy, and disabled healthcheck must all match
-- tenant bootstrap additionally requires the GraphShard feature flag and both static and dynamic gRPC bindings
+- tenant bootstrap additionally requires the GraphShard feature flag plus the static gRPC binding and every configured dynamic gRPC binding
+- a static container created for a smaller `dynamicNodeCount` fails compatibility before any configured dynamic container is mutated and requires destroy/rebootstrap
 - an inspect failure or mismatch returns only the incompatible aspect plus recreation guidance and leaves the container stopped; changing the profile volume is a useful live negative control
 - a compatible static container starts exactly once and the root healthcheck succeeds
 
@@ -533,7 +536,7 @@ Expected:
 
 - static node restarts first
 - tenant status is checked before dynamic node is started again
-- dynamic node is recreated if it is not already `Running`
+- every configured dynamic node is unconditionally recreated, including a container observed in Docker's restarting state
 - post-restart `status_report` returns `tenant=ok`, `nodes=ok`
 
 Avoid:
@@ -765,6 +768,7 @@ Expected:
 
 - immediately after Scenario 11, default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`
 - `confirm=true` removes that container and verifies its IC port disappears from authenticated `nodelist`
+- rollback for the removed one-off node uses `local_ydb_add_dynamic_nodes` with matching suffixes and ports, not restart/bootstrap
 - configured containers `ydb-dyn-example-ghcr261`, `-2`, and `-3` remain running with unchanged Docker IDs
 - after all one-off nodes are removed, another default call fails with `found 0` and returns no destructive plan
 - tenant metadata remains reachable after removal
@@ -776,7 +780,7 @@ Explicit configured-node drift fixture:
 { "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false, "nodeIds": [50001] } }
 ```
 
-Configured suffix `-2` is removable only through an explicit container, node ID, or `startIndex: 2` selector. Its removal creates runtime drift; the next tenant bootstrap or restart must recreate `-2` from the profile.
+Configured suffix `-2` is removable only through an explicit container, node ID, or `startIndex: 2` selector. Its removal creates runtime drift; rollback uses `local_ydb_restart_stack` or `local_ydb_bootstrap`, never `local_ydb_add_dynamic_nodes`. Mixed configured and one-off selections return both rollback instructions in that order.
 
 Avoid:
 

@@ -1081,13 +1081,17 @@ describe("mcp tools", () => {
     const restartTool = localYdbTools.find((tool) => tool.name === "local_ydb_restart_stack");
     const authTool = localYdbTools.find((tool) => tool.name === "local_ydb_apply_auth_hardening");
     expect(bootstrapTool?.description).toContain("stable by container ID and RestartCount across two checks");
+    expect(bootstrapTool?.description).toContain("every configured dynamic gRPC port");
     expect(restartTool?.description).toContain("exact Docker container to be stably running plus registered by IC port");
+    expect(restartTool?.description).toContain("including containers observed restarting");
     expect(authTool?.description).toContain("even when no dynamic-node token file is configured");
 
     const removeTool = localYdbTools.find((tool) => tool.name === "local_ydb_remove_dynamic_nodes");
     const removeStartIndex = removeTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;
     expect(removeTool?.description).toContain("only one-off suffixes above profile.dynamicNodeCount");
     expect(removeTool?.description).toContain("Explicit selectors or startIndex may remove a configured suffix");
+    expect(removeTool?.description).toContain("bootstrap/restart for configured nodes");
+    expect(removeTool?.description).toContain("add_dynamic_nodes with matching suffixes and ports for one-off nodes");
     expect(removeStartIndex?.description).toContain("profile.dynamicNodeCount + 1");
     expect(removeStartIndex?.description).toContain("Explicit selectors default to 2");
   });

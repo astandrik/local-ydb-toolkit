@@ -845,11 +845,6 @@ async function verifyDeclarativeTopologyLifecycle(client) {
     topologyDynamicIcPort + 1,
     topologyDynamicIcPort + 2,
   ];
-  const collisionPorts = {
-    grpcPortStart: topologyDynamicGrpcPort + 1,
-    monitoringPortStart: topologyDynamicMonitoringPort + 1,
-    icPortStart: topologyDynamicIcPort + 1,
-  };
   const topologyProfile = config.profiles[topologyProfileName];
   try {
     try {
@@ -892,23 +887,10 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       });
       assertSuccessfulMutation(initialBootstrapResult, "one-node declarative bootstrap");
       await assertConfiguredTopology(client, [topologyDynamicContainer], [topologyDynamicIcPort]);
-
-      const collisionAddResult = await callTool(client, "local_ydb_add_dynamic_nodes", {
-        profile: topologyProfileName,
-        startIndex: 4,
-        ...collisionPorts,
-        confirm: true,
-      });
-      assertSuccessfulMutation(collisionAddResult, "matching-port collision fixture add");
-      const collisionInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
-      const collisionNode = findContainer(collisionInventory, oneOffContainer);
-      assert(collisionNode?.id, "matching-port collision fixture ID was not available.");
-      assert(collisionNode.state === "running", "matching-port collision fixture was not running.");
-      const collisionNodes = await callTool(client, "local_ydb_nodes_check", { profile: topologyProfileName });
-      assert(
-        nodePorts(collisionNodes).includes(collisionPorts.icPortStart),
-        "matching-port collision fixture IC port was not registered.",
-      );
+      const initialInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      const initialStaticId = findContainer(initialInventory, topologyStaticContainer)?.id;
+      const initialDynamicId = findContainer(initialInventory, topologyDynamicContainer)?.id;
+      assert(initialStaticId && initialDynamicId, "one-node bootstrap did not expose stable container IDs.");
 
       topologyProfile.dynamicNodeCount = 3;
       await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -921,37 +903,37 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       assert(nodeTwoRecreation.includes(`docker rm -f ${topologyDynamicContainer}-2`), "bootstrap did not plan to recreate suffix node 2.");
       assert(!nodeTwoRecreation.includes(".State.Running"), "bootstrap retained a running-container short circuit for suffix node 2.");
 
-      const collisionBootstrap = await callTool(client, "local_ydb_bootstrap", {
+      const incompatibleBootstrap = await callTool(client, "local_ydb_bootstrap", {
         profile: topologyProfileName,
         confirm: true,
       });
-      const collisionFailureIndex = collisionBootstrap.results?.findIndex((result) => result.ok === false) ?? -1;
-      assert(collisionFailureIndex >= 0, "matching-port collision bootstrap unexpectedly succeeded.");
+      const incompatibilityIndex = incompatibleBootstrap.results?.findIndex((result) => result.ok === false) ?? -1;
+      assert(incompatibilityIndex >= 0, "bootstrap accepted a static container with incomplete configured gRPC bindings.");
       assert(
-        collisionBootstrap.results?.[collisionFailureIndex]?.stderr?.includes("matching IC port does not confirm the exact container"),
-        "matching-port collision did not fail exact-container readiness.",
+        incompatibleBootstrap.results?.[incompatibilityIndex]?.stderr?.includes("does not match profile published ports"),
+        "static binding incompatibility did not identify the published-port mismatch.",
       );
       assert(
-        !collisionBootstrap.results?.some((result) => result.command?.includes(`--name ${topologyDynamicContainer}-3 `)),
-        "bootstrap continued to configured node 3 after exact-container readiness failed.",
+        !incompatibleBootstrap.results?.some((result) => result.command?.includes(`docker rm -f ${topologyDynamicContainer}`)),
+        "bootstrap mutated a configured dynamic node after static compatibility failed.",
       );
-      assert(
-        !collisionBootstrap.results?.some((result) => result.command?.includes("scheme ls /local/declarative-topology")),
-        "bootstrap checked tenant metadata after exact-container readiness failed.",
-      );
-      const afterCollisionBootstrap = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
-      assert(findContainer(afterCollisionBootstrap, oneOffContainer)?.id === collisionNode.id, "failed bootstrap changed the collision fixture identity.");
-      assert(findContainer(afterCollisionBootstrap, oneOffContainer)?.state === "running", "failed bootstrap stopped the collision fixture.");
+      const afterIncompatibleBootstrap = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      assert(findContainer(afterIncompatibleBootstrap, topologyStaticContainer)?.id === initialStaticId, "failed bootstrap changed the static container identity.");
+      assert(findContainer(afterIncompatibleBootstrap, topologyDynamicContainer)?.id === initialDynamicId, "failed bootstrap changed the configured container identity.");
 
-      const removeCollision = await runCommand("docker", ["rm", "-f", oneOffContainer]);
-      assert(removeCollision.exitCode === 0, `failed to remove matching-port collision fixture: ${removeCollision.stderr || removeCollision.stdout}`);
+      const rebuild = await callTool(client, "local_ydb_destroy_stack", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(rebuild, "one-node topology destroy before three-node rebuild");
 
       const bootstrapResult = await callTool(client, "local_ydb_bootstrap", {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(bootstrapResult, "three-node declarative bootstrap after collision cleanup");
+      assertSuccessfulMutation(bootstrapResult, "fresh three-node declarative bootstrap");
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
+      await assertConfiguredGrpcBindingsAndEndpoints();
       const recreatedInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
 
       const configuredIdsBeforeRejectedAdd = configuredContainers.map((container) => findContainer(recreatedInventory, container)?.id);
@@ -1041,23 +1023,49 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       assert(oneOffBefore?.id, "one-off container ID was not available after add.");
       assert(oneOffBefore.state === "running", "one-off container was not running after add.");
 
-      const removeConfigured = await callTool(client, "local_ydb_remove_dynamic_nodes", {
-        profile: topologyProfileName,
-        containers: [`${topologyDynamicContainer}-2`],
-        confirm: true,
-      });
-      assertSuccessfulMutation(removeConfigured, "configured node drift fixture removal");
+      const configuredNodeTwo = `${topologyDynamicContainer}-2`;
+      const removeNodeTwo = await runCommand("docker", ["rm", "-f", configuredNodeTwo]);
+      assert(removeNodeTwo.exitCode === 0, `failed to replace configured node 2: ${removeNodeTwo.stderr || removeNodeTwo.stdout}`);
+      const restartingFixture = await runCommand("docker", [
+        "run",
+        "-d",
+        "--name",
+        configuredNodeTwo,
+        "--network",
+        `container:${topologyStaticContainer}`,
+        "--restart",
+        "unless-stopped",
+        "--entrypoint",
+        "/bin/sh",
+        image,
+        "-c",
+        "exit 1",
+      ]);
+      assert(restartingFixture.exitCode === 0, restartingFixture.stderr || "failed to create restarting configured-node fixture.");
+      await waitForRestartingContainer(configuredNodeTwo);
+      const restartingInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      const restartingNode = findContainer(restartingInventory, configuredNodeTwo);
+      assert(restartingNode?.id, "restarting configured-node fixture ID was not available.");
+      assert(restartingNode.state === "restarting", "configured-node fixture did not enter restarting state.");
 
       const restartPlan = await callTool(client, "local_ydb_restart_stack", {
         profile: topologyProfileName,
       });
       assert(
-        JSON.stringify(restartPlan.missingDynamicContainers) === JSON.stringify([`${topologyDynamicContainer}-2`]),
-        "restart preflight did not report the missing configured node.",
+        JSON.stringify(restartPlan.missingDynamicContainers) === JSON.stringify([]),
+        "restart classified the present restarting configured node as missing.",
       );
       assert(
         JSON.stringify(restartPlan.unexpectedDynamicContainers) === JSON.stringify([oneOffContainer]),
         "restart preflight did not report the one-off node.",
+      );
+      assert(
+        plannedCommandsText(restartPlan).includes(`docker rm -f ${configuredNodeTwo}`),
+        "restart plan did not unconditionally remove the restarting configured node.",
+      );
+      assert(
+        !plannedCommandsText(restartPlan).includes(".State.Running"),
+        "restart plan retained a running-container short circuit.",
       );
       assert(
         !plannedCommandsText(restartPlan).includes(`docker rm -f ${oneOffContainer}`),
@@ -1071,6 +1079,7 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       assertSuccessfulMutation(restartResult, "drift-aware declarative restart");
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
       const afterRestart = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      assert(findContainer(afterRestart, configuredNodeTwo)?.id !== restartingNode.id, "restart preserved the restarting fixture identity instead of recreating it.");
       const oneOffAfter = findContainer(afterRestart, oneOffContainer);
       assert(oneOffAfter?.id === oneOffBefore.id, "restart changed the one-off container identity.");
       assert(oneOffAfter?.state === oneOffBefore.state, "restart changed the one-off container running state.");
@@ -1108,6 +1117,54 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       const afterFinalRestart = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
       assert(findContainer(afterFinalRestart, oneOffContainer)?.id === oneOffBefore.id, "successful restart changed the one-off container identity.");
       assert(findContainer(afterFinalRestart, oneOffContainer)?.state === "running", "successful restart changed the one-off running state.");
+
+      const configuredRemovePlan = await callTool(client, "local_ydb_remove_dynamic_nodes", {
+        profile: topologyProfileName,
+        containers: [`${topologyDynamicContainer}-2`],
+      });
+      assert(
+        configuredRemovePlan.rollback.some((instruction) => instruction.includes("local_ydb_restart_stack") && instruction.includes("local_ydb_bootstrap")),
+        "configured-node removal did not provide restart/bootstrap rollback.",
+      );
+      assert(
+        !configuredRemovePlan.rollback.some((instruction) => instruction.includes("local_ydb_add_dynamic_nodes")),
+        "configured-node removal incorrectly suggested one-off add rollback.",
+      );
+      const removeConfigured = await callTool(client, "local_ydb_remove_dynamic_nodes", {
+        profile: topologyProfileName,
+        containers: [`${topologyDynamicContainer}-2`],
+        confirm: true,
+      });
+      assertSuccessfulMutation(removeConfigured, "configured node drift fixture removal");
+
+      const restoreConfigured = await callTool(client, "local_ydb_restart_stack", {
+        profile: topologyProfileName,
+        confirm: true,
+      });
+      assertSuccessfulMutation(restoreConfigured, "configured node rollback through restart");
+      await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
+      const afterConfiguredRollback = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+      assert(findContainer(afterConfiguredRollback, oneOffContainer)?.id === oneOffBefore.id, "configured-node rollback changed the one-off identity.");
+
+      const oneOffRemovePlan = await callTool(client, "local_ydb_remove_dynamic_nodes", {
+        profile: topologyProfileName,
+        containers: [oneOffContainer],
+      });
+      assert(
+        oneOffRemovePlan.rollback.some((instruction) => instruction.includes("local_ydb_add_dynamic_nodes")),
+        "one-off removal did not provide add rollback.",
+      );
+      assert(
+        !oneOffRemovePlan.rollback.some((instruction) => instruction.includes("local_ydb_restart_stack") || instruction.includes("local_ydb_bootstrap")),
+        "one-off removal incorrectly suggested configured topology rollback.",
+      );
+      const removeOneOff = await callTool(client, "local_ydb_remove_dynamic_nodes", {
+        profile: topologyProfileName,
+        containers: [oneOffContainer],
+        confirm: true,
+      });
+      assertSuccessfulMutation(removeOneOff, "one-off node removal");
+      await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
 
       const destroyResult = await callTool(client, "local_ydb_destroy_stack", {
         profile: topologyProfileName,
@@ -1158,6 +1215,66 @@ async function verifyDeclarativeTopologyLifecycle(client) {
   } finally {
     console.log("::endgroup::");
   }
+}
+
+async function assertConfiguredGrpcBindingsAndEndpoints() {
+  const inspect = await runCommand("docker", [
+    "inspect",
+    "--type",
+    "container",
+    "--format",
+    "{{json .HostConfig.PortBindings}}",
+    topologyStaticContainer,
+  ]);
+  assert(inspect.exitCode === 0, inspect.stderr || "failed to inspect configured gRPC bindings.");
+  const bindings = JSON.parse(inspect.stdout);
+  const expectedBindings = new Map([
+    [topologyStaticGrpcPort, topologyStaticGrpcPort],
+    [topologyDynamicGrpcPort, topologyDynamicGrpcPort],
+    [topologyDynamicGrpcPort + 1, topologyDynamicGrpcPort + 1],
+    [topologyDynamicGrpcPort + 2, topologyDynamicGrpcPort + 2],
+    [8765, topologyMonitoringPort],
+  ]);
+  assert(Object.keys(bindings).length === expectedBindings.size, "static container published unexpected extra ports.");
+  for (const [containerPort, hostPort] of expectedBindings) {
+    assert(
+      JSON.stringify(bindings[`${containerPort}/tcp`]) === JSON.stringify([{ HostIp: "127.0.0.1", HostPort: String(hostPort) }]),
+      `static container did not publish exact loopback binding ${containerPort}->${hostPort}.`,
+    );
+  }
+
+  for (const port of [topologyDynamicGrpcPort, topologyDynamicGrpcPort + 1, topologyDynamicGrpcPort + 2]) {
+    const scheme = await runCommand("docker", [
+      "exec",
+      topologyStaticContainer,
+      "/ydb",
+      "-e",
+      `grpc://localhost:${port}`,
+      "-d",
+      config.profiles[topologyProfileName].tenantPath,
+      "scheme",
+      "ls",
+    ]);
+    assert(scheme.exitCode === 0, scheme.stderr || `scheme ls failed through configured dynamic gRPC port ${port}.`);
+  }
+}
+
+async function waitForRestartingContainer(container) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const inspect = await runCommand("docker", [
+      "inspect",
+      "--type",
+      "container",
+      "--format",
+      "{{.State.Restarting}}",
+      container,
+    ]);
+    if (inspect.exitCode === 0 && inspect.stdout.trim() === "true") {
+      return;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+  }
+  throw new Error(`Container ${container} did not enter Docker's restarting state.`);
 }
 
 async function assertConfiguredTopology(client, configuredContainers, configuredIcPorts) {

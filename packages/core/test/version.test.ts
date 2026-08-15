@@ -368,6 +368,9 @@ describe("version operations", () => {
       expect(plan).toContain("--name ydb-dyn-example-2 ");
       expect(plan).toContain("--name ydb-dyn-example-3 ");
       expect(plan).toContain("--name ydb-dyn-example-4 ");
+      for (const port of [2137, 2138, 2139]) {
+        expect(plan).toContain(`127.0.0.1:${port}:${port}`);
+      }
       expect(response.verification.join("\n")).toContain("ydb-dyn-example, ydb-dyn-example-2, ydb-dyn-example-3, ydb-dyn-example-4");
     } finally {
       cleanup();

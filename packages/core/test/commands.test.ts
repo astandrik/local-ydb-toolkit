@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { bash, ShellCommandExecutor, shellQuote } from "../src/index.js";
-import { commandForStaticEnsureRun, waitForCommand } from "../src/operations/commands.js";
+import { commandForStaticEnsureRun, commandForStaticRun, waitForCommand } from "../src/operations/commands.js";
 import { ConfigSchema, resolveProfile } from "../src/validation.js";
 
 function createTempDir(): { path: string; cleanup: () => void } {
@@ -184,7 +184,7 @@ async function runStaticEnsureCase(options: {
       mount: profile.bindMountPath
         ? `bind|${profile.bindMountPath}|/ydb_data|true`
         : `volume|${profile.volume}|/ydb_data|true`,
-      portCount: "3",
+      portCount: String(profile.dynamicNodeCount + 2),
       staticGrpcBinding: `127.0.0.1:${profile.ports.staticGrpc}`,
       dynamicGrpcBinding: `127.0.0.1:${profile.ports.dynamicGrpc}`,
       monitoringBinding: `127.0.0.1:${profile.ports.monitoring}`,
@@ -239,6 +239,10 @@ if [ "$1" = "inspect" ]; then
     printf '%s\\n' "$FAKE_DYNAMIC_GRPC_BINDING"
   elif [[ "$*" == *'PortBindings "8765/tcp"'* ]]; then
     printf '%s\\n' "$FAKE_MONITORING_BINDING"
+  elif [[ "$*" == *'PortBindings "'* ]]; then
+    port=$(printf '%s\\n' "$*" | grep -o '[0-9][0-9]*/tcp' | head -n 1 | cut -d/ -f1)
+    [ -n "$port" ] || return 98
+    printf '127.0.0.1:%s\\n' "$port"
   elif [[ "$*" == *".Config.Env"* ]]; then
     [ "$FAKE_FAIL_ASPECT" != "environment" ] || return 1
     printf '%s\\n' "$FAKE_ENVIRONMENT"
@@ -271,7 +275,10 @@ return 99
       commandForStaticEnsureRun(profile, {
         enableGraphShard: true,
         requireGraphShard: true,
-        publishDynamicGrpc: true
+        publishedDynamicGrpcPorts: Array.from(
+          { length: profile.dynamicNodeCount },
+          (_, offset) => profile.ports.dynamicGrpc + offset
+        )
       })
     ].join("\n");
     const result = await executor.run(profile, bash(script));
@@ -287,6 +294,25 @@ return 99
 }
 
 describe("commandForStaticEnsureRun", () => {
+  it.each([1, 3, 11])("publishes and validates all %i configured dynamic gRPC ports", (dynamicNodeCount) => {
+    const profile = resolveProfile(ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount } }
+    }));
+    const publishedDynamicGrpcPorts = Array.from(
+      { length: dynamicNodeCount },
+      (_, offset) => profile.ports.dynamicGrpc + offset
+    );
+    const runCommand = commandForStaticRun(profile, { publishedDynamicGrpcPorts });
+    const ensureCommand = commandForStaticEnsureRun(profile, { publishedDynamicGrpcPorts });
+
+    for (const port of publishedDynamicGrpcPorts) {
+      expect(runCommand).toContain(`127.0.0.1:${port}:${port}`);
+      expect(ensureCommand).toContain(`PortBindings \"${port}/tcp\"`);
+    }
+    expect(ensureCommand).toContain(`{{len .HostConfig.PortBindings}}`);
+    expect(ensureCommand).toContain(`!= ${dynamicNodeCount + 2}`);
+  });
+
   it.each([
     ["running", "true", false],
     ["stopped", "false", true]
@@ -338,12 +364,23 @@ describe("commandForStaticEnsureRun", () => {
     expect(response.result.stderr).toContain("does not match profile GraphShard environment");
   });
 
+  it("rejects a static container created for a smaller configured topology", async () => {
+    const response = await runStaticEnsureCase({
+      profileOverrides: { dynamicNodeCount: 3 },
+      fixture: { portCount: "3" }
+    });
+
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain("does not match profile published ports");
+    expect(response.invocations.some((invocation) => invocation.startsWith("start "))).toBe(false);
+  });
+
   it("checks every required static environment value", () => {
     const profile = resolveProfile(ConfigSchema.parse({}));
     const script = commandForStaticEnsureRun(profile, {
       enableGraphShard: true,
       requireGraphShard: true,
-      publishDynamicGrpc: true
+      publishedDynamicGrpcPorts: [profile.ports.dynamicGrpc]
     });
 
     for (const entry of DEFAULT_TENANT_ENVIRONMENT) {

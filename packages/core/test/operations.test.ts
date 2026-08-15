@@ -43,6 +43,18 @@ import { ConfigSchema } from "../src/validation.js";
 
 const STABLE_DYNAMIC_CONTAINER_STATE = "container-id\ttrue\tfalse\t0";
 
+function commandResult(command: string, overrides: Partial<CommandResult> = {}): CommandResult {
+  return {
+    command,
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    ok: true,
+    timedOut: false,
+    ...overrides
+  };
+}
+
 class RecordingExecutor implements CommandExecutor {
   readonly commands: string[] = [];
 
@@ -953,7 +965,12 @@ describe("mutating operations", () => {
 
     const response = await bootstrapRootDatabase(ctx, {});
 
-    expect(response.plannedCommands.join("\n")).not.toContain("ydb-dyn-example");
+    const plan = response.plannedCommands.join("\n");
+    expect(plan).not.toContain("ydb-dyn-example");
+    for (const port of [2137, 2138, 2139]) {
+      expect(plan).not.toContain(`127.0.0.1:${port}:${port}`);
+      expect(plan).not.toContain(`PortBindings \"${port}/tcp\"`);
+    }
   });
 
   it("plans root bootstrap to start an existing stopped static container", async () => {
@@ -1028,6 +1045,7 @@ describe("mutating operations", () => {
     expect(response.results?.at(-1)?.ok).toBe(false);
     expect(response.results?.at(-1)?.stderr).toContain("does not match profile published ports");
     expect(executor.commands.some((command) => command.includes("admin database /local/example create"))).toBe(false);
+    expect(executor.commands.some((command) => command.includes("docker rm -f ydb-dyn-example"))).toBe(false);
   });
 
   it("rejects static container host-port collisions before planning bootstrap", async () => {
@@ -1222,6 +1240,24 @@ describe("mutating operations", () => {
     expect(response.summary).toContain("verified 3/3 configured dynamic nodes");
     expect(commands.indexOf("--name ydb-dyn-example ")).toBeLessThan(commands.indexOf("--name ydb-dyn-example-2 "));
     expect(commands.indexOf("--name ydb-dyn-example-2 ")).toBeLessThan(commands.indexOf("--name ydb-dyn-example-3 "));
+  });
+
+  it("publishes every configured dynamic-node gRPC port through the static container", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+
+    const response = await bootstrap(ctx, {});
+    const staticCommand = response.plannedCommands.find((command) => (
+      command.includes("HostConfig.PortBindings") && command.includes("docker run -d")
+    ));
+
+    expect(staticCommand).toBeDefined();
+    for (const port of [2137, 2138, 2139]) {
+      expect(staticCommand).toContain(`127.0.0.1:${port}:${port}`);
+      expect(staticCommand).toContain(`PortBindings \"${port}/tcp\"`);
+    }
   });
 
   it("does not accept a matching IC port from a restarting configured container", async () => {
@@ -1707,6 +1743,62 @@ describe("mutating operations", () => {
     expect(response.rollback).toContain("docker start ydb-dyn-example-4");
   });
 
+  it("recreates a configured container found restarting during restart preflight", async () => {
+    vi.useFakeTimers();
+    let nodeTwoStopped = false;
+    let nodeTwoRecreated = false;
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 2 } }
+    }));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local","State":"running"}',
+            '{"Names":"ydb-dyn-example","State":"running"}',
+            '{"Names":"ydb-dyn-example-2","State":"restarting"}'
+          ].join("\n")
+        });
+      }
+      if (command.includes("docker stop ydb-dyn-example-2")) {
+        nodeTwoStopped = true;
+      }
+      if (command.includes("docker rm -f ydb-dyn-example-2")) {
+        nodeTwoRecreated = nodeTwoStopped || !command.includes(".State.Running");
+      }
+      if (command.includes("{{.RestartCount}}")) {
+        const nodeTwo = command.includes("ydb-dyn-example-2");
+        return commandResult(command, {
+          stdout: nodeTwo && !nodeTwoRecreated
+            ? "node-two-id\ttrue\ttrue\t4"
+            : `${nodeTwo ? "node-two-id" : "node-one-id"}\ttrue\tfalse\t0`
+        });
+      }
+      if (command.startsWith("docker inspect ")) {
+        return commandResult(command, { stdout: "[]" });
+      }
+      return commandResult(command);
+    };
+    ctx.client.viewerGet = async (path) => path.includes("nodelist")
+      ? { status: "ok", data: [{ Id: 50_000, Port: 19002 }, { Id: 50_001, Port: 19003 }] }
+      : { status: "ok", data: { TenantInfo: [{ AliveNodes: 2, NodeIds: [50_000, 50_001] }] } };
+
+    const planOnly = await restartStack(ctx, {});
+    const nodeTwoPlan = planOnly.plannedCommands.find((command) => command.includes("--name ydb-dyn-example-2"));
+    expect(nodeTwoPlan).toContain("docker rm -f ydb-dyn-example-2");
+    expect(nodeTwoPlan).not.toContain(".State.Running");
+
+    const pending = restartStack(ctx, { confirm: true });
+    await vi.runAllTimersAsync();
+    const response = await pending;
+
+    expect(nodeTwoRecreated).toBe(true);
+    expect(response.summary).toContain("verified 2/2 configured dynamic nodes");
+  });
+
   it("restores only previously running unexpected containers after configured nodes", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -2045,6 +2137,8 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.nodes.map((node) => node.container)).toEqual(["ydb-dyn-example-5"]);
     expect(response.plannedCommands[0]).toContain("docker rm -f ydb-dyn-example-5");
+    expect(response.rollback.join("\n")).toContain("local_ydb_add_dynamic_nodes");
+    expect(response.rollback.join("\n")).not.toMatch(/local_ydb_(restart_stack|bootstrap)/);
   });
 
   it.each([
@@ -2070,6 +2164,8 @@ describe("mutating operations", () => {
     const response = await removeDynamicNodes(ctx, options);
 
     expect(response.nodes.map((node) => node.container)).toEqual(["ydb-dyn-example-2"]);
+    expect(response.rollback.join("\n")).toMatch(/local_ydb_(restart_stack|bootstrap)/);
+    expect(response.rollback.join("\n")).not.toContain("local_ydb_add_dynamic_nodes");
   });
 
   it("allows explicit YDB node ID selection of a configured suffix", async () => {
@@ -2132,6 +2228,45 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.nodes).toEqual([{ container: "ydb-dyn-example-2", index: 2, icPort: 19003, nodeId: 50001 }]);
     expect(response.plannedCommands[0]).toContain("docker rm -f ydb-dyn-example-2");
+    expect(response.rollback.join("\n")).toMatch(/local_ydb_(restart_stack|bootstrap)/);
+    expect(response.rollback.join("\n")).not.toContain("local_ydb_add_dynamic_nodes");
+  });
+
+  it("returns configured and one-off rollback guidance for mixed explicit removal", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dynamicNodeCount: 3 } }
+    }));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-dyn-example-2","State":"running"}',
+            '{"Names":"ydb-dyn-example-4","State":"running"}'
+          ].join("\n")
+        });
+      }
+      if (command.includes("docker inspect")) {
+        return commandResult(command, {
+          stdout: JSON.stringify([
+            { Name: "/ydb-dyn-example-2", Args: ["--ic-port", "19003"] },
+            { Name: "/ydb-dyn-example-4", Args: ["--ic-port", "19005"] }
+          ])
+        });
+      }
+      return commandResult(command);
+    };
+
+    const response = await removeDynamicNodes(ctx, {
+      containers: ["ydb-dyn-example-2", "ydb-dyn-example-4"]
+    });
+
+    expect(response.rollback).toEqual([
+      "Restore configured nodes with local_ydb_restart_stack or local_ydb_bootstrap.",
+      "Recreate removed one-off nodes with local_ydb_add_dynamic_nodes using matching suffixes and ports if needed."
+    ]);
   });
 
   it("rejects removing the profile base dynamic node by YDB node ID", async () => {
@@ -2405,6 +2540,9 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-3");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-4");
+    for (const port of [2137, 2138, 2139]) {
+      expect(response.plannedCommands.join("\n")).toContain(`127.0.0.1:${port}:${port}`);
+    }
   });
 
   it("executes storage-group reduction rebuild and reapplies auth before re-adding extra dynamic nodes", async () => {

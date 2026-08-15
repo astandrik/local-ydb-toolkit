@@ -156,7 +156,10 @@ describe("repository skill consistency", () => {
     const rootContract = managedBlock(rootScenarios, "DECLARATIVE TOPOLOGY CONTRACT");
     expect(rootContract).toBe(managedBlock(skillScenarios, "DECLARATIVE TOPOLOGY CONTRACT"));
     expect(rootContract).toContain("Static IC port `19001` is reserved");
+    expect(rootContract).toContain("every configured dynamic gRPC port on loopback");
     expect(rootContract).toContain("matching nodelist port alone is insufficient");
+    expect(rootContract).toContain("including containers observed restarting");
+    expect(rootContract).toContain("restores configured nodes through restart or bootstrap");
     expect(rootContract).toContain("without a dynamic-node token file");
   });
 
@@ -177,6 +180,8 @@ describe("repository skill consistency", () => {
     expect(rootSection).toContain("exact container is stably running");
     expect(rootSection).toContain("default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`");
     expect(rootSection).toContain("Configured suffix `-2` is removable only through an explicit");
+    expect(rootSection).toContain("rollback for the removed one-off node uses `local_ydb_add_dynamic_nodes`");
+    expect(rootSection).toContain("rollback uses `local_ydb_restart_stack` or `local_ydb_bootstrap`");
     expect(rootSection).not.toContain("docker rm -f ydb-dyn-example-ghcr261-2 ydb-dyn-example-ghcr261-3");
   });
 });
@@ -221,6 +226,11 @@ describe("Mintlify declarative topology documentation", () => {
     expect(workflow).toContain("`Running=true` and `Restarting=false`");
     expect(workflow).toContain("same container ID and `RestartCount`");
     expect(workflow).toContain("matching nodelist port alone is insufficient");
+    expect(workflow).toContain("every configured dynamic gRPC port");
+    expect(workflow).toContain("including containers observed");
+    expect(workflow).toContain("restarting.");
+    expect(workflow).toContain("`local_ydb_restart_stack` or `local_ydb_bootstrap`");
+    expect(workflow).toContain("`local_ydb_add_dynamic_nodes`");
     expect(workflow).toContain("never removes unexpected one-off containers");
     expect(workflow).toContain("still attempts every preflight-running one-off container");
     expect(workflow).toContain("restore only one-off suffixes above");

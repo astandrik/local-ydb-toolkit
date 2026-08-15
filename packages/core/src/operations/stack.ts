@@ -34,7 +34,11 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
     ctx.profile.bindMountPath
       ? bash(`mkdir -p ${shellQuote(ctx.profile.bindMountPath)}`, { description: "Ensure bind mount path exists" })
       : bash(`docker volume inspect ${shellQuote(ctx.profile.volume)} >/dev/null 2>&1 || docker volume create ${shellQuote(ctx.profile.volume)}`, { description: "Ensure Docker volume exists" }),
-    bash(commandForStaticEnsureRun(ctx.profile, { enableGraphShard: true, requireGraphShard: true, publishDynamicGrpc: true }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
+    bash(commandForStaticEnsureRun(ctx.profile, {
+      enableGraphShard: true,
+      requireGraphShard: true,
+      publishedDynamicGrpcPorts: plans.map((plan) => plan.grpcPort)
+    }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
     bash("sleep 5", { description: "Wait briefly for static node startup" }),
     createTenantSpec(ctx.profile),
     bash("sleep 5", { description: "Wait briefly for tenant creation" })
@@ -269,7 +273,7 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
     createTenantSpec(ctx.profile),
     bash("sleep 5")
   ];
-  const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan));
+  const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan, "recreate"));
   const unexpectedStartSpecs = runningUnexpected.map((container) => bash(`docker start ${shellQuote(container)}`, {
     timeoutMs: 60_000,
     description: `Restore unexpected dynamic tenant node ${container}`
@@ -315,7 +319,7 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
     results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));
     return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length);
   }
-  const topology = await startDynamicNodePlans(ctx, plans);
+  const topology = await startDynamicNodePlans(ctx, plans, "recreate");
   results.push(...topology.results);
   if (topology.completedNodes < plans.length) {
     results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));

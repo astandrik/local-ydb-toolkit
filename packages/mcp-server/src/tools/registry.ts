@@ -440,7 +440,7 @@ export const toolDefinitions = [
     instructionOrder: 2,
     name: "local_ydb_bootstrap",
     description:
-      "Bootstrap a tenant topology: static node with GraphShard flags, configured CMS tenant, and all dynamic nodes declared by profile.dynamicNodeCount. Nodes start in index order; before the next node starts, readiness requires the exact Docker container to be running, not restarting, stable by container ID and RestartCount across two checks, and registered by its IC port in viewer/json nodelist. An existing running or stopped static container is reused only after the full profile compatibility check, including GraphShard and static/dynamic gRPC bindings. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
+      "Bootstrap a tenant topology: static node with GraphShard flags and loopback bindings for static plus every configured dynamic gRPC port, configured CMS tenant, and all dynamic nodes declared by profile.dynamicNodeCount. Nodes start in index order; before the next node starts, readiness requires the exact Docker container to be running, not restarting, stable by container ID and RestartCount across two checks, and registered by its IC port in viewer/json nodelist. An existing running or stopped static container is reused only after the full profile compatibility check, including every configured gRPC binding. Use only for tenant, GraphShard, dump/restore, or dynamic-node scenarios; without confirm=true this returns the full plan and creates nothing.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -498,7 +498,7 @@ export const toolDefinitions = [
     group: "dynamic nodes",
     name: "local_ydb_remove_dynamic_nodes",
     description:
-      "Remove dynamic tenant suffix nodes one at a time and verify nodelist disappearance when the node IC port can be resolved. Without containers, nodeIds, or startIndex, only one-off suffixes above profile.dynamicNodeCount are eligible and the highest suffix is removed first. Explicit selectors or startIndex may remove a configured suffix and create drift that bootstrap or restart restores. The primary dynamicContainer is always protected.",
+      "Remove dynamic tenant suffix nodes one at a time and verify nodelist disappearance when the node IC port can be resolved. Without containers, nodeIds, or startIndex, only one-off suffixes above profile.dynamicNodeCount are eligible and the highest suffix is removed first. Explicit selectors or startIndex may remove a configured suffix and create drift that bootstrap or restart restores. Rollback guidance uses bootstrap/restart for configured nodes and add_dynamic_nodes with matching suffixes and ports for one-off nodes. The primary dynamicContainer is always protected.",
     inputSchema: removeDynamicNodesSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: withContext(RemoveDynamicNodesArgs, (context, parsed) =>
@@ -510,7 +510,7 @@ export const toolDefinitions = [
     instructionOrder: 5,
     name: "local_ydb_restart_stack",
     description:
-      "Reconcile and restart the selected profile after an inventory preflight: report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, recreate configured nodes in index order, require each exact Docker container to be stably running plus registered by IC port, and restore only previously running unexpected containers without removing them. Use after config changes or runtime drift; without confirm=true this returns the restart plan only.",
+      "Reconcile and restart the selected profile after an inventory preflight: report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, unconditionally recreate every configured node in index order including containers observed restarting, require each exact Docker container to be stably running plus registered by IC port, and restore only previously running unexpected containers without removing them. Use after config changes or runtime drift; without confirm=true this returns the restart plan only.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(MutatingArgs, (context, parsed) =>

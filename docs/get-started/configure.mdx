@@ -32,7 +32,9 @@ The empty `ports` object selects base ports: static gRPC `2136`, monitoring
 dynamic base port, so this three-node profile uses gRPC `2137..2139`, monitoring
 `8766..8768`, and interconnect `19002..19004`. Static IC port `19001` is
 reserved by the static node; every listener in the shared network namespace
-must remain unique.
+must remain unique. Tenant bootstrap publishes static gRPC and every configured
+dynamic gRPC port through loopback bindings on the static container. One-off
+nodes do not modify those bindings.
 
 ## Select the configuration
 

@@ -61,7 +61,12 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
     description: `Remove dynamic tenant node ${target.container}`
   }));
   const rollback = [
-    "Recreate removed nodes with local_ydb_add_dynamic_nodes using matching suffixes and ports if needed."
+    ...(targets.some((target) => target.index <= ctx.profile.dynamicNodeCount)
+      ? ["Restore configured nodes with local_ydb_restart_stack or local_ydb_bootstrap."]
+      : []),
+    ...(targets.some((target) => target.index > ctx.profile.dynamicNodeCount)
+      ? ["Recreate removed one-off nodes with local_ydb_add_dynamic_nodes using matching suffixes and ports if needed."]
+      : [])
   ];
   const verification = [
     "authenticated viewer/json/nodelist no longer includes each removed node IC port",
