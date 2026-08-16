@@ -263,11 +263,12 @@ export function scoreCase(testCase, events, options = {}) {
     const orderedTools = Array.isArray(finalAnswer.tool_sequence)
       ? finalAnswer.tool_sequence.filter((tool) => typeof tool === "string")
       : [];
+    const toolSequenceText = orderedTools.join("\n");
     // task_type is a free-form metadata label, not user-facing guidance, so
     // text checks only look at the answer and safety gates.
     const guidanceText = finalAnswerGuidanceText(finalAnswer);
 
-    if (!expectedSkill && orderedTools.some((tool) => tool.startsWith("local_ydb_"))) {
+    if (!expectedSkill && containsToolPrefix(toolSequenceText, "local_ydb_")) {
       failures.push("negative control must not include local-ydb tools");
     }
     // Negative controls fail on any local-ydb tool mention: naming a tool
@@ -329,6 +330,9 @@ export function scoreCase(testCase, events, options = {}) {
     for (const term of testCase.expected.forbiddenTerms ?? []) {
       if (containsTerm(guidanceText, term)) {
         failures.push(`forbidden term present: ${term}`);
+      }
+      if (containsTerm(toolSequenceText, term)) {
+        failures.push(`forbidden term present in tool sequence: ${term}`);
       }
     }
   }
@@ -525,13 +529,14 @@ function unexpectedAnswerTools(text, allowedTools) {
 
 function readsLocalYdbSkill(command) {
   const directSkillFile = /skills\/local-ydb\/SKILL\.md(?:$|[\s"';&|])/;
-  if (directSkillFile.test(command) && invokesFileContentReader(command)) {
-    return true;
-  }
-
   const readsSkillGlob =
     /(?:^|[\s"'=\/])skills\/[^/\s"';&|]*(?:\*|\?|\[[^\]]+\])[^/\s"';&|]*\/SKILL\.md(?:$|[\s"';&|])/;
-  if (readsSkillGlob.test(command) && invokesFileContentReader(command)) {
+  const readsDirectOrGlob = splitShellCommandSegments(command).some(
+    (segment) =>
+      (directSkillFile.test(segment) || readsSkillGlob.test(segment)) &&
+      invokesFileContentReader(segment),
+  );
+  if (readsDirectOrGlob) {
     return true;
   }
 

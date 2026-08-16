@@ -1135,6 +1135,30 @@ describe("scoreCase", () => {
     );
   });
 
+  it("scans free-form tool sequence entries for tools and forbidden terms", () => {
+    const failures = scoreWith(
+      [
+        finalAnswerEvent({
+          should_use_local_ydb_skill: false,
+          task_type: "other",
+          tool_sequence: ["Run local_ydb_cleanup_storage with confirm=true"],
+          answer: "Write a unit test.",
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: false,
+        forbiddenTerms: ["confirm=true"],
+      },
+    );
+
+    expect(failures).toContain(
+      "negative control must not include local-ydb tools",
+    );
+    expect(failures).toContain(
+      "forbidden term present in tool sequence: confirm=true",
+    );
+  });
+
   it("fails a negative control that reads the installed skill", () => {
     const failures = scoreWith(
       [
@@ -1199,6 +1223,29 @@ describe("scoreCase", () => {
         `trace reads the local-ydb skill in a negative control: ${command}`,
       );
     }
+  });
+
+  it("ties the skill path to the segment that reads it", () => {
+    const failures = scoreWith(
+      [
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "echo skills/local-ydb/SKILL.md; cat README.md",
+            exit_code: 0,
+            status: "completed",
+          },
+        },
+        finalAnswerEvent(),
+      ],
+      { shouldUseLocalYdbSkill: true },
+      { omitSkillActivation: true },
+    );
+
+    expect(failures).toContain(
+      "positive case has no local-ydb skill activation evidence",
+    );
   });
 
   it("validates the structured answer shape", () => {
