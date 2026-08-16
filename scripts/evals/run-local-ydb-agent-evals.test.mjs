@@ -655,6 +655,7 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("plan-only eval");
     expect(prompt).toContain("Do not edit files");
     expect(prompt).toContain("space-separated key=value argument summaries");
+    expect(prompt).toContain("keys and values as case-sensitive");
     expect(prompt).toContain("one non-whitespace token");
     expect(prompt).toContain("do not use a JSON argument object");
     expect(prompt).toContain("Eval task:");
@@ -670,6 +671,9 @@ describe("buildPrompt", () => {
 
     expect(schema.properties.tool_sequence.items.description).toContain(
       "space-separated key=value argument summaries",
+    );
+    expect(schema.properties.tool_sequence.items.description).toContain(
+      "keys and values as case-sensitive",
     );
     expect(schema.properties.tool_sequence.items.description).toContain(
       "one non-whitespace token",
@@ -1068,6 +1072,37 @@ describe("scoreCase", () => {
             tool_sequence: [`${tool} statements=[{kind=createTable}]`],
           }),
         ],
+        expected,
+      ),
+    ).toEqual([]);
+  });
+
+  it("matches canonical tool arguments case-sensitively", () => {
+    const tool = "local_ydb_status_report";
+    const term = "profile=auth-rehearsal";
+    const expected = {
+      shouldUseLocalYdbSkill: true,
+      requiredOrderedTools: [tool],
+      requiredToolEntryTerms: { [tool]: [term] },
+    };
+
+    for (const argument of [
+      "profile=AUTH-REHEARSAL",
+      "Profile=auth-rehearsal",
+    ]) {
+      expect(
+        scoreWith(
+          [finalAnswerEvent({ tool_sequence: [`${tool} ${argument}`] })],
+          expected,
+        ),
+        argument,
+      ).toContain(
+        `tool sequence entry ${tool} #1 missing required term: ${term}`,
+      );
+    }
+    expect(
+      scoreWith(
+        [finalAnswerEvent({ tool_sequence: [`${tool} ${term}`] })],
         expected,
       ),
     ).toEqual([]);
@@ -2056,11 +2091,51 @@ describe("scoreCase", () => {
     );
   });
 
+  it("ignores reader modes that exit after help or version output", () => {
+    for (const command of [
+      "cat --help skills/local-ydb/SKILL.md",
+      "cat --version skills/local-ydb/SKILL.md",
+      "rg -h activation skills/local-ydb/SKILL.md",
+      "grep -V activation skills/local-ydb/SKILL.md",
+      "awk -W version '{print}' skills/local-ydb/SKILL.md",
+    ]) {
+      const commandEvent = {
+        type: "item.completed",
+        item: { type: "command_execution", command, exit_code: 0 },
+      };
+
+      expect(
+        scoreWith(
+          [commandEvent, finalAnswerEvent()],
+          { shouldUseLocalYdbSkill: true },
+          { omitSkillActivation: true },
+        ),
+        command,
+      ).toContain("positive case has no local-ydb skill activation evidence");
+      expect(
+        scoreWith(
+          [
+            commandEvent,
+            finalAnswerEvent({
+              should_use_local_ydb_skill: false,
+              task_type: "other",
+            }),
+          ],
+          { shouldUseLocalYdbSkill: false },
+        ),
+        command,
+      ).not.toContain(
+        `trace reads the local-ydb skill in a negative control: ${command}`,
+      );
+    }
+  });
+
   it("requires skill contents to remain visible on standard output", () => {
     for (const command of [
       "cat skills/local-ydb/SKILL.md > /dev/null",
       "cat skills/local-ydb/SKILL.md >/tmp/local-ydb-skill",
       "cat skills/local-ydb/SKILL.md 1>&2",
+      "cat skills/local-ydb/SKILL.md | head > /dev/null",
     ]) {
       const commandEvent = {
         type: "item.completed",
@@ -2092,23 +2167,23 @@ describe("scoreCase", () => {
       );
     }
 
-    const stderrOnlyCommand =
-      "cat skills/local-ydb/SKILL.md 2>/dev/null";
-    const stderrOnlyEvent = {
-      type: "item.completed",
-      item: {
-        type: "command_execution",
-        command: stderrOnlyCommand,
-        exit_code: 0,
-      },
-    };
-    expect(
-      scoreWith(
-        [stderrOnlyEvent, finalAnswerEvent()],
-        { shouldUseLocalYdbSkill: true },
-        { omitSkillActivation: true },
-      ),
-    ).toEqual([]);
+    for (const command of [
+      "cat skills/local-ydb/SKILL.md 2>/dev/null",
+      "cat skills/local-ydb/SKILL.md | head 2>/dev/null",
+    ]) {
+      const commandEvent = {
+        type: "item.completed",
+        item: { type: "command_execution", command, exit_code: 0 },
+      };
+      expect(
+        scoreWith(
+          [commandEvent, finalAnswerEvent()],
+          { shouldUseLocalYdbSkill: true },
+          { omitSkillActivation: true },
+        ),
+        command,
+      ).toEqual([]);
+    }
   });
 
   it("requires find -exec readers to consume the found skill path", () => {
@@ -2402,6 +2477,12 @@ describe("invokesLiveDockerOrYdb", () => {
     "env -S 'docker ps'",
     "env --split-string='ydb scheme ls'",
     "env -iS'command docker ps'",
+    "env --debug -S 'docker\\_ps'",
+    "CMD=docker env --debug -S '${CMD}\\_ps'",
+    "CMD='docker ps' env --debug -S '${CMD}'",
+    "env --debug -S 'echo\\q'",
+    "/usr/bin/env docker ps",
+    "/usr/bin/sudo docker ps",
     "command docker ps",
     "command -p ydb scheme ls",
     "command -- docker ps",
@@ -2439,6 +2520,8 @@ describe("invokesLiveDockerOrYdb", () => {
     "sudo -n",
     "env",
     "env FOO=1",
+    "env -S 'echo\\_docker'",
+    "env --split-string='echo \"docker ps\"'",
     "command -v docker",
     "command -V ydb",
     "echo A=1",

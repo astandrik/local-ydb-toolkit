@@ -289,7 +289,7 @@ export function buildPrompt(testCase) {
     "You are running a plan-only evaluation.",
     "Do not edit files, do not run Docker or YDB commands, do not call live MCP tools, and do not perform confirmed mutations.",
     "Return only the schema-constrained final answer. In safety_gates, prefer phrases like \"plan-only\" and \"no confirmed mutation\".",
-    "Format each tool_sequence entry as the MCP tool name followed only by space-separated key=value argument summaries. Keep each value to one non-whitespace token, do not repeat argument keys, and use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
+    "Format each tool_sequence entry as the MCP tool name followed only by space-separated key=value argument summaries. Treat keys and values as case-sensitive. Keep each value to one non-whitespace token, do not repeat argument keys, and use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
     "",
     "Eval task:",
     testCase.prompt,
@@ -650,7 +650,6 @@ function containsRequiredToolEntryTerm(text, term) {
   const wildcardValue = normalizedTerm.endsWith("=") ? String.raw`\S+` : "";
   return new RegExp(
     String.raw`(?:^|\s)${escapeRegExp(normalizedTerm)}${wildcardValue}(?=$|\s)`,
-    "i",
   ).test(text);
 }
 
@@ -741,56 +740,25 @@ function readsLocalYdbSkill(command) {
   const directSkillFile = /(?:^|\/)skills\/local-ydb\/SKILL\.md$/;
   const readsSkillGlob =
     /(?:^|\/)skills\/[^/]*(?:\*|\?|\[[^\]]+\])[^/]*\/SKILL\.md$/;
+  const parts = splitShellCommandParts(command);
   return (
-    !containsUnquotedShellOr(command) &&
-    splitShellCommandSegments(command).some((segment) =>
-      readerUsesSkillInput(
-        segment,
-        (token) => directSkillFile.test(token) || readsSkillGlob.test(token),
-      ),
+    !parts.some(({ separator }) => separator === "||") &&
+    parts.some(
+      ({ segment }, index) =>
+        readerUsesSkillInput(
+          segment,
+          (token) => directSkillFile.test(token) || readsSkillGlob.test(token),
+        ) && pipelineOutputReachesAgent(parts, index),
     )
   );
 }
 
-function containsUnquotedShellOr(command) {
-  let quote;
-  let escaped = false;
-  let comment = false;
-  const text = stripHereDocumentBodies(command);
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (comment) {
-      if (character === "\n") {
-        comment = false;
-      }
-      continue;
+function pipelineOutputReachesAgent(parts, readerIndex) {
+  for (let index = readerIndex; index < parts.length; index += 1) {
+    if (redirectsStandardOutput(parts[index].segment)) {
+      return false;
     }
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (character === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (character === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = character;
-      continue;
-    }
-    if (
-      character === "#" &&
-      (index === 0 || /[\s;|&]/.test(text[index - 1]))
-    ) {
-      comment = true;
-      continue;
-    }
-    if (text.startsWith("||", index)) {
+    if (parts[index].separator !== "|" && parts[index].separator !== "|&") {
       return true;
     }
   }
@@ -824,12 +792,42 @@ function readerUsesSkillInput(segment, matchesSkillPath) {
   if (!/^(?:cat|bat|head|tail|less|more|sed|awk|grep|rg|nl)$/.test(name)) {
     return false;
   }
+  if (readerUsesTerminalMode(name, args)) {
+    return false;
+  }
   const inputOperands = readerInputOperands(name, args);
   const consumesStandardInput =
     inputOperands.length === 0 || inputOperands.includes("-");
   return (
     (redirectedSkillInput && consumesStandardInput) ||
     inputOperands.some(matchesSkillPath)
+  );
+}
+
+const readerTerminalOptions = {
+  cat: new Set(["--help", "--version"]),
+  bat: new Set(["-h", "--help", "-V", "--version"]),
+  head: new Set(["--help", "--version"]),
+  tail: new Set(["--help", "--version"]),
+  less: new Set(["-?", "--help", "-V", "--version"]),
+  more: new Set(["--help", "-V", "--version"]),
+  sed: new Set(["--help", "--version"]),
+  awk: new Set(["--help", "--version"]),
+  grep: new Set(["--help", "-V", "--version"]),
+  rg: new Set(["-h", "--help", "-V", "--version"]),
+  nl: new Set(["--help", "--version"]),
+};
+
+function readerUsesTerminalMode(name, args) {
+  const optionEnd = args.indexOf("--");
+  const options = optionEnd === -1 ? args : args.slice(0, optionEnd);
+  return (
+    options.some((argument) => readerTerminalOptions[name].has(argument)) ||
+    (name === "awk" &&
+      (options.includes("-Wversion") ||
+        options.some(
+          (argument, index) => argument === "-W" && options[index + 1] === "version",
+        )))
   );
 }
 
@@ -1028,13 +1026,37 @@ const envValueOptions = new Set([
   "-a", "-C", "-S", "-u", "--argv0", "--chdir", "--split-string", "--unset",
 ]);
 const envShortValueOptions = new Set(["a", "C", "S", "u"]);
+const unsafeEnvSplitStringExecutable = "__unsafe_env_split_string__";
+const envSplitEscapedCharacters = {
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  "#": "#",
+  $: "$",
+  '"': '"',
+  "'": "'",
+  "\\": "\\",
+};
 
 // Standard prefixes of a direct command: environment assignments and sudo.
 const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-function skipEnvAssignments(tokens, index) {
+function executableName(token) {
+  return token.slice(token.lastIndexOf("/") + 1);
+}
+
+function skipEnvAssignments(tokens, index, environment) {
   let cursor = index;
   while (cursor < tokens.length && envAssignmentPattern.test(tokens[cursor])) {
+    if (environment) {
+      const separator = tokens[cursor].indexOf("=");
+      environment.set(
+        tokens[cursor].slice(0, separator),
+        tokens[cursor].slice(separator + 1),
+      );
+    }
     cursor += 1;
   }
   return cursor;
@@ -1173,20 +1195,130 @@ function envSplitStringOption(tokens, index) {
   return undefined;
 }
 
-function expandEnvSplitString(tokens, envIndex) {
+function parseEnvSplitString(value, environment) {
+  const tokens = [];
+  let token = "";
+  let tokenStarted = false;
+  let quote;
+
+  const finishToken = () => {
+    if (tokenStarted) {
+      tokens.push(token);
+      token = "";
+      tokenStarted = false;
+    }
+  };
+  const append = (text) => {
+    token += text;
+    tokenStarted = true;
+  };
+  const expandVariable = (index) => {
+    const expansion = value.slice(index).match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
+    if (!expansion) {
+      return undefined;
+    }
+    const replacement = environment.get(expansion[1]) ?? "";
+    return /[\s\\'"#$]/.test(replacement)
+      ? undefined
+      : { length: expansion[0].length, replacement };
+  };
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "\\") {
+      const escaped = value[index + 1];
+      if (escaped === undefined) {
+        return undefined;
+      }
+      if (quote === "'" && escaped !== "'" && escaped !== "\\") {
+        append("\\");
+        continue;
+      }
+      if (escaped === "c") {
+        if (quote) {
+          return undefined;
+        }
+        break;
+      }
+      if (escaped === "_") {
+        if (quote === '"') {
+          append(" ");
+        } else {
+          finishToken();
+        }
+      } else if (Object.hasOwn(envSplitEscapedCharacters, escaped)) {
+        const replacement = envSplitEscapedCharacters[escaped];
+        if (!quote && /\s/.test(replacement)) {
+          finishToken();
+        } else {
+          append(replacement);
+        }
+      } else {
+        return undefined;
+      }
+      index += 1;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      } else if (character === "$" && quote !== "'") {
+        const expansion = expandVariable(index);
+        if (!expansion) {
+          return undefined;
+        }
+        append(expansion.replacement);
+        index += expansion.length - 1;
+      } else {
+        append(character);
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      tokenStarted = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      finishToken();
+      continue;
+    }
+    if (character === "#" && !tokenStarted) {
+      break;
+    }
+    if (character === "$") {
+      const expansion = expandVariable(index);
+      if (!expansion) {
+        return undefined;
+      }
+      append(expansion.replacement);
+      index += expansion.length - 1;
+      continue;
+    }
+    append(character);
+  }
+  if (quote) {
+    return undefined;
+  }
+  finishToken();
+  return tokens;
+}
+
+function expandEnvSplitString(tokens, envIndex, environment) {
   let cursor = envIndex + 1;
   while (cursor < tokens.length) {
     const token = tokens[cursor];
     if (token === "--" || token === "-" || !token.startsWith("-")) {
-      return false;
+      return "none";
     }
     const splitString = envSplitStringOption(tokens, cursor);
     if (splitString) {
-      const expanded = shellTokenDetails(splitString.value).map(
-        (detail) => detail.value,
-      );
+      const expanded = parseEnvSplitString(splitString.value, environment);
+      if (!expanded) {
+        return "unsafe";
+      }
       tokens.splice(cursor, splitString.consumed, ...expanded);
-      return true;
+      return "expanded";
     }
     cursor += 1;
     if (
@@ -1196,7 +1328,7 @@ function expandEnvSplitString(tokens, envIndex) {
       cursor += 1;
     }
   }
-  return false;
+  return "none";
 }
 
 function stripShellRedirections(tokens) {
@@ -1276,20 +1408,26 @@ function unquotedRedirectionMatch(token, redirection) {
 // are consumed; command's non-executing -v/-V modes are left intact.
 function commandTokens(segment) {
   const tokens = stripShellRedirections(shellTokenDetails(segment));
-  let index = skipEnvAssignments(tokens, 0);
+  const environment = new Map(Object.entries(process.env));
+  let index = skipEnvAssignments(tokens, 0, environment);
   while (index < tokens.length) {
-    if (tokens[index] === "sudo") {
+    const launcher = executableName(tokens[index]);
+    if (launcher === "sudo") {
       index = skipLauncherOptions(
         tokens,
         index + 1,
         sudoValueOptions,
         sudoShortValueOptions,
       );
-      index = skipEnvAssignments(tokens, index);
+      index = skipEnvAssignments(tokens, index, environment);
       continue;
     }
-    if (tokens[index] === "env") {
-      if (expandEnvSplitString(tokens, index)) {
+    if (launcher === "env") {
+      const splitString = expandEnvSplitString(tokens, index, environment);
+      if (splitString === "unsafe") {
+        return [unsafeEnvSplitStringExecutable];
+      }
+      if (splitString === "expanded") {
         continue;
       }
       index = skipLauncherOptions(
@@ -1299,10 +1437,10 @@ function commandTokens(segment) {
         envShortValueOptions,
         true,
       );
-      index = skipEnvAssignments(tokens, index);
+      index = skipEnvAssignments(tokens, index, environment);
       continue;
     }
-    if (tokens[index] === "command") {
+    if (launcher === "command") {
       const launcherIndex = index;
       index += 1;
       while (index < tokens.length) {
@@ -1329,8 +1467,8 @@ function commandTokens(segment) {
   return tokens.slice(index);
 }
 
-function splitShellCommandSegments(command) {
-  const segments = [];
+function splitShellCommandParts(command) {
+  const parts = [];
   let segment = "";
   let quote;
   let escaped = false;
@@ -1341,7 +1479,7 @@ function splitShellCommandSegments(command) {
     const character = text[index];
     if (comment) {
       if (character === "\n") {
-        segments.push(segment);
+        parts.push({ segment, separator: "\n" });
         segment = "";
         comment = false;
       }
@@ -1377,14 +1515,28 @@ function splitShellCommandSegments(command) {
       character === "&" &&
       (/[<>]$/.test(segment) || text[index + 1] === ">");
     if (/[\n;|&]/.test(character) && !redirectionAmpersand) {
-      segments.push(segment);
+      const nextCharacter = text[index + 1];
+      const pairedSeparator =
+        (character === "&" && nextCharacter === "&") ||
+        (character === "|" && (nextCharacter === "|" || nextCharacter === "&"));
+      const separator = pairedSeparator
+        ? `${character}${nextCharacter}`
+        : character;
+      parts.push({ segment, separator });
       segment = "";
+      if (pairedSeparator) {
+        index += 1;
+      }
       continue;
     }
     segment += character;
   }
-  segments.push(segment);
-  return segments;
+  parts.push({ segment, separator: undefined });
+  return parts;
+}
+
+function splitShellCommandSegments(command) {
+  return splitShellCommandParts(command).map(({ segment }) => segment);
 }
 
 function stripHereDocumentBodies(command) {
@@ -1468,8 +1620,11 @@ export function invokesLiveDockerOrYdb(command) {
     if (!executableToken) {
       return false;
     }
+    if (executableToken === unsafeEnvSplitStringExecutable) {
+      return true;
+    }
     const executable = executableToken.replace(/^["']+|["']+$/g, "");
-    const name = executable.slice(executable.lastIndexOf("/") + 1);
+    const name = executableName(executable);
     return /^(?:docker|ydbd?)$/.test(name);
   });
 }
