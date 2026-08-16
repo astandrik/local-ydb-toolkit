@@ -222,6 +222,7 @@ describe("loadCases", () => {
           "indexes=[{name=<index>",
           "columns=<index-columns>",
           "using=secondary",
+          "global=true",
         ],
       ],
       local_ydb_apply_schema: [
