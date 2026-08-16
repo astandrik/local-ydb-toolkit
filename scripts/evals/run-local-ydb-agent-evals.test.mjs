@@ -1191,6 +1191,8 @@ describe("scoreCase", () => {
       "confirm:true",
       '"confirm":true',
       "confirm : 'true'",
+      "confirm true",
+      "'confirm' 'true'",
     ]) {
       const failures = scoreWith(
         [
@@ -2162,6 +2164,13 @@ describe("invokesLiveDockerOrYdb", () => {
     "sudo --command-timeout 30 ydb scheme ls",
     "sudo --user=root docker ps",
     "sudo -- docker ps",
+    "env docker ps",
+    "env FOO=1 ydb scheme ls",
+    "env -i command docker ps",
+    "command docker ps",
+    "command -p ydb scheme ls",
+    "command -- docker ps",
+    "sudo env FOO=1 command -p docker ps",
     "DOCKER_HOST=ssh://host docker ps",
     "YDB_TOKEN_CREDENTIALS=token ydb scheme ls",
     "sudo DOCKER_HOST=ssh://host docker ps",
@@ -2191,6 +2200,10 @@ describe("invokesLiveDockerOrYdb", () => {
     "sudo systemctl status docker",
     "sudo",
     "sudo -n",
+    "env",
+    "env FOO=1",
+    "command -v docker",
+    "command -V ydb",
     "echo A=1",
     "A=1",
     "cat docker-compose.yml",

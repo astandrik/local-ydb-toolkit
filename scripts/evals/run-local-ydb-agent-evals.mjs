@@ -649,7 +649,7 @@ function containsRequiredToolEntryTerm(text, term) {
 }
 
 function containsConfirmedMutationArgument(text) {
-  return /(?:^|[^A-Za-z0-9_])["']?confirm["']?\s*(?:=|:)\s*(?:true|["']true["'])(?![A-Za-z0-9_])/i.test(
+  return /(?:^|[^A-Za-z0-9_])["']?confirm["']?(?:\s*(?:=|:)\s*|\s+)(?:true|["']true["'])(?![A-Za-z0-9_])/i.test(
     text,
   );
 }
@@ -928,6 +928,10 @@ const sudoShortValueOptions = new Set([
   "t",
   "u",
 ]);
+const envValueOptions = new Set([
+  "-a", "-C", "-S", "-u", "--argv0", "--chdir", "--split-string", "--unset",
+]);
+const envShortValueOptions = new Set(["a", "C", "S", "u"]);
 
 // Standard prefixes of a direct command: environment assignments and sudo.
 const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -998,19 +1002,46 @@ function shellTokenDetails(segment) {
   return tokens;
 }
 
-function sudoOptionConsumesNextToken(token) {
-  if (sudoValueOptions.has(token)) {
+function optionConsumesNextToken(token, valueOptions, shortValueOptions) {
+  if (valueOptions.has(token)) {
     return true;
   }
   if (!/^-[^-]/.test(token)) {
     return false;
   }
   for (let index = 1; index < token.length; index += 1) {
-    if (sudoShortValueOptions.has(token[index])) {
+    if (shortValueOptions.has(token[index])) {
       return index === token.length - 1;
     }
   }
   return false;
+}
+
+function skipLauncherOptions(
+  tokens,
+  index,
+  valueOptions,
+  shortValueOptions,
+  singleDashSeparator = false,
+) {
+  let cursor = index;
+  while (cursor < tokens.length) {
+    const token = tokens[cursor];
+    if (token === "--" || (singleDashSeparator && token === "-")) {
+      return cursor + 1;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    cursor += 1;
+    if (
+      optionConsumesNextToken(token, valueOptions, shortValueOptions) &&
+      cursor < tokens.length
+    ) {
+      cursor += 1;
+    }
+  }
+  return cursor;
 }
 
 function stripShellRedirections(tokens) {
@@ -1067,29 +1098,57 @@ function unquotedRedirectionMatch(token, redirection) {
 }
 
 // Returns the tokens forming the actual command after the standard
-// direct-command prefixes: environment assignments (VAR=value) and sudo
-// with its option tokens, combined short options, and the `--` separator.
-// Unknown sudo options are skipped valueless.
+// direct-command prefixes: environment assignments (VAR=value), sudo, env,
+// and the command builtin. Their ordinary launcher options and `--` separators
+// are consumed; command's non-executing -v/-V modes are left intact.
 function commandTokens(segment) {
   const tokens = stripShellRedirections(shellTokenDetails(segment));
   let index = skipEnvAssignments(tokens, 0);
-  if (tokens[index] === "sudo") {
-    index += 1;
-    while (index < tokens.length) {
-      const token = tokens[index];
-      if (token === "--") {
-        index += 1;
-        break;
-      }
-      if (!token.startsWith("-") || token === "-") {
-        break;
-      }
-      index += 1;
-      if (sudoOptionConsumesNextToken(token) && index < tokens.length) {
-        index += 1;
-      }
+  while (index < tokens.length) {
+    if (tokens[index] === "sudo") {
+      index = skipLauncherOptions(
+        tokens,
+        index + 1,
+        sudoValueOptions,
+        sudoShortValueOptions,
+      );
+      index = skipEnvAssignments(tokens, index);
+      continue;
     }
-    index = skipEnvAssignments(tokens, index);
+    if (tokens[index] === "env") {
+      index = skipLauncherOptions(
+        tokens,
+        index + 1,
+        envValueOptions,
+        envShortValueOptions,
+        true,
+      );
+      index = skipEnvAssignments(tokens, index);
+      continue;
+    }
+    if (tokens[index] === "command") {
+      const launcherIndex = index;
+      index += 1;
+      while (index < tokens.length) {
+        const option = tokens[index];
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (!option.startsWith("-") || option === "-") {
+          break;
+        }
+        if (/[vV]/.test(option.slice(1))) {
+          return tokens.slice(launcherIndex);
+        }
+        if (option !== "-p") {
+          break;
+        }
+        index += 1;
+      }
+      continue;
+    }
+    break;
   }
   return tokens.slice(index);
 }
