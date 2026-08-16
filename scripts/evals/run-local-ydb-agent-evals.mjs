@@ -289,7 +289,7 @@ export function buildPrompt(testCase) {
     "You are running a plan-only evaluation.",
     "Do not edit files, do not run Docker or YDB commands, do not call live MCP tools, and do not perform confirmed mutations.",
     "Return only the schema-constrained final answer. In safety_gates, prefer phrases like \"plan-only\" and \"no confirmed mutation\".",
-    "Format each tool_sequence entry as the MCP tool name followed by space-separated key=value argument summaries. Use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
+    "Format each tool_sequence entry as the MCP tool name followed by space-separated key=value argument summaries. Keep each value to one non-whitespace token and use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
     "",
     "Eval task:",
     testCase.prompt,
@@ -641,12 +641,9 @@ function containsRequiredToolEntryTerm(text, term) {
   if (!normalizedTerm.includes("=")) {
     return containsTerm(text, normalizedTerm);
   }
-  const argumentBoundary = String.raw`(?:^|\s|,|\[|\{)`;
-  const valueBoundary = normalizedTerm.endsWith("=")
-    ? ""
-    : String.raw`(?![A-Za-z0-9_./:@+-])`;
+  const wildcardValue = normalizedTerm.endsWith("=") ? String.raw`\S+` : "";
   return new RegExp(
-    `${argumentBoundary}${escapeRegExp(normalizedTerm)}${valueBoundary}`,
+    String.raw`(?:^|\s)${escapeRegExp(normalizedTerm)}${wildcardValue}(?=$|\s)`,
     "i",
   ).test(text);
 }
@@ -743,10 +740,10 @@ function readerUsesSkillInput(segment, matchesSkillPath) {
   const skillIndexes = args.flatMap((token, index) =>
     matchesSkillPath(token) ? [index] : [],
   );
-  if (/^(?:cat|bat|head|tail|less|more|nl)$/.test(name)) {
+  if (/^(?:cat|bat|head|tail|less|more)$/.test(name)) {
     return redirectedSkillInput || skillIndexes.length > 0;
   }
-  if (!/^(?:sed|awk|grep|rg)$/.test(name)) {
+  if (!/^(?:sed|awk|grep|rg|nl)$/.test(name)) {
     return false;
   }
   if (redirectedSkillInput) {
@@ -771,6 +768,13 @@ const readerValueOptions = {
   ]),
   sed: new Set(["-e", "-f", "-i", "-l", "--expression", "--file", "--in-place", "--line-length"]),
   awk: new Set(["-F", "-f", "-v", "--assign", "--field-separator", "--file", "--source"]),
+  nl: new Set([
+    "-b", "-d", "-f", "-h", "-i", "-l", "-n", "-s", "-v", "-w",
+    "--body-numbering", "--section-delimiter", "--footer-numbering",
+    "--header-numbering", "--line-increment", "--join-blank-lines",
+    "--number-format", "--number-separator", "--starting-line-number",
+    "--number-width",
+  ]),
 };
 
 const readerProgramOptions = {
@@ -778,6 +782,7 @@ const readerProgramOptions = {
   grep: new Set(["-e", "-f", "--regexp", "--file"]),
   sed: new Set(["-e", "-f", "--expression", "--file"]),
   awk: new Set(["-f", "--file", "--source"]),
+  nl: new Set(),
 };
 
 function readerInputOperands(name, args) {
@@ -818,7 +823,9 @@ function readerInputOperands(name, args) {
     positional.push(argument);
   }
 
-  return programProvidedByOption ? positional : positional.slice(1);
+  return programOptions.size === 0 || programProvidedByOption
+    ? positional
+    : positional.slice(1);
 }
 
 function clusteredReaderValueOption(argument, valueOptions) {
@@ -834,7 +841,7 @@ function clusteredReaderValueOption(argument, valueOptions) {
 function inputRedirectionTargets(segment) {
   const tokens = shellTokenDetails(segment);
   const targets = [];
-  const inputRedirection = /^\d*(?:<>|<(?![<&]))(.*)$/;
+  const inputRedirection = /^(?:0)?(?:<>|<(?![<&]))(.*)$/;
   for (let index = 0; index < tokens.length; index += 1) {
     const match = unquotedRedirectionMatch(tokens[index], inputRedirection);
     if (!match) {

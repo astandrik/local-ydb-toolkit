@@ -147,14 +147,12 @@ describe("loadCases", () => {
         allowedExtraToolsBefore: {
           local_ydb_dump_tenant: "local_ydb_upgrade_version",
         },
-        requiredTerms: ["dump", "restore"],
+        requiredTerms: ["dump", "restore", "until completed"],
         requiredToolEntryTerms: {
           local_ydb_pull_image: [
             "image=ghcr.io/ydb-platform/local-ydb:26.1.1.7",
           ],
-          local_ydb_pull_status: [
-            "jobId=<returned-jobId> until completed",
-          ],
+          local_ydb_pull_status: ["jobId=<returned-jobId>"],
           local_ydb_upgrade_version: ["version=26.1.1.7"],
         },
         forbiddenTerms: ["confirm: true", '"confirm": true', "confirm=true"],
@@ -212,17 +210,8 @@ describe("loadCases", () => {
     ).toEqual({
       local_ydb_generate_schema: [
         [
-          "statements=",
+          "statements=[{kind=createTable,tableName=<table>,columns=<columns>,primaryKey=<primary-key>,store=row,indexes=[{name=<index>,columns=<index-columns>,using=secondary,global=true}]}]",
           "validate=true",
-          "kind=createTable",
-          "tableName=<table>",
-          "columns=<columns>",
-          "primaryKey=<primary-key>",
-          "store=row",
-          "indexes=[{name=<index>",
-          "columns=<index-columns>",
-          "using=secondary",
-          "global=true",
         ],
       ],
       local_ydb_apply_schema: [
@@ -241,7 +230,7 @@ describe("loadCases", () => {
       local_ydb_pull_image: [
         "image=ghcr.io/ydb-platform/local-ydb:26.1.1.7",
       ],
-      local_ydb_pull_status: ["jobId=<returned-jobId> until completed"],
+      local_ydb_pull_status: ["jobId=<returned-jobId>"],
       local_ydb_upgrade_version: ["version=26.1.1.7"],
     });
     expect(
@@ -666,6 +655,7 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("plan-only eval");
     expect(prompt).toContain("Do not edit files");
     expect(prompt).toContain("space-separated key=value argument summaries");
+    expect(prompt).toContain("one non-whitespace token");
     expect(prompt).toContain("do not use a JSON argument object");
     expect(prompt).toContain("Eval task:");
     expect(prompt).not.toContain("local-ydb");
@@ -680,6 +670,9 @@ describe("buildPrompt", () => {
 
     expect(schema.properties.tool_sequence.items.description).toContain(
       "space-separated key=value argument summaries",
+    );
+    expect(schema.properties.tool_sequence.items.description).toContain(
+      "one non-whitespace token",
     );
     expect(schema.properties.tool_sequence.items.description).toContain(
       "do not use a JSON argument object",
@@ -1023,6 +1016,11 @@ describe("scoreCase", () => {
         term: "profile=auth-rehearsal",
         extendedValue: "profile=auth-rehearsal-live",
       },
+      {
+        tool: "local_ydb_status_report",
+        term: "profile=auth-rehearsal",
+        extendedValue: "profile=auth-rehearsal~live",
+      },
     ]) {
       const expected = {
         shouldUseLocalYdbSkill: true,
@@ -1045,6 +1043,34 @@ describe("scoreCase", () => {
         ),
       ).toEqual([]);
     }
+  });
+
+  it("requires a nonempty single-token value for wildcard tool arguments", () => {
+    const tool = "local_ydb_generate_schema";
+    const expected = {
+      shouldUseLocalYdbSkill: true,
+      requiredOrderedTools: [tool],
+      requiredToolEntryTerms: { [tool]: ["statements="] },
+    };
+
+    expect(
+      scoreWith(
+        [finalAnswerEvent({ tool_sequence: [`${tool} statements=`] })],
+        expected,
+      ),
+    ).toContain(
+      `tool sequence entry ${tool} #1 missing required term: statements=`,
+    );
+    expect(
+      scoreWith(
+        [
+          finalAnswerEvent({
+            tool_sequence: [`${tool} statements=[{kind=createTable}]`],
+          }),
+        ],
+        expected,
+      ),
+    ).toEqual([]);
   });
 
   it("fails when should_use_local_ydb_skill mismatches", () => {
@@ -1772,6 +1798,37 @@ describe("scoreCase", () => {
     ).toContain(
       `trace reads the local-ydb skill in a negative control: ${command}`,
     );
+
+    const optionValueCommand = "nl -s skills/local-ydb/SKILL.md README.md";
+    const optionValueEvent = {
+      type: "item.completed",
+      item: {
+        type: "command_execution",
+        command: optionValueCommand,
+        exit_code: 0,
+      },
+    };
+    expect(
+      scoreWith(
+        [optionValueEvent, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toContain("positive case has no local-ydb skill activation evidence");
+    expect(
+      scoreWith(
+        [
+          optionValueEvent,
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      ),
+    ).not.toContain(
+      `trace reads the local-ydb skill in a negative control: ${optionValueCommand}`,
+    );
   });
 
   it("fails a negative control that expands the installed skill", () => {
@@ -1880,6 +1937,7 @@ describe("scoreCase", () => {
       "rg -n 'Execution Boundary' skills/local-ydb/SKILL.md skills/local-ydb/references/evals.md",
       "sed -n '1,120p' skills/local-ydb/SKILL.md",
       "cat < $CODEX_HOME/skills/local-ydb/SKILL.md",
+      "cat 0< skills/local-ydb/SKILL.md",
       "sed -n 1p < skills/local-ydb/SKILL.md",
     ]) {
       const failures = scoreWith(
@@ -1920,6 +1978,39 @@ describe("scoreCase", () => {
     );
     expect(optionValueFailures).toContain(
       "positive case has no local-ydb skill activation evidence",
+    );
+
+    const nonStandardInputCommand =
+      "cat 3<skills/local-ydb/SKILL.md README.md";
+    const nonStandardInputEvent = {
+      type: "item.completed",
+      item: {
+        type: "command_execution",
+        command: nonStandardInputCommand,
+        exit_code: 0,
+        status: "completed",
+      },
+    };
+    expect(
+      scoreWith(
+        [nonStandardInputEvent, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toContain("positive case has no local-ydb skill activation evidence");
+    expect(
+      scoreWith(
+        [
+          nonStandardInputEvent,
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      ),
+    ).not.toContain(
+      `trace reads the local-ydb skill in a negative control: ${nonStandardInputCommand}`,
     );
   });
 

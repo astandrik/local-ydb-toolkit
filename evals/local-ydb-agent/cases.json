@@ -117,17 +117,8 @@
       "requiredToolEntryTerms": {
         "local_ydb_generate_schema": [
           [
-            "statements=",
-            "validate=true",
-            "kind=createTable",
-            "tableName=<table>",
-            "columns=<columns>",
-            "primaryKey=<primary-key>",
-            "store=row",
-            "indexes=[{name=<index>",
-            "columns=<index-columns>",
-            "using=secondary",
-            "global=true"
+            "statements=[{kind=createTable,tableName=<table>,columns=<columns>,primaryKey=<primary-key>,store=row,indexes=[{name=<index>,columns=<index-columns>,using=secondary,global=true}]}]",
+            "validate=true"
           ]
         ],
         "local_ydb_apply_schema": [
@@ -177,14 +168,15 @@
       },
       "requiredTerms": [
         "dump",
-        "restore"
+        "restore",
+        "until completed"
       ],
       "requiredToolEntryTerms": {
         "local_ydb_pull_image": [
           "image=ghcr.io/ydb-platform/local-ydb:26.1.1.7"
         ],
         "local_ydb_pull_status": [
-          "jobId=<returned-jobId> until completed"
+          "jobId=<returned-jobId>"
         ],
         "local_ydb_upgrade_version": [
           "version=26.1.1.7"
