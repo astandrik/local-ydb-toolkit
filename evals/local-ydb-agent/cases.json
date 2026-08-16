@@ -87,7 +87,8 @@
         "local_ydb_apply_schema"
       ],
       "requiredTerms": [
-        "validate",
+        "action=validate",
+        "action=apply",
         "plan"
       ],
       "forbiddenTerms": [

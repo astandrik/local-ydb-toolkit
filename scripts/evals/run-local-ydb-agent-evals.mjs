@@ -520,13 +520,14 @@ function unexpectedAnswerTools(text, allowedTools) {
 }
 
 function readsLocalYdbSkill(command) {
-  if (command.includes("skills/local-ydb")) {
+  const directSkillFile = /skills\/local-ydb\/SKILL\.md(?:$|[\s"';&|])/;
+  if (directSkillFile.test(command) && invokesFileContentReader(command)) {
     return true;
   }
 
   const readsSkillGlob =
     /(?:^|[\s"'=\/])skills\/[^/\s"';&|]*(?:\*|\?|\[[^\]]+\])[^/\s"';&|]*\/SKILL\.md(?:$|[\s"';&|])/;
-  if (readsSkillGlob.test(command)) {
+  if (readsSkillGlob.test(command) && invokesFileContentReader(command)) {
     return true;
   }
 
@@ -535,6 +536,20 @@ function readsLocalYdbSkill(command) {
   const readsFoundFiles =
     /(?:-exec(?:dir)?\s+(?:cat|head|tail|less|more|sed|awk|grep|rg)\b|\|\s*xargs(?:\s+\S+)*\s+(?:cat|head|tail|less|more|sed|awk|grep|rg)\b)/;
   return findsSkillFiles.test(command) && readsFoundFiles.test(command);
+}
+
+function invokesFileContentReader(command) {
+  return String(command)
+    .split(/[\n;|&]+/)
+    .some((segment) => {
+      const executableToken = commandTokens(segment)[0];
+      if (!executableToken) {
+        return false;
+      }
+      const executable = executableToken.replace(/^["']+|["']+$/g, "");
+      const name = executable.slice(executable.lastIndexOf("/") + 1);
+      return /^(?:cat|bat|head|tail|less|more|sed|awk|grep|rg)$/.test(name);
+    });
 }
 
 function firstOrderFailure(actual, required) {
@@ -660,6 +675,7 @@ const codexTransportEnvNames = [
   "https_proxy",
   "all_proxy",
   "no_proxy",
+  "CODEX_CA_CERTIFICATE",
   "SSL_CERT_FILE",
   "NODE_EXTRA_CA_CERTS",
 ];

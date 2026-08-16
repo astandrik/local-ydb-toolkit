@@ -173,6 +173,10 @@ describe("loadCases", () => {
       "local_ydb_apply_schema",
       "local_ydb_apply_schema",
     ]);
+    expect(
+      cases.find((testCase) => testCase.id === "schema-generate-apply").expected
+        .requiredTerms,
+    ).toEqual(["action=validate", "action=apply", "plan"]);
     expect(requiredTools("auth-hardening-backup-first")).toEqual([
       "local_ydb_status_report",
       "local_ydb_dump_tenant",
@@ -618,6 +622,7 @@ describe("buildCodexEnv", () => {
       transportEnv: {
         HTTP_PROXY: "http://proxy",
         ALL_PROXY: "socks5://proxy",
+        CODEX_CA_CERTIFICATE: "/tmp/company-ca.pem",
         UNRELATED: "nope",
       },
     });
@@ -629,6 +634,7 @@ describe("buildCodexEnv", () => {
       CODEX_API_KEY: "secret",
       HTTP_PROXY: "http://proxy",
       ALL_PROXY: "socks5://proxy",
+      CODEX_CA_CERTIFICATE: "/tmp/company-ca.pem",
     });
   });
 
@@ -760,6 +766,42 @@ describe("scoreCase", () => {
     );
 
     expect(failures).toContain(
+      "positive case has no local-ydb skill activation evidence",
+    );
+
+    const listingFailures = scoreWith(
+      [
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "ls $CODEX_HOME/skills/local-ydb",
+          },
+        },
+        finalAnswerEvent(),
+      ],
+      { shouldUseLocalYdbSkill: true },
+      { omitSkillActivation: true },
+    );
+    expect(listingFailures).toContain(
+      "positive case has no local-ydb skill activation evidence",
+    );
+
+    const echoedReaderFailures = scoreWith(
+      [
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "echo cat $CODEX_HOME/skills/local-ydb/SKILL.md",
+          },
+        },
+        finalAnswerEvent(),
+      ],
+      { shouldUseLocalYdbSkill: true },
+      { omitSkillActivation: true },
+    );
+    expect(echoedReaderFailures).toContain(
       "positive case has no local-ydb skill activation evidence",
     );
   });
