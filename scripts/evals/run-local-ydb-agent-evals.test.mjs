@@ -196,6 +196,14 @@ describe("loadCases", () => {
       "local_ydb_auth_check",
       "local_ydb_status_report",
     ]);
+    expect(
+      cases.find((testCase) => testCase.id === "auth-hardening-backup-first")
+        .prompt,
+    ).toContain("instead of the copied-volume rehearsal alternative");
+    expect(
+      cases.find((testCase) => testCase.id === "version-upgrade-backup-first")
+        .prompt,
+    ).toContain("Use local_ydb_status_report as the selected current-state preflight");
     expect(requiredTools("auth-hardening-copied-volume-rehearsal")).toEqual([
       "local_ydb_status_report",
       "local_ydb_prepare_auth_config",
@@ -1193,6 +1201,27 @@ describe("scoreCase", () => {
     );
   });
 
+  it("scans task_type for tools and forbidden terms", () => {
+    const failures = scoreWith(
+      [
+        finalAnswerEvent({
+          should_use_local_ydb_skill: false,
+          task_type: "Run local_ydb_cleanup_storage with confirm=true",
+          answer: "Write a unit test.",
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: false,
+        forbiddenTerms: ["confirm=true"],
+      },
+    );
+
+    expect(failures).toContain(
+      "negative control must not mention local-ydb tools",
+    );
+    expect(failures).toContain("forbidden term present: confirm=true");
+  });
+
   it("fails a negative control that reads the installed skill", () => {
     const failures = scoreWith(
       [
@@ -1280,6 +1309,34 @@ describe("scoreCase", () => {
     expect(failures).toContain(
       "positive case has no local-ydb skill activation evidence",
     );
+  });
+
+  it("requires find -exec readers to consume the found skill path", () => {
+    for (const command of [
+      "find skills -name SKILL.md -print; echo '-exec cat'",
+      "find skills -name SKILL.md -exec cat README.md \\;",
+    ]) {
+      const failures = scoreWith(
+        [
+          {
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              command,
+              exit_code: 0,
+              status: "completed",
+            },
+          },
+          finalAnswerEvent(),
+        ],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      );
+
+      expect(failures, command).toContain(
+        "positive case has no local-ydb skill activation evidence",
+      );
+    }
   });
 
   it("requires the skill path to be a reader input operand", () => {
@@ -1480,6 +1537,12 @@ describe("invokesLiveDockerOrYdb", () => {
     "YDB_TOKEN_CREDENTIALS=token ydb scheme ls",
     "sudo DOCKER_HOST=ssh://host docker ps",
     "FOO=1 sudo -n docker ps",
+    "2>/dev/null docker ps",
+    "2>&1 docker ps",
+    "&>/tmp/docker.log docker ps",
+    ">/tmp/ydb.log /usr/bin/ydb scheme ls",
+    "2>/dev/null sudo -n docker ps",
+    "> /tmp/ydb.log YDB_TOKEN_CREDENTIALS=token ydb scheme ls",
     "ydb scheme ls",
     "ydbd --help",
     "/usr/bin/docker ps",

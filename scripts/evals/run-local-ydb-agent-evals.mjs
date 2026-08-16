@@ -265,15 +265,20 @@ export function scoreCase(testCase, events, options = {}) {
       : [];
     const toolSequenceText = orderedTools.join("\n");
     // task_type is a free-form metadata label, not user-facing guidance, so
-    // text checks only look at the answer and safety gates.
+    // it cannot satisfy required guidance terms. It remains part of safety
+    // scans so contradictory tool or mutation text cannot bypass them.
     const guidanceText = finalAnswerGuidanceText(finalAnswer);
+    const safetyText = [
+      guidanceText,
+      typeof finalAnswer.task_type === "string" ? finalAnswer.task_type : "",
+    ].join("\n");
 
     if (!expectedSkill && containsToolPrefix(toolSequenceText, "local_ydb_")) {
       failures.push("negative control must not include local-ydb tools");
     }
     // Negative controls fail on any local-ydb tool mention: naming a tool
     // means the agent reached for local-ydb tooling at all.
-    if (!expectedSkill && containsToolPrefix(guidanceText, "local_ydb_")) {
+    if (!expectedSkill && containsToolPrefix(safetyText, "local_ydb_")) {
       failures.push("negative control must not mention local-ydb tools");
     }
     if (expectedSkill) {
@@ -286,7 +291,7 @@ export function scoreCase(testCase, events, options = {}) {
           failures.push(`unexpected tool present: ${tool}`);
         }
       }
-      for (const tool of unexpectedAnswerTools(guidanceText, allowedTools)) {
+      for (const tool of unexpectedAnswerTools(safetyText, allowedTools)) {
         failures.push(`unexpected tool recommended in answer text: ${tool}`);
       }
     }
@@ -310,7 +315,7 @@ export function scoreCase(testCase, events, options = {}) {
       if (orderedTools.includes(tool)) {
         failures.push(`forbidden tool present: ${tool}`);
       }
-      if (containsToolName(guidanceText, tool)) {
+      if (containsToolName(safetyText, tool)) {
         failures.push(`forbidden tool present in answer text: ${tool}`);
       }
     }
@@ -318,7 +323,7 @@ export function scoreCase(testCase, events, options = {}) {
       if (orderedTools.some((tool) => tool.startsWith(prefix))) {
         failures.push(`forbidden tool prefix present: ${prefix}`);
       }
-      if (containsToolPrefix(guidanceText, prefix)) {
+      if (containsToolPrefix(safetyText, prefix)) {
         failures.push(`forbidden tool prefix present in answer text: ${prefix}`);
       }
     }
@@ -328,7 +333,7 @@ export function scoreCase(testCase, events, options = {}) {
       }
     }
     for (const term of testCase.expected.forbiddenTerms ?? []) {
-      if (containsTerm(guidanceText, term)) {
+      if (containsTerm(safetyText, term)) {
         failures.push(`forbidden term present: ${term}`);
       }
       if (containsTerm(toolSequenceText, term)) {
@@ -542,11 +547,13 @@ function readsLocalYdbSkill(command) {
     return true;
   }
 
-  const findsSkillFiles =
-    /\bfind\b[^\n;|&]*\bskills\b[^\n;|&]*(?:-name|-iname)\s+["']?(?:\*\/)?SKILL\.md["']?/;
-  const readsFoundFiles =
-    /(?:-exec(?:dir)?\s+(?:cat|bat|head|tail|less|more)\b|\|\s*xargs(?:\s+\S+)*\s+(?:cat|bat|head|tail|less|more)\b)/;
-  return findsSkillFiles.test(command) && readsFoundFiles.test(command);
+  return splitShellCommandSegments(command).some((segment) => {
+    const findsSkillFiles =
+      /\bfind\b[^\n]*\bskills\b[^\n]*(?:-name|-iname)\s+["']?(?:\*\/)?SKILL\.md["']?/;
+    const readsFoundFile =
+      /-exec(?:dir)?\s+(?:cat|bat|head|tail|less|more)\b[^{}\n]*\{\}/;
+    return findsSkillFiles.test(segment) && readsFoundFile.test(segment);
+  });
 }
 
 function commandExecutionSucceeded(event) {
@@ -735,12 +742,28 @@ function sudoOptionConsumesNextToken(token) {
   return false;
 }
 
+function stripShellRedirections(tokens) {
+  const result = [];
+  const redirection = /^(?:\d*(?:<<<|<<|>>|<>|>&|<&|>\||>|<)|&>>?)(.*)$/;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const match = tokens[index].match(redirection);
+    if (!match) {
+      result.push(tokens[index]);
+      continue;
+    }
+    if (match[1] === "" && index + 1 < tokens.length) {
+      index += 1;
+    }
+  }
+  return result;
+}
+
 // Returns the tokens forming the actual command after the standard
 // direct-command prefixes: environment assignments (VAR=value) and sudo
 // with its option tokens, combined short options, and the `--` separator.
 // Unknown sudo options are skipped valueless.
 function commandTokens(segment) {
-  const tokens = shellTokens(segment);
+  const tokens = stripShellRedirections(shellTokens(segment));
   let index = skipEnvAssignments(tokens, 0);
   if (tokens[index] === "sudo") {
     index += 1;
@@ -768,8 +791,10 @@ function splitShellCommandSegments(command) {
   let segment = "";
   let quote;
   let escaped = false;
+  const text = String(command);
 
-  for (const character of String(command)) {
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
     if (escaped) {
       segment += character;
       escaped = false;
@@ -792,7 +817,10 @@ function splitShellCommandSegments(command) {
       segment += character;
       continue;
     }
-    if (/[\n;|&]/.test(character)) {
+    const redirectionAmpersand =
+      character === "&" &&
+      (/[<>]$/.test(segment) || text[index + 1] === ">");
+    if (/[\n;|&]/.test(character) && !redirectionAmpersand) {
       segments.push(segment);
       segment = "";
       continue;

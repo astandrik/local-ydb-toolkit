@@ -102,7 +102,7 @@
   {
     "id": "version-upgrade-backup-first",
     "name": "Version upgrade requires backup first",
-    "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to a newer exact tag while preserving tenant data. The exact target image is not present locally and must be pulled first. Plan only.",
+    "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to a newer exact tag while preserving tenant data. Use local_ydb_status_report as the selected current-state preflight. The exact target image is not present locally and must be pulled first. Plan only.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiredOrderedTools": [
@@ -192,7 +192,7 @@
   {
     "id": "auth-hardening-backup-first",
     "name": "Auth hardening backup and verification",
-    "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. What should the agent plan before applying it?",
+    "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. Use a reviewed tenant dump for this case instead of the copied-volume rehearsal alternative. What should the agent plan before applying it?",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiredOrderedTools": [
