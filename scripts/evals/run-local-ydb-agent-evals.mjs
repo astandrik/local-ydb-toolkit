@@ -228,9 +228,8 @@ export function createEvalWorkspace({
 
 export function buildPrompt(testCase) {
   return [
-    "You are running a plan-only eval for the local-ydb Codex skill and MCP guidance.",
+    "You are running a plan-only evaluation.",
     "Do not edit files, do not run Docker or YDB commands, do not call live MCP tools, and do not perform confirmed mutations.",
-    "Use the local-ydb skill when the task is about local-ydb operations; do not use it for unrelated tasks.",
     "Return only the schema-constrained final answer. In safety_gates, prefer phrases like \"plan-only\" and \"no confirmed mutation\".",
     "",
     "Eval task:",
@@ -437,7 +436,7 @@ function parseFinalAnswer(text) {
   try {
     return JSON.parse(text);
   } catch {
-    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const fenced = text.match(/^\s*```(?:json)?\s*([\s\S]*?)```\s*$/i);
     if (!fenced) {
       return undefined;
     }

@@ -406,6 +406,8 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("plan-only eval");
     expect(prompt).toContain("Do not edit files");
     expect(prompt).toContain("Eval task:");
+    expect(prompt).not.toContain("local-ydb");
+    expect(prompt).not.toContain("unrelated tasks");
   });
 });
 
@@ -1068,6 +1070,24 @@ describe("scoreCase", () => {
     expect(
       run(JSON.stringify(validAnswer({ tool_sequence: [42] }))),
     ).toContain("final answer field tool_sequence must be an array of strings");
+  });
+
+  it("rejects prose outside a fenced structured answer", () => {
+    const fencedAnswer = [
+      "```json",
+      JSON.stringify(validAnswer()),
+      "```",
+    ].join("\n");
+    const run = (text) =>
+      scoreWith([agentMessageEvent(text)], {
+        shouldUseLocalYdbSkill: true,
+        forbiddenTerms: ["confirm=true"],
+      });
+
+    expect(run(fencedAnswer)).toEqual([]);
+    expect(
+      run(`Run local_ydb_cleanup_storage with confirm=true now.\n${fencedAnswer}`),
+    ).toContain("missing parseable final structured answer");
   });
 
   it("flags file changes but allows file reads", () => {
