@@ -12,7 +12,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "description": "MCP tool name, optionally followed by concise call arguments."
+        "description": "MCP tool name, optionally followed by space-separated key=value argument summaries. Use placeholders such as <generated-script> for prior call results; do not use a JSON argument object."
       }
     },
     "safety_gates": {

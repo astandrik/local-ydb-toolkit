@@ -665,9 +665,25 @@ describe("buildPrompt", () => {
 
     expect(prompt).toContain("plan-only eval");
     expect(prompt).toContain("Do not edit files");
+    expect(prompt).toContain("space-separated key=value argument summaries");
+    expect(prompt).toContain("do not use a JSON argument object");
     expect(prompt).toContain("Eval task:");
     expect(prompt).not.toContain("local-ydb");
     expect(prompt).not.toContain("unrelated tasks");
+  });
+
+  it("documents the canonical tool-sequence argument syntax in the output schema", () => {
+    const schemaPath = fileURLToPath(
+      new URL("../../evals/local-ydb-agent/final-answer.schema.json", import.meta.url),
+    );
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
+
+    expect(schema.properties.tool_sequence.items.description).toContain(
+      "space-separated key=value argument summaries",
+    );
+    expect(schema.properties.tool_sequence.items.description).toContain(
+      "do not use a JSON argument object",
+    );
   });
 });
 
@@ -977,6 +993,22 @@ describe("scoreCase", () => {
     );
 
     expect(failures).toEqual([]);
+  });
+
+  it("rejects JSON argument objects in the canonical tool sequence", () => {
+    const entry =
+      'local_ydb_apply_schema {"action":"validate","script":"<generated-script>"}';
+    const failures = scoreWith(
+      [finalAnswerEvent({ tool_sequence: [entry] })],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_apply_schema"],
+      },
+    );
+
+    expect(failures).toContain(
+      `tool sequence entry must use key=value arguments, not JSON: ${entry}`,
+    );
   });
 
   it("fails when should_use_local_ydb_skill mismatches", () => {

@@ -283,6 +283,7 @@ export function buildPrompt(testCase) {
     "You are running a plan-only evaluation.",
     "Do not edit files, do not run Docker or YDB commands, do not call live MCP tools, and do not perform confirmed mutations.",
     "Return only the schema-constrained final answer. In safety_gates, prefer phrases like \"plan-only\" and \"no confirmed mutation\".",
+    "Format each tool_sequence entry as the MCP tool name followed by space-separated key=value argument summaries. Use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
     "",
     "Eval task:",
     testCase.prompt,
@@ -298,6 +299,11 @@ export function buildPrompt(testCase) {
 // environment.
 export function scoreCase(testCase, events, options = {}) {
   const failures = [];
+  const expectedSkill = testCase.expected.shouldUseLocalYdbSkill;
+  const allowedTools = new Set([
+    ...(testCase.expected.requiredOrderedTools ?? []),
+    ...(testCase.expected.allowedExtraTools ?? []),
+  ]);
   const finalText = finalAgentMessage(events);
   const finalAnswer = parseFinalAnswer(finalText);
 
@@ -305,7 +311,6 @@ export function scoreCase(testCase, events, options = {}) {
     failures.push("missing parseable final structured answer");
   } else {
     failures.push(...validateFinalAnswerShape(finalAnswer));
-    const expectedSkill = testCase.expected.shouldUseLocalYdbSkill;
     if (finalAnswer.should_use_local_ydb_skill !== expectedSkill) {
       failures.push(`should_use_local_ydb_skill expected ${expectedSkill}`);
     }
@@ -331,6 +336,11 @@ export function scoreCase(testCase, events, options = {}) {
     if (containsConfirmedMutationArgument(finalSafetyText)) {
       failures.push("confirmed mutation argument present");
     }
+    for (const entry of toolSequenceEntries) {
+      if (toolSequenceUsesJsonArguments(entry)) {
+        failures.push(`tool sequence entry must use key=value arguments, not JSON: ${entry}`);
+      }
+    }
 
     if (
       testCase.expected.requiresPlanFirstGate &&
@@ -351,10 +361,6 @@ export function scoreCase(testCase, events, options = {}) {
       failures.push("negative control must not recommend the local-ydb skill");
     }
     if (expectedSkill) {
-      const allowedTools = new Set([
-        ...(testCase.expected.requiredOrderedTools ?? []),
-        ...(testCase.expected.allowedExtraTools ?? []),
-      ]);
       for (const tool of orderedTools) {
         if (!allowedTools.has(tool)) {
           failures.push(`unexpected tool present: ${tool}`);
@@ -450,20 +456,16 @@ export function scoreCase(testCase, events, options = {}) {
     }
     // Negative controls reject any local-ydb mention in every agent
     // message — not only in the final answer.
-    if (!testCase.expected.shouldUseLocalYdbSkill && containsToolPrefix(text, "local_ydb_")) {
+    if (!expectedSkill && containsToolPrefix(text, "local_ydb_")) {
       failures.push("local-ydb tool mentioned in earlier agent message");
     }
     if (
-      !testCase.expected.shouldUseLocalYdbSkill &&
+      !expectedSkill &&
       containsLocalYdbSkillReference(text)
     ) {
       failures.push("local-ydb skill recommended in earlier agent message");
     }
-    if (testCase.expected.shouldUseLocalYdbSkill) {
-      const allowedTools = new Set([
-        ...(testCase.expected.requiredOrderedTools ?? []),
-        ...(testCase.expected.allowedExtraTools ?? []),
-      ]);
+    if (expectedSkill) {
       for (const tool of unexpectedAnswerTools(text, allowedTools)) {
         failures.push(`unexpected tool recommended in earlier agent message: ${tool}`);
       }
@@ -507,10 +509,10 @@ export function scoreCase(testCase, events, options = {}) {
       ? [command]
       : [];
   });
-  if (testCase.expected.shouldUseLocalYdbSkill && skillReads.length === 0) {
+  if (expectedSkill && skillReads.length === 0) {
     failures.push("positive case has no local-ydb skill activation evidence");
   }
-  if (!testCase.expected.shouldUseLocalYdbSkill) {
+  if (!expectedSkill) {
     for (const command of skillReads) {
       failures.push(`trace reads the local-ydb skill in a negative control: ${command}`);
     }
@@ -594,17 +596,13 @@ function validateFinalAnswerShape(answer) {
   return failures;
 }
 
-function finalAnswerTextFields(answer) {
+function finalAnswerGuidanceText(answer) {
   // task_type is a free-form metadata label, not user-facing guidance, so
   // text checks only look at the answer and safety gates.
   return [
     answer.answer,
     ...(Array.isArray(answer.safety_gates) ? answer.safety_gates : []),
-  ].filter((value) => typeof value === "string");
-}
-
-function finalAnswerGuidanceText(answer) {
-  return finalAnswerTextFields(answer).join("\n");
+  ].filter((value) => typeof value === "string").join("\n");
 }
 
 function escapeRegExp(value) {
@@ -655,6 +653,11 @@ function containsLocalYdbSkillReference(text) {
 function toolSequenceEntryName(entry) {
   const normalized = entry.trim();
   return normalized.match(/^[A-Za-z][A-Za-z0-9_]*/)?.[0] ?? normalized;
+}
+
+function toolSequenceUsesJsonArguments(entry) {
+  const tool = toolSequenceEntryName(entry);
+  return entry.trim().slice(tool.length).trimStart().startsWith("{");
 }
 
 function unexpectedAnswerTools(text, allowedTools) {
