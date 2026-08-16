@@ -53,6 +53,7 @@
       "requiredOrderedTools": [
         "local_ydb_check_prerequisites",
         "local_ydb_bootstrap",
+        "local_ydb_database_status",
         "local_ydb_tenant_check",
         "local_ydb_nodes_check",
         "local_ydb_graphshard_check"
@@ -82,6 +83,7 @@
         "local_ydb_status_report",
         "local_ydb_scheme",
         "local_ydb_generate_schema",
+        "local_ydb_apply_schema",
         "local_ydb_apply_schema"
       ],
       "requiredTerms": [
@@ -118,7 +120,8 @@
         "exact",
         "tag",
         "dump",
-        "restore"
+        "restore",
+        "completed"
       ],
       "forbiddenTerms": [
         "confirm: true",
@@ -196,7 +199,8 @@
         "local_ydb_prepare_auth_config",
         "local_ydb_write_dynamic_auth_config",
         "local_ydb_apply_auth_hardening",
-        "local_ydb_auth_check"
+        "local_ydb_auth_check",
+        "local_ydb_status_report"
       ],
       "requiredTerms": [
         "backup",
@@ -221,7 +225,8 @@
         "local_ydb_prepare_auth_config",
         "local_ydb_write_dynamic_auth_config",
         "local_ydb_apply_auth_hardening",
-        "local_ydb_auth_check"
+        "local_ydb_auth_check",
+        "local_ydb_status_report"
       ],
       "requiredTerms": [
         "copied volume",

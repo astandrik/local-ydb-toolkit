@@ -53,7 +53,21 @@ function finalAnswerEvent(overrides = {}) {
 }
 
 function scoreWith(events, expected, options = {}) {
-  return scoreCase(makeCase(expected), events, options).failures;
+  const { omitSkillActivation = false, ...scoreOptions } = options;
+  const activationEvents =
+    expected.shouldUseLocalYdbSkill && !omitSkillActivation
+      ? [
+          {
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              command: "cat $CODEX_HOME/skills/local-ydb/SKILL.md",
+            },
+          },
+        ]
+      : [];
+  return scoreCase(makeCase(expected), [...activationEvents, ...events], scoreOptions)
+    .failures;
 }
 
 function scorePlanCommand(command, expected = { shouldUseLocalYdbSkill: true }) {
@@ -133,10 +147,49 @@ describe("loadCases", () => {
         allowedExtraToolsBefore: {
           local_ydb_dump_tenant: "local_ydb_upgrade_version",
         },
-        requiredTerms: ["exact", "tag", "dump", "restore"],
+        requiredTerms: ["exact", "tag", "dump", "restore", "completed"],
         forbiddenTerms: ["confirm: true", '"confirm": true', "confirm=true"],
       },
     });
+  });
+
+  it("keeps workflow-critical verification steps in the stable cases", () => {
+    const cases = loadCases(stableCasesPath);
+    const requiredTools = (id) =>
+      cases.find((testCase) => testCase.id === id).expected.requiredOrderedTools;
+
+    expect(requiredTools("cms-tenant-graphshard-bootstrap")).toEqual([
+      "local_ydb_check_prerequisites",
+      "local_ydb_bootstrap",
+      "local_ydb_database_status",
+      "local_ydb_tenant_check",
+      "local_ydb_nodes_check",
+      "local_ydb_graphshard_check",
+    ]);
+    expect(requiredTools("schema-generate-apply")).toEqual([
+      "local_ydb_status_report",
+      "local_ydb_scheme",
+      "local_ydb_generate_schema",
+      "local_ydb_apply_schema",
+      "local_ydb_apply_schema",
+    ]);
+    expect(requiredTools("auth-hardening-backup-first")).toEqual([
+      "local_ydb_status_report",
+      "local_ydb_dump_tenant",
+      "local_ydb_prepare_auth_config",
+      "local_ydb_write_dynamic_auth_config",
+      "local_ydb_apply_auth_hardening",
+      "local_ydb_auth_check",
+      "local_ydb_status_report",
+    ]);
+    expect(requiredTools("auth-hardening-copied-volume-rehearsal")).toEqual([
+      "local_ydb_status_report",
+      "local_ydb_prepare_auth_config",
+      "local_ydb_write_dynamic_auth_config",
+      "local_ydb_apply_auth_hardening",
+      "local_ydb_auth_check",
+      "local_ydb_status_report",
+    ]);
   });
 
   it("rejects an empty suite", () => {
@@ -697,6 +750,18 @@ describe("scoreCase", () => {
     );
 
     expect(failures).toContain("should_use_local_ydb_skill expected true");
+  });
+
+  it("requires trace evidence for positive skill activation", () => {
+    const failures = scoreWith(
+      [finalAnswerEvent()],
+      { shouldUseLocalYdbSkill: true },
+      { omitSkillActivation: true },
+    );
+
+    expect(failures).toContain(
+      "positive case has no local-ydb skill activation evidence",
+    );
   });
 
   it("requires would_execute_confirmed_mutation to stay false", () => {

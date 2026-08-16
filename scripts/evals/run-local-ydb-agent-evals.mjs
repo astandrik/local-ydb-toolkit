@@ -384,14 +384,17 @@ export function scoreCase(testCase, events, options = {}) {
     failures.push(`trace contains live MCP tool call: ${name}`);
   }
 
-  // Reading the installed skill is activation even when the final answer
-  // self-reports non-use, so negative controls fail on any trace command
-  // that touches the skill path.
+  // Reading the installed skill is the trace evidence for activation. A
+  // self-reported positive without that evidence fails, while negative
+  // controls fail on every matching read.
+  const skillReads = events.flatMap((event) => {
+    const command = event?.item?.command;
+    return typeof command === "string" && readsLocalYdbSkill(command) ? [command] : [];
+  });
+  if (testCase.expected.shouldUseLocalYdbSkill && skillReads.length === 0) {
+    failures.push("positive case has no local-ydb skill activation evidence");
+  }
   if (!testCase.expected.shouldUseLocalYdbSkill) {
-    const skillReads = events.flatMap((event) => {
-      const command = event?.item?.command;
-      return typeof command === "string" && readsLocalYdbSkill(command) ? [command] : [];
-    });
     for (const command of skillReads) {
       failures.push(`trace reads the local-ydb skill in a negative control: ${command}`);
     }
