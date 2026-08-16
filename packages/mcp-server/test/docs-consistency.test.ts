@@ -149,6 +149,23 @@ describe("MCP Registry metadata", () => {
 });
 
 describe("repository skill consistency", () => {
+  it("keeps restore prerequisites before both Scenario 7 restore calls", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootScenario = sectionRange(rootScenarios, "## Scenario 7: Dump and Restore", "## Scenario 8:");
+    const skillScenario = sectionRange(skillScenarios, "## Scenario 7: Dump and Restore", "## Scenario 8:");
+    const pathExampleIndex = rootScenario.indexOf("Path-level example:");
+    const mainCalls = rootScenario.slice(0, pathExampleIndex);
+    const pathCalls = rootScenario.slice(pathExampleIndex);
+
+    expect(rootScenario).toBe(skillScenario);
+    for (const calls of [mainCalls, pathCalls]) {
+      const restoreIndex = calls.indexOf('"tool": "local_ydb_restore_tenant"');
+      expect(calls.indexOf('"tool": "local_ydb_list_dumps"')).toBeLessThan(restoreIndex);
+      expect(calls.indexOf('"tool": "local_ydb_tenant_check"')).toBeLessThan(restoreIndex);
+    }
+  });
+
   it("keeps copied-volume dump guidance identical in both scenario copies", () => {
     const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
     const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");

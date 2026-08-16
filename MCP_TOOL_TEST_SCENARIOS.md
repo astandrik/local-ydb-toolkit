@@ -580,6 +580,7 @@ Calls:
 ```json
 { "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "dumpName": "pre-auth-mcp-20260425" } }
 { "tool": "local_ydb_list_dumps", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "dumpName": "pre-auth-mcp-20260425" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_graphshard_check", "arguments": { "profile": "ghcr261-clean" } }
@@ -589,6 +590,8 @@ Path-level example:
 
 ```json
 { "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "dumpName": "one-table-smoke", "path": "dir/table" } }
+{ "tool": "local_ydb_list_dumps", "arguments": { "profile": "ghcr261-clean" } }
+{ "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "dumpName": "one-table-smoke", "path": ".", "describePaths": ["dir/table"], "countQueries": [{ "label": "dir/table rows", "query": "SELECT COUNT(*) FROM `dir/table`;" }] } }
 ```
 

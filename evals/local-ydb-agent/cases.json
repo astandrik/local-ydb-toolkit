@@ -26,6 +26,7 @@
     "prompt": "I just need to create a generic local YDB database at /local for development. Which MCP workflow should I use? Plan only.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_check_prerequisites",
         "local_ydb_bootstrap_root_database"
@@ -50,6 +51,7 @@
     "prompt": "I need /local/analytics with a CMS-created tenant, GraphShard support, and a dynamic tenant node. Plan the safe MCP sequence.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_check_prerequisites",
         "local_ydb_bootstrap",
@@ -79,6 +81,7 @@
     "prompt": "Plan a safe flow to create a row table with a secondary index in local-ydb using the MCP schema tools.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_status_report",
         "local_ydb_scheme",
@@ -88,9 +91,11 @@
         "local_ydb_scheme"
       ],
       "requiredTerms": [
-        "action=validate",
-        "action=apply",
         "plan"
+      ],
+      "requiredOrderedTerms": [
+        "action=validate",
+        "action=apply"
       ],
       "forbiddenTerms": [
         "confirm: true",
@@ -105,6 +110,7 @@
     "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to a newer exact tag while preserving tenant data. Use local_ydb_status_report as the selected current-state preflight. The exact target image is not present locally and must be pulled first. Plan only.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_status_report",
         "local_ydb_list_versions",
@@ -138,6 +144,7 @@
     "prompt": "The tenant storage pool was over-allocated and we need to reduce groups safely. Give the MCP sequence and safety checks, plan only.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_status_report",
         "local_ydb_storage_placement",
@@ -170,6 +177,7 @@
     "prompt": "I have one directory smoke_src and want to dump it, discover the dump, and restore it into smoke_dst with describe and COUNT verification hooks. Plan the MCP sequence only.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_dump_tenant",
         "local_ydb_list_dumps",
@@ -195,6 +203,7 @@
     "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. Use a reviewed tenant dump for this case instead of the copied-volume rehearsal alternative. What should the agent plan before applying it?",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_status_report",
         "local_ydb_dump_tenant",
@@ -222,6 +231,7 @@
     "prompt": "We want to rehearse production-like auth/config hardening on a copied volume of our live local-ydb stack before touching the real one, instead of taking a tenant dump. What should the agent plan?",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_status_report",
         "local_ydb_prepare_auth_config",
@@ -248,6 +258,7 @@
     "prompt": "There are old local-ydb dump directories and volumes after a migration. Plan how to inspect and clean them safely using MCP tools.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
       "requiredOrderedTools": [
         "local_ydb_storage_leftovers",
         "local_ydb_cleanup_storage"
