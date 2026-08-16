@@ -1011,6 +1011,42 @@ describe("scoreCase", () => {
     );
   });
 
+  it("matches required tool argument values at complete boundaries", () => {
+    for (const { tool, term, extendedValue } of [
+      {
+        tool: "local_ydb_reduce_storage_groups",
+        term: "count=1",
+        extendedValue: "count=10",
+      },
+      {
+        tool: "local_ydb_status_report",
+        term: "profile=auth-rehearsal",
+        extendedValue: "profile=auth-rehearsal-live",
+      },
+    ]) {
+      const expected = {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [tool],
+        requiredToolEntryTerms: { [tool]: [term] },
+      };
+
+      expect(
+        scoreWith(
+          [finalAnswerEvent({ tool_sequence: [`${tool} ${extendedValue}`] })],
+          expected,
+        ),
+      ).toContain(
+        `tool sequence entry ${tool} #1 missing required term: ${term}`,
+      );
+      expect(
+        scoreWith(
+          [finalAnswerEvent({ tool_sequence: [`${tool} ${term}`] })],
+          expected,
+        ),
+      ).toEqual([]);
+    }
+  });
+
   it("fails when should_use_local_ydb_skill mismatches", () => {
     const failures = scoreWith(
       [finalAnswerEvent({ should_use_local_ydb_skill: false })],
@@ -1211,6 +1247,35 @@ describe("scoreCase", () => {
     );
 
     expect(failures).toEqual([]);
+  });
+
+  it("rejects excess required tool occurrences unless explicitly allowed", () => {
+    const tool = "local_ydb_apply_schema";
+    const sequence = [
+      `${tool} action=validate script=<generated-script>`,
+      `${tool} action=apply script=<unreviewed-script>`,
+    ];
+    const failures = scoreWith(
+      [finalAnswerEvent({ tool_sequence: sequence })],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [tool],
+      },
+    );
+
+    expect(failures).toContain(
+      `required tool ${tool} appears 2 times; expected at most 1`,
+    );
+    expect(
+      scoreWith(
+        [finalAnswerEvent({ tool_sequence: sequence })],
+        {
+          shouldUseLocalYdbSkill: true,
+          requiredOrderedTools: [tool],
+          allowedExtraTools: [tool],
+        },
+      ),
+    ).toEqual([]);
   });
 
   it("requires the final schema describe after plan-only apply", () => {
@@ -1678,6 +1743,37 @@ describe("scoreCase", () => {
     expect(positive).toEqual([]);
   });
 
+  it("recognizes numbered skill reads in positive and negative cases", () => {
+    const command = "nl -ba skills/local-ydb/SKILL.md";
+    const commandEvent = {
+      type: "item.completed",
+      item: { type: "command_execution", command, exit_code: 0 },
+    };
+
+    expect(
+      scoreWith(
+        [commandEvent, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toEqual([]);
+
+    expect(
+      scoreWith(
+        [
+          commandEvent,
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      ),
+    ).toContain(
+      `trace reads the local-ydb skill in a negative control: ${command}`,
+    );
+  });
+
   it("fails a negative control that expands the installed skill", () => {
     for (const command of ["cat skills/*/SKILL.md"]) {
       const failures = scoreWith(
@@ -1985,6 +2081,8 @@ describe("invokesLiveDockerOrYdb", () => {
     ">/tmp/ydb.log /usr/bin/ydb scheme ls",
     "2>/dev/null sudo -n docker ps",
     "> /tmp/ydb.log YDB_TOKEN_CREDENTIALS=token ydb scheme ls",
+    "docker>/tmp/docker.log ps",
+    "ydb</dev/null scheme ls",
     "ydb scheme ls",
     "ydbd --help",
     "/usr/bin/docker ps",
@@ -2011,6 +2109,7 @@ describe("invokesLiveDockerOrYdb", () => {
     "rg 'docker|ydb' skills/local-ydb/SKILL.md",
     "echo 'docker && ydb'",
     "grep docker README.md",
+    "echo docker>/tmp/docker.log",
   ])("allows %j", (command) => {
     expect(invokesLiveDockerOrYdb(command)).toBe(false);
   });

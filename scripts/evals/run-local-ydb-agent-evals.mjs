@@ -109,9 +109,8 @@ export function loadCases(casesPath = defaultCasesPath) {
         throw new Error(`Agent eval case ${testCase.id} expected.allowedExtraToolsBefore target must be listed in requiredOrderedTools: ${beforeTool}`);
       }
     }
-    const requiredToolOccurrences = (testCase.expected.requiredOrderedTools ?? []).reduce(
-      (counts, tool) => counts.set(tool, (counts.get(tool) ?? 0) + 1),
-      new Map(),
+    const requiredToolOccurrences = countOccurrences(
+      testCase.expected.requiredOrderedTools ?? [],
     );
     for (const [tool, terms] of Object.entries(testCase.expected.requiredToolEntryTerms ?? {})) {
       const occurrences = requiredToolOccurrences.get(tool) ?? 0;
@@ -177,6 +176,13 @@ function assertOptionalStringArrayMap(testCase, field) {
       throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an object of non-empty occurrence term groups.`);
     }
   }
+}
+
+function countOccurrences(values) {
+  return values.reduce(
+    (counts, value) => counts.set(value, (counts.get(value) ?? 0) + 1),
+    new Map(),
+  );
 }
 
 export function parseJsonlEvents(stdout) {
@@ -300,9 +306,12 @@ export function buildPrompt(testCase) {
 export function scoreCase(testCase, events, options = {}) {
   const failures = [];
   const expectedSkill = testCase.expected.shouldUseLocalYdbSkill;
+  const requiredOrderedTools = testCase.expected.requiredOrderedTools ?? [];
+  const allowedExtraTools = new Set(testCase.expected.allowedExtraTools ?? []);
+  const requiredToolOccurrences = countOccurrences(requiredOrderedTools);
   const allowedTools = new Set([
-    ...(testCase.expected.requiredOrderedTools ?? []),
-    ...(testCase.expected.allowedExtraTools ?? []),
+    ...requiredOrderedTools,
+    ...allowedExtraTools,
   ]);
   const finalText = finalAgentMessage(events);
   const finalAnswer = parseFinalAnswer(finalText);
@@ -375,12 +384,21 @@ export function scoreCase(testCase, events, options = {}) {
         failures.push(`unexpected tool recommended in answer text: ${tool}`);
       }
     }
-    for (const tool of testCase.expected.requiredOrderedTools ?? []) {
+    for (const tool of requiredOrderedTools) {
       if (!orderedTools.includes(tool)) {
         failures.push(`missing required tool ${tool}`);
       }
     }
-    const orderFailure = firstOrderFailure(orderedTools, testCase.expected.requiredOrderedTools ?? []);
+    const actualToolOccurrences = countOccurrences(orderedTools);
+    for (const [tool, expectedCount] of requiredToolOccurrences) {
+      const actualCount = actualToolOccurrences.get(tool) ?? 0;
+      if (actualCount > expectedCount && !allowedExtraTools.has(tool)) {
+        failures.push(
+          `required tool ${tool} appears ${actualCount} times; expected at most ${expectedCount}`,
+        );
+      }
+    }
+    const orderFailure = firstOrderFailure(orderedTools, requiredOrderedTools);
     if (orderFailure) {
       failures.push(orderFailure);
     }
@@ -389,7 +407,10 @@ export function scoreCase(testCase, events, options = {}) {
       terms.forEach((termOrTerms, index) => {
         const occurrenceTerms = Array.isArray(termOrTerms) ? termOrTerms : [termOrTerms];
         for (const term of occurrenceTerms) {
-          if (entries[index] !== undefined && !containsTerm(entries[index], term)) {
+          if (
+            entries[index] !== undefined &&
+            !containsRequiredToolEntryTerm(entries[index], term)
+          ) {
             failures.push(`tool sequence entry ${tool} #${index + 1} missing required term: ${term}`);
           }
         }
@@ -615,6 +636,21 @@ function containsTerm(text, term) {
   return text.toLowerCase().includes(String(term).toLowerCase());
 }
 
+function containsRequiredToolEntryTerm(text, term) {
+  const normalizedTerm = String(term);
+  if (!normalizedTerm.includes("=")) {
+    return containsTerm(text, normalizedTerm);
+  }
+  const argumentBoundary = String.raw`(?:^|\s|,|\[|\{)`;
+  const valueBoundary = normalizedTerm.endsWith("=")
+    ? ""
+    : String.raw`(?![A-Za-z0-9_./:@+-])`;
+  return new RegExp(
+    `${argumentBoundary}${escapeRegExp(normalizedTerm)}${valueBoundary}`,
+    "i",
+  ).test(text);
+}
+
 function containsConfirmedMutationArgument(text) {
   return /(?:^|[^A-Za-z0-9_])["']?confirm["']?\s*(?:=|:)\s*(?:true|["']true["'])(?![A-Za-z0-9_])/i.test(
     text,
@@ -707,7 +743,7 @@ function readerUsesSkillInput(segment, matchesSkillPath) {
   const skillIndexes = args.flatMap((token, index) =>
     matchesSkillPath(token) ? [index] : [],
   );
-  if (/^(?:cat|bat|head|tail|less|more)$/.test(name)) {
+  if (/^(?:cat|bat|head|tail|less|more|nl)$/.test(name)) {
     return redirectedSkillInput || skillIndexes.length > 0;
   }
   if (!/^(?:sed|awk|grep|rg)$/.test(name)) {
@@ -972,19 +1008,44 @@ function sudoOptionConsumesNextToken(token) {
 
 function stripShellRedirections(tokens) {
   const result = [];
-  const redirection = /^(?:\d*(?:<<<|<<|>>|<>|>&|<&|>\||>|<)|&>>?)(.*)$/;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    const match = unquotedRedirectionMatch(token, redirection);
-    if (!match) {
+    const redirection = unquotedShellRedirection(token);
+    if (!redirection) {
       result.push(token.value);
       continue;
     }
-    if (match[1] === "" && index + 1 < tokens.length) {
+    if (redirection.commandPrefix) {
+      result.push(redirection.commandPrefix);
+    }
+    if (!redirection.hasAttachedTarget && index + 1 < tokens.length) {
       index += 1;
     }
   }
   return result;
+}
+
+const shellRedirectionOperators = [
+  "<<<", "&>>", "<<", ">>", "<>", ">&", "<&", ">|", "&>", ">", "<",
+];
+
+function unquotedShellRedirection(token) {
+  for (let index = 0; index < token.value.length; index += 1) {
+    for (const operator of shellRedirectionOperators) {
+      if (
+        !token.value.startsWith(operator, index) ||
+        token.literalMask.slice(index, index + operator.length).some(Boolean)
+      ) {
+        continue;
+      }
+      const before = token.value.slice(0, index);
+      return {
+        commandPrefix: before && !/^\d+$/.test(before) ? before : undefined,
+        hasAttachedTarget: token.value.length > index + operator.length,
+      };
+    }
+  }
+  return undefined;
 }
 
 function unquotedRedirectionMatch(token, redirection) {
