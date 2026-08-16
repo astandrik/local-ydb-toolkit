@@ -1104,6 +1104,28 @@ describe("scoreCase", () => {
     }
   });
 
+  it("rejects malformed tool arguments", () => {
+    const entry =
+      "local_ydb_reduce_storage_groups count=1 poolName=<returned-poolName> count:10";
+    const failures = scoreWith(
+      [finalAnswerEvent({ tool_sequence: [entry] })],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_reduce_storage_groups"],
+        requiredToolEntryTerms: {
+          local_ydb_reduce_storage_groups: [
+            "count=1",
+            "poolName=<returned-poolName>",
+          ],
+        },
+      },
+    );
+
+    expect(failures).toContain(
+      `tool sequence entry has malformed argument count:10: ${entry}`,
+    );
+  });
+
   it("fails when should_use_local_ydb_skill mismatches", () => {
     const failures = scoreWith(
       [finalAnswerEvent({ should_use_local_ydb_skill: false })],
@@ -1244,7 +1266,7 @@ describe("scoreCase", () => {
     const falseConfirmation = scoreWith(
       [
         finalAnswerEvent({
-          tool_sequence: ["local_ydb_cleanup_storage confirm:false"],
+          tool_sequence: ["local_ydb_cleanup_storage confirm=false"],
         }),
       ],
       {
@@ -2002,6 +2024,91 @@ describe("scoreCase", () => {
     ).not.toContain(
       `trace reads the local-ydb skill in a negative control: ${command}`,
     );
+  });
+
+  it("accepts successful skill reads in an AND chain", () => {
+    const command = "cat skills/local-ydb/SKILL.md && true";
+    const commandEvent = {
+      type: "item.completed",
+      item: { type: "command_execution", command, exit_code: 0 },
+    };
+
+    expect(
+      scoreWith(
+        [commandEvent, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toEqual([]);
+    expect(
+      scoreWith(
+        [
+          commandEvent,
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      ),
+    ).toContain(
+      `trace reads the local-ydb skill in a negative control: ${command}`,
+    );
+  });
+
+  it("requires skill contents to remain visible on standard output", () => {
+    for (const command of [
+      "cat skills/local-ydb/SKILL.md > /dev/null",
+      "cat skills/local-ydb/SKILL.md >/tmp/local-ydb-skill",
+      "cat skills/local-ydb/SKILL.md 1>&2",
+    ]) {
+      const commandEvent = {
+        type: "item.completed",
+        item: { type: "command_execution", command, exit_code: 0 },
+      };
+
+      expect(
+        scoreWith(
+          [commandEvent, finalAnswerEvent()],
+          { shouldUseLocalYdbSkill: true },
+          { omitSkillActivation: true },
+        ),
+        command,
+      ).toContain("positive case has no local-ydb skill activation evidence");
+      expect(
+        scoreWith(
+          [
+            commandEvent,
+            finalAnswerEvent({
+              should_use_local_ydb_skill: false,
+              task_type: "other",
+            }),
+          ],
+          { shouldUseLocalYdbSkill: false },
+        ),
+        command,
+      ).not.toContain(
+        `trace reads the local-ydb skill in a negative control: ${command}`,
+      );
+    }
+
+    const stderrOnlyCommand =
+      "cat skills/local-ydb/SKILL.md 2>/dev/null";
+    const stderrOnlyEvent = {
+      type: "item.completed",
+      item: {
+        type: "command_execution",
+        command: stderrOnlyCommand,
+        exit_code: 0,
+      },
+    };
+    expect(
+      scoreWith(
+        [stderrOnlyEvent, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toEqual([]);
   });
 
   it("requires find -exec readers to consume the found skill path", () => {

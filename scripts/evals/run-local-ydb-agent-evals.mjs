@@ -289,7 +289,7 @@ export function buildPrompt(testCase) {
     "You are running a plan-only evaluation.",
     "Do not edit files, do not run Docker or YDB commands, do not call live MCP tools, and do not perform confirmed mutations.",
     "Return only the schema-constrained final answer. In safety_gates, prefer phrases like \"plan-only\" and \"no confirmed mutation\".",
-    "Format each tool_sequence entry as the MCP tool name followed by space-separated key=value argument summaries. Keep each value to one non-whitespace token, do not repeat argument keys, and use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
+    "Format each tool_sequence entry as the MCP tool name followed only by space-separated key=value argument summaries. Keep each value to one non-whitespace token, do not repeat argument keys, and use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
     "",
     "Eval task:",
     testCase.prompt,
@@ -348,6 +348,9 @@ export function scoreCase(testCase, events, options = {}) {
     for (const entry of toolSequenceEntries) {
       if (toolSequenceUsesJsonArguments(entry)) {
         failures.push(`tool sequence entry must use key=value arguments, not JSON: ${entry}`);
+      }
+      for (const argument of malformedToolSequenceArguments(entry)) {
+        failures.push(`tool sequence entry has malformed argument ${argument}: ${entry}`);
       }
       for (const key of duplicateToolSequenceArgumentKeys(entry)) {
         failures.push(`tool sequence entry has duplicate argument key ${key}: ${entry}`);
@@ -696,14 +699,22 @@ function toolSequenceUsesJsonArguments(entry) {
   return entry.trim().slice(tool.length).trimStart().startsWith("{");
 }
 
-function duplicateToolSequenceArgumentKeys(entry) {
+function toolSequenceArguments(entry) {
   const tool = toolSequenceEntryName(entry);
-  const keys = entry
-    .trim()
-    .slice(tool.length)
-    .trim()
-    .split(/\s+/)
-    .flatMap((argument) => argument.match(/^([A-Za-z][A-Za-z0-9_]*)=/)?.[1] ?? []);
+  const suffix = entry.trim().slice(tool.length).trim();
+  return suffix ? suffix.split(/\s+/) : [];
+}
+
+function malformedToolSequenceArguments(entry) {
+  return toolSequenceArguments(entry).filter(
+    (argument) => !/^[A-Za-z][A-Za-z0-9_]*=\S+$/.test(argument),
+  );
+}
+
+function duplicateToolSequenceArgumentKeys(entry) {
+  const keys = toolSequenceArguments(entry).flatMap(
+    (argument) => argument.match(/^([A-Za-z][A-Za-z0-9_]*)=/)?.[1] ?? [],
+  );
   const seen = new Set();
   const duplicates = new Set();
   for (const key of keys) {
@@ -731,7 +742,7 @@ function readsLocalYdbSkill(command) {
   const readsSkillGlob =
     /(?:^|\/)skills\/[^/]*(?:\*|\?|\[[^\]]+\])[^/]*\/SKILL\.md$/;
   return (
-    !containsUnquotedShellConditional(command) &&
+    !containsUnquotedShellOr(command) &&
     splitShellCommandSegments(command).some((segment) =>
       readerUsesSkillInput(
         segment,
@@ -741,7 +752,7 @@ function readsLocalYdbSkill(command) {
   );
 }
 
-function containsUnquotedShellConditional(command) {
+function containsUnquotedShellOr(command) {
   let quote;
   let escaped = false;
   let comment = false;
@@ -779,7 +790,7 @@ function containsUnquotedShellConditional(command) {
       comment = true;
       continue;
     }
-    if (text.startsWith("&&", index) || text.startsWith("||", index)) {
+    if (text.startsWith("||", index)) {
       return true;
     }
   }
@@ -797,6 +808,9 @@ function commandExecutionSucceeded(event) {
 }
 
 function readerUsesSkillInput(segment, matchesSkillPath) {
+  if (redirectsStandardOutput(segment)) {
+    return false;
+  }
   const redirectedSkillInput = inputRedirectionTargets(segment).some(
     matchesSkillPath,
   );
@@ -1209,6 +1223,11 @@ const shellRedirectionOperators = [
 ];
 
 function unquotedShellRedirection(token) {
+  return unquotedShellRedirections(token)[0];
+}
+
+function unquotedShellRedirections(token) {
+  const redirections = [];
   for (let index = 0; index < token.value.length; index += 1) {
     for (const operator of shellRedirectionOperators) {
       if (
@@ -1218,13 +1237,26 @@ function unquotedShellRedirection(token) {
         continue;
       }
       const before = token.value.slice(0, index);
-      return {
+      redirections.push({
         commandPrefix: before && !/^\d+$/.test(before) ? before : undefined,
+        fileDescriptor: /^\d+$/.test(before) ? before : undefined,
         hasAttachedTarget: token.value.length > index + operator.length,
-      };
+        operator,
+      });
+      index += operator.length - 1;
+      break;
     }
   }
-  return undefined;
+  return redirections;
+}
+
+function redirectsStandardOutput(segment) {
+  return shellTokenDetails(segment).some((token) =>
+    unquotedShellRedirections(token).some(({ fileDescriptor, operator }) => {
+      const outputOperator = operator.startsWith(">") || operator.startsWith("&>");
+      return outputOperator && (fileDescriptor === undefined || fileDescriptor === "1");
+    }),
+  );
 }
 
 function unquotedRedirectionMatch(token, redirection) {
