@@ -1044,6 +1044,65 @@ function skipLauncherOptions(
   return cursor;
 }
 
+function envSplitStringOption(tokens, index) {
+  const token = tokens[index];
+  if (token === "--split-string") {
+    return {
+      value: tokens[index + 1] ?? "",
+      consumed: tokens[index + 1] ? 2 : 1,
+    };
+  }
+  if (token.startsWith("--split-string=")) {
+    return { value: token.slice("--split-string=".length), consumed: 1 };
+  }
+  if (!/^-[^-]/.test(token)) {
+    return undefined;
+  }
+  for (let offset = 1; offset < token.length; offset += 1) {
+    const option = token[offset];
+    if (!envShortValueOptions.has(option)) {
+      continue;
+    }
+    if (option !== "S") {
+      return undefined;
+    }
+    const attachedValue = token.slice(offset + 1);
+    return attachedValue
+      ? { value: attachedValue, consumed: 1 }
+      : {
+          value: tokens[index + 1] ?? "",
+          consumed: tokens[index + 1] ? 2 : 1,
+        };
+  }
+  return undefined;
+}
+
+function expandEnvSplitString(tokens, envIndex) {
+  let cursor = envIndex + 1;
+  while (cursor < tokens.length) {
+    const token = tokens[cursor];
+    if (token === "--" || token === "-" || !token.startsWith("-")) {
+      return false;
+    }
+    const splitString = envSplitStringOption(tokens, cursor);
+    if (splitString) {
+      const expanded = shellTokenDetails(splitString.value).map(
+        (detail) => detail.value,
+      );
+      tokens.splice(cursor, splitString.consumed, ...expanded);
+      return true;
+    }
+    cursor += 1;
+    if (
+      optionConsumesNextToken(token, envValueOptions, envShortValueOptions) &&
+      cursor < tokens.length
+    ) {
+      cursor += 1;
+    }
+  }
+  return false;
+}
+
 function stripShellRedirections(tokens) {
   const result = [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -1116,6 +1175,9 @@ function commandTokens(segment) {
       continue;
     }
     if (tokens[index] === "env") {
+      if (expandEnvSplitString(tokens, index)) {
+        continue;
+      }
       index = skipLauncherOptions(
         tokens,
         index + 1,
@@ -1158,10 +1220,19 @@ function splitShellCommandSegments(command) {
   let segment = "";
   let quote;
   let escaped = false;
+  let comment = false;
   const text = String(command);
 
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index];
+    if (comment) {
+      if (character === "\n") {
+        segments.push(segment);
+        segment = "";
+        comment = false;
+      }
+      continue;
+    }
     if (escaped) {
       segment += character;
       escaped = false;
@@ -1182,6 +1253,10 @@ function splitShellCommandSegments(command) {
     if (character === "'" || character === '"') {
       quote = character;
       segment += character;
+      continue;
+    }
+    if (character === "#" && (segment.length === 0 || /\s$/.test(segment))) {
+      comment = true;
       continue;
     }
     const redirectionAmpersand =

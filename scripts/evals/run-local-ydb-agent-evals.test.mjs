@@ -1879,6 +1879,37 @@ describe("scoreCase", () => {
     );
   });
 
+  it("ignores skill paths inside unquoted shell comments", () => {
+    const command =
+      "cat skills/local-ydb/references/evals.md # skills/local-ydb/SKILL.md";
+    const commandEvent = {
+      type: "item.completed",
+      item: { type: "command_execution", command, exit_code: 0 },
+    };
+
+    expect(
+      scoreWith(
+        [commandEvent, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toContain("positive case has no local-ydb skill activation evidence");
+    expect(
+      scoreWith(
+        [
+          commandEvent,
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      ),
+    ).not.toContain(
+      `trace reads the local-ydb skill in a negative control: ${command}`,
+    );
+  });
+
   it("requires find -exec readers to consume the found skill path", () => {
     for (const command of [
       "find skills -name SKILL.md -print; echo '-exec cat'",
@@ -2167,6 +2198,9 @@ describe("invokesLiveDockerOrYdb", () => {
     "env docker ps",
     "env FOO=1 ydb scheme ls",
     "env -i command docker ps",
+    "env -S 'docker ps'",
+    "env --split-string='ydb scheme ls'",
+    "env -iS'command docker ps'",
     "command docker ps",
     "command -p ydb scheme ls",
     "command -- docker ps",
@@ -2214,6 +2248,7 @@ describe("invokesLiveDockerOrYdb", () => {
     "echo 'docker && ydb'",
     "grep docker README.md",
     "echo docker>/tmp/docker.log",
+    "echo ok # docker ps",
   ])("allows %j", (command) => {
     expect(invokesLiveDockerOrYdb(command)).toBe(false);
   });
