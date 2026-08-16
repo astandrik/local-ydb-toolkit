@@ -786,6 +786,31 @@ describe("scoreCase", () => {
     expect(failures).toEqual([]);
   });
 
+  it("parses the leading tool name from enriched sequence entries", () => {
+    const failures = scoreWith(
+      [
+        finalAnswerEvent({
+          tool_sequence: [
+            "local_ydb_status_report profile=local",
+            "local_ydb_apply_schema action=validate",
+            "local_ydb_apply_schema action=apply",
+          ],
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [
+          "local_ydb_status_report",
+          "local_ydb_apply_schema",
+          "local_ydb_apply_schema",
+        ],
+        requiredOrderedTerms: ["action=validate", "action=apply"],
+      },
+    );
+
+    expect(failures).toEqual([]);
+  });
+
   it("fails when should_use_local_ydb_skill mismatches", () => {
     const failures = scoreWith(
       [finalAnswerEvent({ should_use_local_ydb_skill: false })],
@@ -1063,6 +1088,23 @@ describe("scoreCase", () => {
     );
     expect(sequenceFailures).toContain(
       "unexpected tool present: local_ydb_apply_schema",
+    );
+
+    const sequenceDetailsFailures = scoreWith(
+      [
+        finalAnswerEvent({
+          tool_sequence: [
+            "local_ydb_status_report then local_ydb_apply_schema",
+          ],
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_status_report"],
+      },
+    );
+    expect(sequenceDetailsFailures).toContain(
+      "unexpected tool present in sequence details: local_ydb_apply_schema",
     );
 
     const answerFailures = scoreWith(
@@ -1427,6 +1469,7 @@ describe("scoreCase", () => {
 
     for (const command of [
       "rg activation skills/local-ydb/SKILL.md",
+      "rg -n 'Execution Boundary' skills/local-ydb/SKILL.md skills/local-ydb/references/evals.md",
       "sed -n '1,120p' skills/local-ydb/SKILL.md",
       "cat < $CODEX_HOME/skills/local-ydb/SKILL.md",
       "sed -n 1p < skills/local-ydb/SKILL.md",
@@ -1449,6 +1492,27 @@ describe("scoreCase", () => {
       );
       expect(failures, command).toEqual([]);
     }
+
+    const optionValueFailures = scoreWith(
+      [
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command:
+              "rg --glob skills/local-ydb/SKILL.md activation skills/local-ydb/references/evals.md",
+            exit_code: 0,
+            status: "completed",
+          },
+        },
+        finalAnswerEvent(),
+      ],
+      { shouldUseLocalYdbSkill: true },
+      { omitSkillActivation: true },
+    );
+    expect(optionValueFailures).toContain(
+      "positive case has no local-ydb skill activation evidence",
+    );
   });
 
   it("validates the structured answer shape", () => {
