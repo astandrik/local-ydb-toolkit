@@ -1073,6 +1073,37 @@ describe("scoreCase", () => {
     ).toEqual([]);
   });
 
+  it("rejects duplicate tool argument keys", () => {
+    for (const { tool, requiredTerm, entry, duplicateKey } of [
+      {
+        tool: "local_ydb_status_report",
+        requiredTerm: "profile=auth-rehearsal",
+        entry:
+          "local_ydb_status_report profile=auth-rehearsal profile=live",
+        duplicateKey: "profile",
+      },
+      {
+        tool: "local_ydb_reduce_storage_groups",
+        requiredTerm: "count=1",
+        entry: "local_ydb_reduce_storage_groups count=1 count=10",
+        duplicateKey: "count",
+      },
+    ]) {
+      const failures = scoreWith(
+        [finalAnswerEvent({ tool_sequence: [entry] })],
+        {
+          shouldUseLocalYdbSkill: true,
+          requiredOrderedTools: [tool],
+          requiredToolEntryTerms: { [tool]: [requiredTerm] },
+        },
+      );
+
+      expect(failures, entry).toContain(
+        `tool sequence entry has duplicate argument key ${duplicateKey}: ${entry}`,
+      );
+    }
+  });
+
   it("fails when should_use_local_ydb_skill mismatches", () => {
     const failures = scoreWith(
       [finalAnswerEvent({ should_use_local_ydb_skill: false })],
@@ -1633,7 +1664,9 @@ describe("scoreCase", () => {
     for (const recommendation of [
       "Use the $local-ydb skill.",
       "Use the local-ydb skill.",
+      "Use the local YDB skill.",
       "Select skill local-ydb.",
+      "Select skill local YDB.",
     ]) {
       const finalFailures = scoreWith(
         [
@@ -1912,6 +1945,37 @@ describe("scoreCase", () => {
 
   it("requires redirected stdin to be consumed for skill activation", () => {
     const command = "cat 0<skills/local-ydb/SKILL.md README.md";
+    const commandEvent = {
+      type: "item.completed",
+      item: { type: "command_execution", command, exit_code: 0 },
+    };
+
+    expect(
+      scoreWith(
+        [commandEvent, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toContain("positive case has no local-ydb skill activation evidence");
+    expect(
+      scoreWith(
+        [
+          commandEvent,
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      ),
+    ).not.toContain(
+      `trace reads the local-ydb skill in a negative control: ${command}`,
+    );
+  });
+
+  it("does not treat conditionally skipped readers as skill activation", () => {
+    const command =
+      "test -f skills/local-ydb/SKILL.md || cat skills/local-ydb/SKILL.md";
     const commandEvent = {
       type: "item.completed",
       item: { type: "command_execution", command, exit_code: 0 },
@@ -2255,6 +2319,7 @@ describe("invokesLiveDockerOrYdb", () => {
     '"docker" ps',
     "echo ok\ndocker ps",
     "cat <<EOF\npayload\nEOF\ndocker ps",
+    "echo $((1 << 2))\ndocker ps",
   ])("flags %j", (command) => {
     expect(invokesLiveDockerOrYdb(command)).toBe(true);
   });

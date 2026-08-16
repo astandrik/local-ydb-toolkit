@@ -289,7 +289,7 @@ export function buildPrompt(testCase) {
     "You are running a plan-only evaluation.",
     "Do not edit files, do not run Docker or YDB commands, do not call live MCP tools, and do not perform confirmed mutations.",
     "Return only the schema-constrained final answer. In safety_gates, prefer phrases like \"plan-only\" and \"no confirmed mutation\".",
-    "Format each tool_sequence entry as the MCP tool name followed by space-separated key=value argument summaries. Keep each value to one non-whitespace token and use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
+    "Format each tool_sequence entry as the MCP tool name followed by space-separated key=value argument summaries. Keep each value to one non-whitespace token, do not repeat argument keys, and use placeholders such as <generated-script> for prior call results; do not use a JSON argument object.",
     "",
     "Eval task:",
     testCase.prompt,
@@ -348,6 +348,9 @@ export function scoreCase(testCase, events, options = {}) {
     for (const entry of toolSequenceEntries) {
       if (toolSequenceUsesJsonArguments(entry)) {
         failures.push(`tool sequence entry must use key=value arguments, not JSON: ${entry}`);
+      }
+      for (const key of duplicateToolSequenceArgumentKeys(entry)) {
+        failures.push(`tool sequence entry has duplicate argument key ${key}: ${entry}`);
       }
     }
 
@@ -678,8 +681,8 @@ function containsToolPrefix(text, prefix) {
 function containsLocalYdbSkillReference(text) {
   return (
     /\$local-ydb\b/i.test(text) ||
-    /\blocal-ydb\s+skill\b/i.test(text) ||
-    /\bskill\s+local-ydb\b/i.test(text)
+    /\blocal(?:-|\s+)ydb\s+skill\b/i.test(text) ||
+    /\bskill\s+local(?:-|\s+)ydb\b/i.test(text)
   );
 }
 
@@ -691,6 +694,26 @@ function toolSequenceEntryName(entry) {
 function toolSequenceUsesJsonArguments(entry) {
   const tool = toolSequenceEntryName(entry);
   return entry.trim().slice(tool.length).trimStart().startsWith("{");
+}
+
+function duplicateToolSequenceArgumentKeys(entry) {
+  const tool = toolSequenceEntryName(entry);
+  const keys = entry
+    .trim()
+    .slice(tool.length)
+    .trim()
+    .split(/\s+/)
+    .flatMap((argument) => argument.match(/^([A-Za-z][A-Za-z0-9_]*)=/)?.[1] ?? []);
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const key of keys) {
+    if (seen.has(key)) {
+      duplicates.add(key);
+    } else {
+      seen.add(key);
+    }
+  }
+  return [...duplicates];
 }
 
 function unexpectedAnswerTools(text, allowedTools) {
@@ -707,13 +730,60 @@ function readsLocalYdbSkill(command) {
   const directSkillFile = /(?:^|\/)skills\/local-ydb\/SKILL\.md$/;
   const readsSkillGlob =
     /(?:^|\/)skills\/[^/]*(?:\*|\?|\[[^\]]+\])[^/]*\/SKILL\.md$/;
-  return splitShellCommandSegments(command).some(
-    (segment) =>
+  return (
+    !containsUnquotedShellConditional(command) &&
+    splitShellCommandSegments(command).some((segment) =>
       readerUsesSkillInput(
         segment,
         (token) => directSkillFile.test(token) || readsSkillGlob.test(token),
       ),
+    )
   );
+}
+
+function containsUnquotedShellConditional(command) {
+  let quote;
+  let escaped = false;
+  let comment = false;
+  const text = stripHereDocumentBodies(command);
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (comment) {
+      if (character === "\n") {
+        comment = false;
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (
+      character === "#" &&
+      (index === 0 || /[\s;|&]/.test(text[index - 1]))
+    ) {
+      comment = true;
+      continue;
+    }
+    if (text.startsWith("&&", index) || text.startsWith("||", index)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function commandExecutionSucceeded(event) {
@@ -1309,12 +1379,34 @@ function stripHereDocumentBodies(command) {
 function hereDocumentDelimiters(line) {
   const tokens = shellTokenDetails(line);
   const delimiters = [];
+  let arithmeticDepth = 0;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token.value.startsWith("#") && !token.literalMask[0]) {
       break;
     }
     for (let offset = 0; offset < token.value.length - 1; offset += 1) {
+      const arithmeticStart = token.value.startsWith("$((", offset)
+        ? 3
+        : token.value.startsWith("((", offset)
+          ? 2
+          : 0;
+      if (
+        arithmeticStart > 0 &&
+        !token.literalMask.slice(offset, offset + arithmeticStart).some(Boolean)
+      ) {
+        arithmeticDepth += 1;
+        offset += arithmeticStart - 1;
+        continue;
+      }
+      if (arithmeticDepth > 0 && token.value.startsWith("))", offset)) {
+        arithmeticDepth -= 1;
+        offset += 1;
+        continue;
+      }
+      if (arithmeticDepth > 0) {
+        continue;
+      }
       if (
         token.value.slice(offset, offset + 2) !== "<<" ||
         token.value[offset + 2] === "<" ||
