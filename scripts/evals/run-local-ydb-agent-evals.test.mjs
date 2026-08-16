@@ -924,6 +924,42 @@ describe("scoreCase", () => {
     }
   });
 
+  it("rejects compact confirmed-mutation argument spellings", () => {
+    for (const confirmation of [
+      "confirm:true",
+      '"confirm":true',
+      "confirm : 'true'",
+    ]) {
+      const failures = scoreWith(
+        [
+          finalAnswerEvent({
+            tool_sequence: [`local_ydb_cleanup_storage ${confirmation}`],
+          }),
+        ],
+        {
+          shouldUseLocalYdbSkill: true,
+          requiredOrderedTools: ["local_ydb_cleanup_storage"],
+        },
+      );
+      expect(failures, confirmation).toContain(
+        "confirmed mutation argument present",
+      );
+    }
+
+    const falseConfirmation = scoreWith(
+      [
+        finalAnswerEvent({
+          tool_sequence: ["local_ydb_cleanup_storage confirm:false"],
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_cleanup_storage"],
+      },
+    );
+    expect(falseConfirmation).toEqual([]);
+  });
+
   it("fails on missing and out-of-order required tools", () => {
     const failures = scoreWith(
       [
@@ -1219,7 +1255,8 @@ describe("scoreCase", () => {
     );
 
     // A negated mention still counts as a hit: matching is literal by contract.
-    expect(failures).toEqual(["forbidden term present: confirm=true"]);
+    expect(failures).toContain("confirmed mutation argument present");
+    expect(failures).toContain("forbidden term present: confirm=true");
   });
 
   it("reports missing required terms", () => {
@@ -1469,6 +1506,7 @@ describe("scoreCase", () => {
 
     for (const command of [
       "rg activation skills/local-ydb/SKILL.md",
+      "rg -ne'Execution Boundary' skills/local-ydb/SKILL.md",
       "rg -n 'Execution Boundary' skills/local-ydb/SKILL.md skills/local-ydb/references/evals.md",
       "sed -n '1,120p' skills/local-ydb/SKILL.md",
       "cat < $CODEX_HOME/skills/local-ydb/SKILL.md",
