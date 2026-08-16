@@ -859,8 +859,12 @@ const sudoShortValueOptions = new Set([
 const envValueOptions = new Set([
   "-a", "-C", "-S", "-u", "--argv0", "--chdir", "--split-string", "--unset",
 ]);
+const envFlagOptions = new Set([
+  "-0", "-i", "--debug", "--ignore-environment", "--null",
+]);
 const envShortValueOptions = new Set(["a", "C", "S", "u"]);
-const unsafeEnvSplitStringExecutable = "__unsafe_env_split_string__";
+const envShortFlagOptions = new Set(["0", "i"]);
+const unsafeEnvLauncherExecutable = "__unsafe_env_launcher__";
 
 // Standard prefixes of a direct command: environment assignments and sudo.
 const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -990,7 +994,13 @@ function envLauncherMode(tokens, envIndex) {
     if (token === "--split-string" || token.startsWith("--split-string=")) {
       return "split-string";
     }
-    if (/^-[^-]/.test(token)) {
+    if (token.startsWith("--")) {
+      const separator = token.indexOf("=");
+      const option = separator === -1 ? token : token.slice(0, separator);
+      if (!envValueOptions.has(option) && !envFlagOptions.has(option)) {
+        return "unsafe";
+      }
+    } else if (/^-[^-]/.test(token)) {
       for (let offset = 1; offset < token.length; offset += 1) {
         const option = token[offset];
         if (option === "S") {
@@ -998,6 +1008,9 @@ function envLauncherMode(tokens, envIndex) {
         }
         if (envShortValueOptions.has(option)) {
           break;
+        }
+        if (!envShortFlagOptions.has(option)) {
+          return "unsafe";
         }
       }
     }
@@ -1087,8 +1100,8 @@ function commandTokens(segment) {
       if (mode === "terminal") {
         return [];
       }
-      if (mode === "split-string") {
-        return [unsafeEnvSplitStringExecutable];
+      if (mode === "split-string" || mode === "unsafe") {
+        return [unsafeEnvLauncherExecutable];
       }
       index = skipLauncherOptions(
         tokens,
@@ -1280,7 +1293,7 @@ export function invokesLiveDockerOrYdb(command) {
     if (!executableToken) {
       return false;
     }
-    if (executableToken === unsafeEnvSplitStringExecutable) {
+    if (executableToken === unsafeEnvLauncherExecutable) {
       return true;
     }
     const executable = executableToken.replace(/^["']+|["']+$/g, "");
