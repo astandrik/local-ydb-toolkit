@@ -95,7 +95,17 @@
       ],
       "requiredToolEntryTerms": {
         "local_ydb_generate_schema": [
-          "scenario=row table with secondary index"
+          [
+            "statements=",
+            "kind=createTable",
+            "tableName=<table>",
+            "columns=<columns>",
+            "primaryKey=<primary-key>",
+            "store=row",
+            "indexes=[{name=<index>",
+            "columns=<index-columns>",
+            "using=secondary"
+          ]
         ],
         "local_ydb_apply_schema": [
           "action=validate",
@@ -203,6 +213,16 @@
         "describePaths",
         "countQueries"
       ],
+      "requiredToolEntryTerms": {
+        "local_ydb_restore_tenant": [
+          [
+            "path=smoke_dst",
+            "dumpName=<selected-dumpName>",
+            "describePaths=<verification-paths>",
+            "countQueries=<verification-queries>"
+          ]
+        ]
+      },
       "forbiddenTerms": [
         "confirm: true",
         "\"confirm\": true",
@@ -306,6 +326,14 @@
         "destructive",
         "verify"
       ],
+      "requiredToolEntryTerms": {
+        "local_ydb_cleanup_storage": [
+          [
+            "paths=<reviewed-leftover-paths>",
+            "volumes=<reviewed-leftover-volumes>"
+          ]
+        ]
+      },
       "forbiddenTerms": [
         "confirm: true",
         "\"confirm\": true",

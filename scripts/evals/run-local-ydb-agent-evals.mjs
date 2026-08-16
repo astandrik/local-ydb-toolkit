@@ -164,9 +164,17 @@ function assertOptionalStringArrayMap(testCase, field) {
       key.length === 0 ||
       !Array.isArray(items) ||
       items.length === 0 ||
-      items.some((item) => typeof item !== "string" || item.length === 0)
+      items.some(
+        (item) =>
+          !(
+            (typeof item === "string" && item.length > 0) ||
+            (Array.isArray(item) &&
+              item.length > 0 &&
+              item.every((term) => typeof term === "string" && term.length > 0))
+          ),
+      )
     ) {
-      throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an object of non-empty string arrays.`);
+      throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an object of non-empty occurrence term groups.`);
     }
   }
 }
@@ -369,9 +377,12 @@ export function scoreCase(testCase, events, options = {}) {
     }
     for (const [tool, terms] of Object.entries(testCase.expected.requiredToolEntryTerms ?? {})) {
       const entries = toolSequenceEntries.filter((entry, index) => orderedTools[index] === tool);
-      terms.forEach((term, index) => {
-        if (entries[index] !== undefined && !containsTerm(entries[index], term)) {
-          failures.push(`tool sequence entry ${tool} #${index + 1} missing required term: ${term}`);
+      terms.forEach((termOrTerms, index) => {
+        const occurrenceTerms = Array.isArray(termOrTerms) ? termOrTerms : [termOrTerms];
+        for (const term of occurrenceTerms) {
+          if (entries[index] !== undefined && !containsTerm(entries[index], term)) {
+            failures.push(`tool sequence entry ${tool} #${index + 1} missing required term: ${term}`);
+          }
         }
       });
     }
@@ -643,24 +654,13 @@ function readsLocalYdbSkill(command) {
   const directSkillFile = /(?:^|\/)skills\/local-ydb\/SKILL\.md$/;
   const readsSkillGlob =
     /(?:^|\/)skills\/[^/]*(?:\*|\?|\[[^\]]+\])[^/]*\/SKILL\.md$/;
-  const readsDirectOrGlob = splitShellCommandSegments(command).some(
+  return splitShellCommandSegments(command).some(
     (segment) =>
       readerUsesSkillInput(
         segment,
         (token) => directSkillFile.test(token) || readsSkillGlob.test(token),
       ),
   );
-  if (readsDirectOrGlob) {
-    return true;
-  }
-
-  return splitShellCommandSegments(command).some((segment) => {
-    const findsSkillFiles =
-      /\bfind\b[^\n]*\bskills\b[^\n]*(?:-name|-iname)\s+["']?(?:\*\/)?SKILL\.md["']?/;
-    const readsFoundFile =
-      /-exec(?:dir)?\s+(?:cat|bat|head|tail|less|more)\b[^{}\n]*\{\}/;
-    return findsSkillFiles.test(segment) && readsFoundFile.test(segment);
-  });
 }
 
 function commandExecutionSucceeded(event) {

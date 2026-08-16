@@ -192,7 +192,17 @@ describe("loadCases", () => {
         .requiredToolEntryTerms,
     ).toEqual({
       local_ydb_generate_schema: [
-        "scenario=row table with secondary index",
+        [
+          "statements=",
+          "kind=createTable",
+          "tableName=<table>",
+          "columns=<columns>",
+          "primaryKey=<primary-key>",
+          "store=row",
+          "indexes=[{name=<index>",
+          "columns=<index-columns>",
+          "using=secondary",
+        ],
       ],
       local_ydb_apply_schema: ["action=validate", "action=apply"],
     });
@@ -215,6 +225,19 @@ describe("loadCases", () => {
       "describePaths",
       "countQueries",
     ]);
+    expect(
+      cases.find((testCase) => testCase.id === "path-level-dump-restore")
+        .expected.requiredToolEntryTerms,
+    ).toEqual({
+      local_ydb_restore_tenant: [
+        [
+          "path=smoke_dst",
+          "dumpName=<selected-dumpName>",
+          "describePaths=<verification-paths>",
+          "countQueries=<verification-queries>",
+        ],
+      ],
+    });
     expect(requiredTools("auth-hardening-backup-first")).toEqual([
       "local_ydb_status_report",
       "local_ydb_dump_tenant",
@@ -253,6 +276,17 @@ describe("loadCases", () => {
       "auth-hardening-copied-volume-rehearsal",
       "cleanup-storage-plan-only",
     ]);
+    expect(
+      cases.find((testCase) => testCase.id === "cleanup-storage-plan-only")
+        .expected.requiredToolEntryTerms,
+    ).toEqual({
+      local_ydb_cleanup_storage: [
+        [
+          "paths=<reviewed-leftover-paths>",
+          "volumes=<reviewed-leftover-volumes>",
+        ],
+      ],
+    });
     expect(requiredTools("auth-hardening-copied-volume-rehearsal")).toEqual([
       "local_ydb_status_report",
       "local_ydb_prepare_auth_config",
@@ -1156,6 +1190,30 @@ describe("scoreCase", () => {
     );
   });
 
+  it("requires every term in an occurrence term group on the same tool entry", () => {
+    const failures = scoreWith(
+      [
+        finalAnswerEvent({
+          tool_sequence: ["local_ydb_restore_tenant path=smoke_dst"],
+          answer: "Use dumpName=<selected-dumpName> from the listing.",
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_restore_tenant"],
+        requiredToolEntryTerms: {
+          local_ydb_restore_tenant: [
+            ["path=smoke_dst", "dumpName=<selected-dumpName>"],
+          ],
+        },
+      },
+    );
+
+    expect(failures).toContain(
+      "tool sequence entry local_ydb_restore_tenant #1 missing required term: dumpName=<selected-dumpName>",
+    );
+  });
+
   it("rejects a tool that first runs before a repeated prerequisite", () => {
     const failures = scoreWith(
       [
@@ -1472,11 +1530,8 @@ describe("scoreCase", () => {
     expect(positive).toEqual([]);
   });
 
-  it("fails a negative control that expands or finds the installed skill", () => {
-    for (const command of [
-      "cat skills/*/SKILL.md",
-      "find skills -name SKILL.md -exec cat {} \\;",
-    ]) {
+  it("fails a negative control that expands the installed skill", () => {
+    for (const command of ["cat skills/*/SKILL.md"]) {
       const failures = scoreWith(
         [
           {
@@ -1525,6 +1580,7 @@ describe("scoreCase", () => {
     for (const command of [
       "find skills -name SKILL.md -print; echo '-exec cat'",
       "find skills -name SKILL.md -exec cat README.md \\;",
+      "find skills -maxdepth 0 -name SKILL.md -exec cat {} \\;",
     ]) {
       const failures = scoreWith(
         [
