@@ -391,7 +391,7 @@ export function scoreCase(testCase, events, options = {}) {
   if (!testCase.expected.shouldUseLocalYdbSkill) {
     const skillReads = events.flatMap((event) => {
       const command = event?.item?.command;
-      return typeof command === "string" && command.includes("skills/local-ydb") ? [command] : [];
+      return typeof command === "string" && readsLocalYdbSkill(command) ? [command] : [];
     });
     for (const command of skillReads) {
       failures.push(`trace reads the local-ydb skill in a negative control: ${command}`);
@@ -517,31 +517,44 @@ function unexpectedAnswerTools(text, allowedTools) {
   return [...unexpected];
 }
 
+function readsLocalYdbSkill(command) {
+  if (command.includes("skills/local-ydb")) {
+    return true;
+  }
+
+  const readsSkillGlob =
+    /(?:^|[\s"'=\/])skills\/[^/\s"';&|]*(?:\*|\?|\[[^\]]+\])[^/\s"';&|]*\/SKILL\.md(?:$|[\s"';&|])/;
+  if (readsSkillGlob.test(command)) {
+    return true;
+  }
+
+  const findsSkillFiles =
+    /\bfind\b[^\n;|&]*\bskills\b[^\n;|&]*(?:-name|-iname)\s+["']?(?:\*\/)?SKILL\.md["']?/;
+  const readsFoundFiles =
+    /(?:-exec(?:dir)?\s+(?:cat|head|tail|less|more|sed|awk|grep|rg)\b|\|\s*xargs(?:\s+\S+)*\s+(?:cat|head|tail|less|more|sed|awk|grep|rg)\b)/;
+  return findsSkillFiles.test(command) && readsFoundFiles.test(command);
+}
+
 function firstOrderFailure(actual, required) {
-  // First occurrences of each required tool must be non-decreasing in the
-  // required order: a required tool that runs before its prerequisites is
-  // unsafe even if it is repeated later. Repeated requirements of the same
-  // tool ("status -> upgrade -> status") must be backed by successive
-  // occurrences after the previous match.
+  // Every required occurrence advances the prerequisite boundary. A later
+  // tool is unsafe if its first occurrence precedes that boundary, even when
+  // another occurrence appears in the expected position.
   const firstSeen = new Set();
-  let previousFirstIndex = -1;
+  let previousRequiredIndex = -1;
   let searchFrom = 0;
   for (const tool of required) {
-    if (!firstSeen.has(tool)) {
-      firstSeen.add(tool);
-      const firstIndex = actual.indexOf(tool);
-      if (firstIndex === -1) {
-        continue;
-      }
-      if (firstIndex < previousFirstIndex) {
-        return `required tools are out of order: ${required.join(" -> ")}`;
-      }
-      previousFirstIndex = firstIndex;
-    }
     const index = actual.indexOf(tool, searchFrom);
     if (index === -1) {
       return `required tools are out of order: ${required.join(" -> ")}`;
     }
+    if (!firstSeen.has(tool)) {
+      firstSeen.add(tool);
+      const firstIndex = actual.indexOf(tool);
+      if (firstIndex < previousRequiredIndex) {
+        return `required tools are out of order: ${required.join(" -> ")}`;
+      }
+    }
+    previousRequiredIndex = index;
     searchFrom = index + 1;
   }
   return undefined;

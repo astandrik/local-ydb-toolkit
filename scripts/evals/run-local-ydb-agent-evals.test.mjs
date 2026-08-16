@@ -759,6 +759,24 @@ describe("scoreCase", () => {
     expect(failures).toEqual([]);
   });
 
+  it("rejects a tool that first runs before a repeated prerequisite", () => {
+    const failures = scoreWith(
+      [
+        finalAnswerEvent({
+          tool_sequence: ["A", "B", "C", "A", "C"],
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["A", "B", "A", "C"],
+      },
+    );
+
+    expect(failures).toContain(
+      "required tools are out of order: A -> B -> A -> C",
+    );
+  });
+
   it("flags unexpected tools in sequence and answer text", () => {
     const sequenceFailures = scoreWith(
       [
@@ -992,6 +1010,32 @@ describe("scoreCase", () => {
       { shouldUseLocalYdbSkill: true },
     );
     expect(positive).toEqual([]);
+  });
+
+  it("fails a negative control that expands or finds the installed skill", () => {
+    for (const command of [
+      "cat skills/*/SKILL.md",
+      "find skills -name SKILL.md -exec cat {} \\;",
+    ]) {
+      const failures = scoreWith(
+        [
+          {
+            type: "item.completed",
+            item: { type: "command_execution", command },
+          },
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+            answer: "Here is a small unit test.",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      );
+
+      expect(failures).toContain(
+        `trace reads the local-ydb skill in a negative control: ${command}`,
+      );
+    }
   });
 
   it("validates the structured answer shape", () => {
