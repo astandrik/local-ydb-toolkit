@@ -118,6 +118,7 @@
         "local_ydb_generate_schema": [
           [
             "statements=",
+            "validate=true",
             "kind=createTable",
             "tableName=<table>",
             "columns=<columns>",
@@ -140,7 +141,10 @@
         ],
         "local_ydb_scheme": [
           "action=list",
-          "action=describe"
+          [
+            "action=describe",
+            "path=<table>"
+          ]
         ]
       },
       "forbiddenTerms": [
@@ -195,7 +199,7 @@
   {
     "id": "storage-reduction-rebuild",
     "name": "Storage reduction by dump rebuild restore",
-    "prompt": "The tenant storage pool was over-allocated and we need to reduce groups safely. Give the MCP sequence and safety checks, plan only.",
+    "prompt": "The tenant storage pool was over-allocated and we need to remove exactly 1 group safely. Reuse the concrete poolName returned by storage placement. Give the MCP sequence and safety checks, plan only.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiresPlanFirstGate": true,
@@ -217,6 +221,14 @@
         "verification",
         "BSC"
       ],
+      "requiredToolEntryTerms": {
+        "local_ydb_reduce_storage_groups": [
+          [
+            "count=1",
+            "poolName=<returned-poolName>"
+          ]
+        ]
+      },
       "forbiddenTerms": [
         "DecommitGroups",
         "confirm: true",
@@ -245,6 +257,9 @@
         "countQueries"
       ],
       "requiredToolEntryTerms": {
+        "local_ydb_dump_tenant": [
+          "path=smoke_src"
+        ],
         "local_ydb_restore_tenant": [
           [
             "path=smoke_dst",
@@ -264,7 +279,7 @@
   {
     "id": "auth-hardening-backup-first",
     "name": "Auth hardening backup and verification",
-    "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. Use a reviewed tenant dump named pre-auth-hardening for this case instead of the copied-volume rehearsal alternative, and reuse that exact dumpName for approved execution. What should the agent plan before applying it?",
+    "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. Use a reviewed tenant dump named pre-auth-hardening for this case instead of the copied-volume rehearsal alternative, and reuse that exact dumpName for approved execution. The selected profile does not provide auth artifact inputs, so use configHostPath=<prepared-config-host-path>, sid=<selected-sid>, and tokenHostPath=<dynamic-token-host-path>. What should the agent plan before applying it?",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiresPlanFirstGate": true,
@@ -286,6 +301,21 @@
       "requiredToolEntryTerms": {
         "local_ydb_dump_tenant": [
           "dumpName=pre-auth-hardening"
+        ],
+        "local_ydb_prepare_auth_config": [
+          [
+            "configHostPath=<prepared-config-host-path>",
+            "sid=<selected-sid>"
+          ]
+        ],
+        "local_ydb_write_dynamic_auth_config": [
+          [
+            "sid=<selected-sid>",
+            "tokenHostPath=<dynamic-token-host-path>"
+          ]
+        ],
+        "local_ydb_apply_auth_hardening": [
+          "configHostPath=<prepared-config-host-path>"
         ]
       },
       "forbiddenTerms": [
@@ -298,7 +328,7 @@
   {
     "id": "auth-hardening-copied-volume-rehearsal",
     "name": "Auth hardening rehearsed on a copied volume",
-    "prompt": "We want to rehearse production-like auth/config hardening on a copied volume registered as profile auth-rehearsal before touching the real live profile, instead of taking a tenant dump. Keep the live profile untouched. What should the agent plan?",
+    "prompt": "We want to rehearse production-like auth/config hardening on a copied volume registered as profile auth-rehearsal before touching the real live profile, instead of taking a tenant dump. Keep the live profile untouched. Use configHostPath=<rehearsal-config-host-path>, sid=<rehearsal-sid>, and tokenHostPath=<rehearsal-token-host-path> for the rehearsal artifacts. What should the agent plan?",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiresPlanFirstGate": true,
@@ -322,13 +352,24 @@
           "profile=auth-rehearsal"
         ],
         "local_ydb_prepare_auth_config": [
-          "profile=auth-rehearsal"
+          [
+            "profile=auth-rehearsal",
+            "configHostPath=<rehearsal-config-host-path>",
+            "sid=<rehearsal-sid>"
+          ]
         ],
         "local_ydb_write_dynamic_auth_config": [
-          "profile=auth-rehearsal"
+          [
+            "profile=auth-rehearsal",
+            "sid=<rehearsal-sid>",
+            "tokenHostPath=<rehearsal-token-host-path>"
+          ]
         ],
         "local_ydb_apply_auth_hardening": [
-          "profile=auth-rehearsal"
+          [
+            "profile=auth-rehearsal",
+            "configHostPath=<rehearsal-config-host-path>"
+          ]
         ],
         "local_ydb_auth_check": [
           "profile=auth-rehearsal"

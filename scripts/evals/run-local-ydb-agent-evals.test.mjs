@@ -213,6 +213,7 @@ describe("loadCases", () => {
       local_ydb_generate_schema: [
         [
           "statements=",
+          "validate=true",
           "kind=createTable",
           "tableName=<table>",
           "columns=<columns>",
@@ -227,7 +228,10 @@ describe("loadCases", () => {
         ["action=validate", "script=<generated-script>"],
         ["action=apply", "script=<generated-script>"],
       ],
-      local_ydb_scheme: ["action=list", "action=describe"],
+      local_ydb_scheme: [
+        "action=list",
+        ["action=describe", "path=<table>"],
+      ],
     });
     expect(
       cases.find((testCase) => testCase.id === "version-upgrade-backup-first")
@@ -238,6 +242,14 @@ describe("loadCases", () => {
       ],
       local_ydb_pull_status: ["jobId=<returned-jobId> until completed"],
       local_ydb_upgrade_version: ["version=26.1.1.7"],
+    });
+    expect(
+      cases.find((testCase) => testCase.id === "storage-reduction-rebuild")
+        .expected.requiredToolEntryTerms,
+    ).toEqual({
+      local_ydb_reduce_storage_groups: [
+        ["count=1", "poolName=<returned-poolName>"],
+      ],
     });
     expect(
       cases.find((testCase) => testCase.id === "path-level-dump-restore")
@@ -252,6 +264,7 @@ describe("loadCases", () => {
       cases.find((testCase) => testCase.id === "path-level-dump-restore")
         .expected.requiredToolEntryTerms,
     ).toEqual({
+      local_ydb_dump_tenant: ["path=smoke_src"],
       local_ydb_restore_tenant: [
         [
           "path=smoke_dst",
@@ -279,6 +292,18 @@ describe("loadCases", () => {
         .expected.requiredToolEntryTerms,
     ).toEqual({
       local_ydb_dump_tenant: ["dumpName=pre-auth-hardening"],
+      local_ydb_prepare_auth_config: [
+        [
+          "configHostPath=<prepared-config-host-path>",
+          "sid=<selected-sid>",
+        ],
+      ],
+      local_ydb_write_dynamic_auth_config: [
+        ["sid=<selected-sid>", "tokenHostPath=<dynamic-token-host-path>"],
+      ],
+      local_ydb_apply_auth_hardening: [
+        "configHostPath=<prepared-config-host-path>",
+      ],
     });
     expect(
       cases.find((testCase) => testCase.id === "version-upgrade-backup-first")
@@ -318,6 +343,37 @@ describe("loadCases", () => {
       "local_ydb_auth_check",
       "local_ydb_status_report",
     ]);
+    expect(
+      cases.find(
+        (testCase) => testCase.id === "auth-hardening-copied-volume-rehearsal",
+      ).expected.requiredToolEntryTerms,
+    ).toEqual({
+      local_ydb_status_report: [
+        "profile=auth-rehearsal",
+        "profile=auth-rehearsal",
+      ],
+      local_ydb_prepare_auth_config: [
+        [
+          "profile=auth-rehearsal",
+          "configHostPath=<rehearsal-config-host-path>",
+          "sid=<rehearsal-sid>",
+        ],
+      ],
+      local_ydb_write_dynamic_auth_config: [
+        [
+          "profile=auth-rehearsal",
+          "sid=<rehearsal-sid>",
+          "tokenHostPath=<rehearsal-token-host-path>",
+        ],
+      ],
+      local_ydb_apply_auth_hardening: [
+        [
+          "profile=auth-rehearsal",
+          "configHostPath=<rehearsal-config-host-path>",
+        ],
+      ],
+      local_ydb_auth_check: ["profile=auth-rehearsal"],
+    });
   });
 
   it("rejects an empty suite", () => {
