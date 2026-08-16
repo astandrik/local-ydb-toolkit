@@ -36,6 +36,27 @@ function agentMessageEvent(text) {
   return { type: "item.completed", item: { type: "agent_message", text } };
 }
 
+const localYdbSkillOutput = [
+  "---",
+  "name: local-ydb",
+  "---",
+  "# Local YDB",
+  "## Output Style",
+].join("\n");
+
+function completedCommandEvent(command, aggregatedOutput = "") {
+  return {
+    type: "item.completed",
+    item: {
+      type: "command_execution",
+      command,
+      aggregated_output: aggregatedOutput,
+      exit_code: 0,
+      status: "completed",
+    },
+  };
+}
+
 function validAnswer(overrides = {}) {
   return {
     should_use_local_ydb_skill: true,
@@ -57,13 +78,10 @@ function scoreWith(events, expected, options = {}) {
   const activationEvents =
     expected.shouldUseLocalYdbSkill && !omitSkillActivation
       ? [
-          {
-            type: "item.completed",
-            item: {
-              type: "command_execution",
-              command: "cat $CODEX_HOME/skills/local-ydb/SKILL.md",
-            },
-          },
+          completedCommandEvent(
+            "cat $CODEX_HOME/skills/local-ydb/SKILL.md",
+            localYdbSkillOutput,
+          ),
         ]
       : [];
   return scoreCase(makeCase(expected), [...activationEvents, ...events], scoreOptions)
@@ -1139,6 +1157,21 @@ describe("scoreCase", () => {
     }
   });
 
+  it("rejects argument keys outside the public MCP input schema", () => {
+    const entry = "local_ydb_status_report madeUp=1";
+    const failures = scoreWith(
+      [finalAnswerEvent({ tool_sequence: [entry] })],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: ["local_ydb_status_report"],
+      },
+    );
+
+    expect(failures).toContain(
+      `tool sequence entry has unknown argument key madeUp: ${entry}`,
+    );
+  });
+
   it("rejects malformed tool arguments", () => {
     const entry =
       "local_ydb_reduce_storage_groups count=1 poolName=<returned-poolName> count:10";
@@ -1821,252 +1854,9 @@ describe("scoreCase", () => {
     expect(failures).toContain("forbidden term present: confirm=true");
   });
 
-  it("fails a negative control that reads the installed skill", () => {
-    const failures = scoreWith(
-      [
-        {
-          type: "item.completed",
-          item: {
-            type: "command_execution",
-            command: "cat $CODEX_HOME/skills/local-ydb/SKILL.md",
-          },
-        },
-        finalAnswerEvent({
-          should_use_local_ydb_skill: false,
-          task_type: "other",
-          answer: "Here is a small unit test.",
-        }),
-      ],
-      { shouldUseLocalYdbSkill: false },
-    );
-
-    expect(failures).toContain(
-      "trace reads the local-ydb skill in a negative control: cat $CODEX_HOME/skills/local-ydb/SKILL.md",
-    );
-
-    // Reading the skill is expected in positive cases: not flagged there.
-    const positive = scoreWith(
-      [
-        {
-          type: "item.completed",
-          item: {
-            type: "command_execution",
-            command: "cat $CODEX_HOME/skills/local-ydb/SKILL.md",
-          },
-        },
-        finalAnswerEvent(),
-      ],
-      { shouldUseLocalYdbSkill: true },
-    );
-    expect(positive).toEqual([]);
-  });
-
-  it("recognizes numbered skill reads in positive and negative cases", () => {
-    const command = "nl -ba skills/local-ydb/SKILL.md";
-    const commandEvent = {
-      type: "item.completed",
-      item: { type: "command_execution", command, exit_code: 0 },
-    };
-
-    expect(
-      scoreWith(
-        [commandEvent, finalAnswerEvent()],
-        { shouldUseLocalYdbSkill: true },
-        { omitSkillActivation: true },
-      ),
-    ).toEqual([]);
-
-    expect(
-      scoreWith(
-        [
-          commandEvent,
-          finalAnswerEvent({
-            should_use_local_ydb_skill: false,
-            task_type: "other",
-          }),
-        ],
-        { shouldUseLocalYdbSkill: false },
-      ),
-    ).toContain(
-      `trace reads the local-ydb skill in a negative control: ${command}`,
-    );
-
-    const optionValueCommand = "nl -s skills/local-ydb/SKILL.md README.md";
-    const optionValueEvent = {
-      type: "item.completed",
-      item: {
-        type: "command_execution",
-        command: optionValueCommand,
-        exit_code: 0,
-      },
-    };
-    expect(
-      scoreWith(
-        [optionValueEvent, finalAnswerEvent()],
-        { shouldUseLocalYdbSkill: true },
-        { omitSkillActivation: true },
-      ),
-    ).toContain("positive case has no local-ydb skill activation evidence");
-    expect(
-      scoreWith(
-        [
-          optionValueEvent,
-          finalAnswerEvent({
-            should_use_local_ydb_skill: false,
-            task_type: "other",
-          }),
-        ],
-        { shouldUseLocalYdbSkill: false },
-      ),
-    ).not.toContain(
-      `trace reads the local-ydb skill in a negative control: ${optionValueCommand}`,
-    );
-  });
-
-  it("fails a negative control that expands the installed skill", () => {
-    for (const command of ["cat skills/*/SKILL.md"]) {
-      const failures = scoreWith(
-        [
-          {
-            type: "item.completed",
-            item: { type: "command_execution", command },
-          },
-          finalAnswerEvent({
-            should_use_local_ydb_skill: false,
-            task_type: "other",
-            answer: "Here is a small unit test.",
-          }),
-        ],
-        { shouldUseLocalYdbSkill: false },
-      );
-
-      expect(failures).toContain(
-        `trace reads the local-ydb skill in a negative control: ${command}`,
-      );
-    }
-  });
-
-  it("ties the skill path to the segment that reads it", () => {
-    const failures = scoreWith(
-      [
-        {
-          type: "item.completed",
-          item: {
-            type: "command_execution",
-            command: "echo skills/local-ydb/SKILL.md; cat README.md",
-            exit_code: 0,
-            status: "completed",
-          },
-        },
-        finalAnswerEvent(),
-      ],
-      { shouldUseLocalYdbSkill: true },
-      { omitSkillActivation: true },
-    );
-
-    expect(failures).toContain(
-      "positive case has no local-ydb skill activation evidence",
-    );
-  });
-
-  it("ignores skill paths inside unquoted shell comments", () => {
-    const command =
-      "cat skills/local-ydb/references/evals.md # skills/local-ydb/SKILL.md";
-    const commandEvent = {
-      type: "item.completed",
-      item: { type: "command_execution", command, exit_code: 0 },
-    };
-
-    expect(
-      scoreWith(
-        [commandEvent, finalAnswerEvent()],
-        { shouldUseLocalYdbSkill: true },
-        { omitSkillActivation: true },
-      ),
-    ).toContain("positive case has no local-ydb skill activation evidence");
-    expect(
-      scoreWith(
-        [
-          commandEvent,
-          finalAnswerEvent({
-            should_use_local_ydb_skill: false,
-            task_type: "other",
-          }),
-        ],
-        { shouldUseLocalYdbSkill: false },
-      ),
-    ).not.toContain(
-      `trace reads the local-ydb skill in a negative control: ${command}`,
-    );
-  });
-
-  it("requires redirected stdin to be consumed for skill activation", () => {
-    const command = "cat 0<skills/local-ydb/SKILL.md README.md";
-    const commandEvent = {
-      type: "item.completed",
-      item: { type: "command_execution", command, exit_code: 0 },
-    };
-
-    expect(
-      scoreWith(
-        [commandEvent, finalAnswerEvent()],
-        { shouldUseLocalYdbSkill: true },
-        { omitSkillActivation: true },
-      ),
-    ).toContain("positive case has no local-ydb skill activation evidence");
-    expect(
-      scoreWith(
-        [
-          commandEvent,
-          finalAnswerEvent({
-            should_use_local_ydb_skill: false,
-            task_type: "other",
-          }),
-        ],
-        { shouldUseLocalYdbSkill: false },
-      ),
-    ).not.toContain(
-      `trace reads the local-ydb skill in a negative control: ${command}`,
-    );
-  });
-
-  it("does not treat conditionally skipped readers as skill activation", () => {
-    const command =
-      "test -f skills/local-ydb/SKILL.md || cat skills/local-ydb/SKILL.md";
-    const commandEvent = {
-      type: "item.completed",
-      item: { type: "command_execution", command, exit_code: 0 },
-    };
-
-    expect(
-      scoreWith(
-        [commandEvent, finalAnswerEvent()],
-        { shouldUseLocalYdbSkill: true },
-        { omitSkillActivation: true },
-      ),
-    ).toContain("positive case has no local-ydb skill activation evidence");
-    expect(
-      scoreWith(
-        [
-          commandEvent,
-          finalAnswerEvent({
-            should_use_local_ydb_skill: false,
-            task_type: "other",
-          }),
-        ],
-        { shouldUseLocalYdbSkill: false },
-      ),
-    ).not.toContain(
-      `trace reads the local-ydb skill in a negative control: ${command}`,
-    );
-  });
-
-  it("accepts successful skill reads in an AND chain", () => {
-    const command = "cat skills/local-ydb/SKILL.md && true";
-    const commandEvent = {
-      type: "item.completed",
-      item: { type: "command_execution", command, exit_code: 0 },
-    };
+  it("uses completed command output as skill activation evidence", () => {
+    const command = "cat $CODEX_HOME/skills/local-ydb/SKILL.md";
+    const commandEvent = completedCommandEvent(command, localYdbSkillOutput);
 
     expect(
       scoreWith(
@@ -2087,240 +1877,98 @@ describe("scoreCase", () => {
         { shouldUseLocalYdbSkill: false },
       ),
     ).toContain(
-      `trace reads the local-ydb skill in a negative control: ${command}`,
+      `trace exposes the local-ydb skill in a negative control: ${command}`,
     );
   });
 
-  it("ignores reader modes that exit after help or version output", () => {
-    for (const command of [
+  it("requires both stable skill markers in successful command output", () => {
+    const incompleteOutput = completedCommandEvent(
+      "head -n 5 skills/local-ydb/SKILL.md",
+      "---\nname: local-ydb\n---",
+    );
+    expect(
+      scoreWith(
+        [incompleteOutput, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toContain("positive case has no local-ydb skill activation evidence");
+
+    const splitOutput = [
+      completedCommandEvent("sed -n '1,120p' skills/local-ydb/SKILL.md", "name: local-ydb"),
+      completedCommandEvent("sed -n '121,240p' skills/local-ydb/SKILL.md", "## Output Style"),
+    ];
+    expect(
+      scoreWith(
+        [...splitOutput, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toEqual([]);
+  });
+
+  it("requires successful command output with both skill markers", () => {
+    const commandsWithoutSkillOutput = [
+      "cat skills/local-ydb/SKILL.md | true",
+      "head -n invalid skills/local-ydb/SKILL.md; true",
+      "rg local --field-context-separator skills/local-ydb/SKILL.md README.md",
       "cat --help skills/local-ydb/SKILL.md",
-      "cat --version skills/local-ydb/SKILL.md",
-      "rg -h activation skills/local-ydb/SKILL.md",
-      "grep -V activation skills/local-ydb/SKILL.md",
-      "awk -W version '{print}' skills/local-ydb/SKILL.md",
-    ]) {
-      const commandEvent = {
-        type: "item.completed",
-        item: { type: "command_execution", command, exit_code: 0 },
-      };
-
-      expect(
-        scoreWith(
-          [commandEvent, finalAnswerEvent()],
-          { shouldUseLocalYdbSkill: true },
-          { omitSkillActivation: true },
-        ),
-        command,
-      ).toContain("positive case has no local-ydb skill activation evidence");
-      expect(
-        scoreWith(
-          [
-            commandEvent,
-            finalAnswerEvent({
-              should_use_local_ydb_skill: false,
-              task_type: "other",
-            }),
-          ],
-          { shouldUseLocalYdbSkill: false },
-        ),
-        command,
-      ).not.toContain(
-        `trace reads the local-ydb skill in a negative control: ${command}`,
-      );
-    }
-  });
-
-  it("requires skill contents to remain visible on standard output", () => {
-    for (const command of [
-      "cat skills/local-ydb/SKILL.md > /dev/null",
-      "cat skills/local-ydb/SKILL.md >/tmp/local-ydb-skill",
-      "cat skills/local-ydb/SKILL.md 1>&2",
-      "cat skills/local-ydb/SKILL.md | head > /dev/null",
-    ]) {
-      const commandEvent = {
-        type: "item.completed",
-        item: { type: "command_execution", command, exit_code: 0 },
-      };
-
-      expect(
-        scoreWith(
-          [commandEvent, finalAnswerEvent()],
-          { shouldUseLocalYdbSkill: true },
-          { omitSkillActivation: true },
-        ),
-        command,
-      ).toContain("positive case has no local-ydb skill activation evidence");
-      expect(
-        scoreWith(
-          [
-            commandEvent,
-            finalAnswerEvent({
-              should_use_local_ydb_skill: false,
-              task_type: "other",
-            }),
-          ],
-          { shouldUseLocalYdbSkill: false },
-        ),
-        command,
-      ).not.toContain(
-        `trace reads the local-ydb skill in a negative control: ${command}`,
-      );
-    }
-
-    for (const command of [
-      "cat skills/local-ydb/SKILL.md 2>/dev/null",
-      "cat skills/local-ydb/SKILL.md | head 2>/dev/null",
-    ]) {
-      const commandEvent = {
-        type: "item.completed",
-        item: { type: "command_execution", command, exit_code: 0 },
-      };
-      expect(
-        scoreWith(
-          [commandEvent, finalAnswerEvent()],
-          { shouldUseLocalYdbSkill: true },
-          { omitSkillActivation: true },
-        ),
-        command,
-      ).toEqual([]);
-    }
-  });
-
-  it("requires find -exec readers to consume the found skill path", () => {
-    for (const command of [
-      "find skills -name SKILL.md -print; echo '-exec cat'",
-      "find skills -name SKILL.md -exec cat README.md \\;",
       "find skills -maxdepth 0 -name SKILL.md -exec cat {} \\;",
-    ]) {
-      const failures = scoreWith(
-        [
-          {
-            type: "item.completed",
-            item: {
-              type: "command_execution",
-              command,
-              exit_code: 0,
-              status: "completed",
-            },
-          },
-          finalAnswerEvent(),
-        ],
-        { shouldUseLocalYdbSkill: true },
-        { omitSkillActivation: true },
-      );
+      "cat skills/local-ydb/SKILL.md > /dev/null",
+    ];
 
-      expect(failures, command).toContain(
-        "positive case has no local-ydb skill activation evidence",
-      );
-    }
-  });
-
-  it("requires the skill path to be a reader input operand", () => {
-    const patternOnlyFailures = scoreWith(
-      [
-        {
-          type: "item.completed",
-          item: {
-            type: "command_execution",
-            command:
-              "rg skills/local-ydb/SKILL.md skills/local-ydb/references/evals.md",
-            exit_code: 0,
-            status: "completed",
-          },
-        },
-        finalAnswerEvent(),
-      ],
-      { shouldUseLocalYdbSkill: true },
-      { omitSkillActivation: true },
-    );
-    expect(patternOnlyFailures).toContain(
-      "positive case has no local-ydb skill activation evidence",
-    );
-
-    for (const command of [
-      "rg activation skills/local-ydb/SKILL.md",
-      "rg -ne'Execution Boundary' skills/local-ydb/SKILL.md",
-      "rg '<host>' skills/local-ydb/SKILL.md",
-      "rg '2>host' skills/local-ydb/SKILL.md",
-      "rg 2\\>host skills/local-ydb/SKILL.md",
-      "rg -n 'Execution Boundary' skills/local-ydb/SKILL.md skills/local-ydb/references/evals.md",
-      "sed -n '1,120p' skills/local-ydb/SKILL.md",
-      "cat < $CODEX_HOME/skills/local-ydb/SKILL.md",
-      "cat 0< skills/local-ydb/SKILL.md",
-      "sed -n 1p < skills/local-ydb/SKILL.md",
-    ]) {
-      const failures = scoreWith(
-        [
-          {
-            type: "item.completed",
-            item: {
-              type: "command_execution",
-              command,
-              exit_code: 0,
-              status: "completed",
-            },
-          },
-          finalAnswerEvent(),
-        ],
-        { shouldUseLocalYdbSkill: true },
-        { omitSkillActivation: true },
-      );
-      expect(failures, command).toEqual([]);
+    for (const command of commandsWithoutSkillOutput) {
+      const commandEvent = completedCommandEvent(command, "unrelated output");
+      expect(
+        scoreWith(
+          [commandEvent, finalAnswerEvent()],
+          { shouldUseLocalYdbSkill: true },
+          { omitSkillActivation: true },
+        ),
+        command,
+      ).toContain("positive case has no local-ydb skill activation evidence");
+      expect(
+        scoreWith(
+          [
+            commandEvent,
+            finalAnswerEvent({
+              should_use_local_ydb_skill: false,
+              task_type: "other",
+            }),
+          ],
+          { shouldUseLocalYdbSkill: false },
+        ),
+        command,
+      ).not.toContain("trace exposes the local-ydb skill in a negative control");
     }
 
-    const optionValueFailures = scoreWith(
-      [
-        {
-          type: "item.completed",
-          item: {
-            type: "command_execution",
-            command:
-              "rg --glob skills/local-ydb/SKILL.md activation skills/local-ydb/references/evals.md",
-            exit_code: 0,
-            status: "completed",
-          },
-        },
-        finalAnswerEvent(),
-      ],
-      { shouldUseLocalYdbSkill: true },
-      { omitSkillActivation: true },
+    const failedRead = completedCommandEvent(
+      "cat skills/local-ydb/SKILL.md",
+      localYdbSkillOutput,
     );
-    expect(optionValueFailures).toContain(
-      "positive case has no local-ydb skill activation evidence",
-    );
-
-    const nonStandardInputCommand =
-      "cat 3<skills/local-ydb/SKILL.md README.md";
-    const nonStandardInputEvent = {
-      type: "item.completed",
-      item: {
-        type: "command_execution",
-        command: nonStandardInputCommand,
-        exit_code: 0,
-        status: "completed",
-      },
-    };
+    failedRead.item.exit_code = 1;
+    failedRead.item.status = "failed";
     expect(
       scoreWith(
-        [nonStandardInputEvent, finalAnswerEvent()],
+        [failedRead, finalAnswerEvent()],
         { shouldUseLocalYdbSkill: true },
         { omitSkillActivation: true },
       ),
     ).toContain("positive case has no local-ydb skill activation evidence");
+
     expect(
       scoreWith(
         [
-          nonStandardInputEvent,
-          finalAnswerEvent({
-            should_use_local_ydb_skill: false,
-            task_type: "other",
-          }),
+          completedCommandEvent(
+            "cat skills/local-ydb/SKILL.md 2>/dev/null",
+            localYdbSkillOutput,
+          ),
+          finalAnswerEvent(),
         ],
-        { shouldUseLocalYdbSkill: false },
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
       ),
-    ).not.toContain(
-      `trace reads the local-ydb skill in a negative control: ${nonStandardInputCommand}`,
-    );
+    ).toEqual([]);
   });
 
   it("validates the structured answer shape", () => {
@@ -2480,6 +2128,8 @@ describe("invokesLiveDockerOrYdb", () => {
     "env --debug -S 'docker\\_ps'",
     "CMD=docker env --debug -S '${CMD}\\_ps'",
     "CMD='docker ps' env --debug -S '${CMD}'",
+    "env -S 'echo\\_docker'",
+    "env --split-string='echo \"docker ps\"'",
     "env --debug -S 'echo\\q'",
     "/usr/bin/env docker ps",
     "/usr/bin/sudo docker ps",
@@ -2520,8 +2170,8 @@ describe("invokesLiveDockerOrYdb", () => {
     "sudo -n",
     "env",
     "env FOO=1",
-    "env -S 'echo\\_docker'",
-    "env --split-string='echo \"docker ps\"'",
+    "env --help docker ps",
+    "env --version ydb scheme ls",
     "command -v docker",
     "command -V ydb",
     "echo A=1",

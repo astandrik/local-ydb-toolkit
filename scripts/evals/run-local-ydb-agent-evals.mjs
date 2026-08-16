@@ -18,6 +18,16 @@ const modulePath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(modulePath), "../..");
 const defaultCasesPath = join(repoRoot, "evals/local-ydb-agent/cases.json");
 const defaultSchemaPath = join(repoRoot, "evals/local-ydb-agent/final-answer.schema.json");
+const toolArgumentKeys = new Map(
+  Object.entries(
+    JSON.parse(
+      readFileSync(
+        join(repoRoot, "evals/local-ydb-agent/tool-argument-keys.json"),
+        "utf8",
+      ),
+    ),
+  ).map(([tool, keys]) => [tool, new Set(keys)]),
+);
 export const defaultCaseTimeoutMs = 5 * 60 * 1000;
 const caseIdPattern = /^[a-z0-9][a-z0-9-]*$/;
 const optionalStringArrayFields = [
@@ -355,6 +365,9 @@ export function scoreCase(testCase, events, options = {}) {
       for (const key of duplicateToolSequenceArgumentKeys(entry)) {
         failures.push(`tool sequence entry has duplicate argument key ${key}: ${entry}`);
       }
+      for (const key of unknownToolSequenceArgumentKeys(entry)) {
+        failures.push(`tool sequence entry has unknown argument key ${key}: ${entry}`);
+      }
     }
 
     if (
@@ -525,24 +538,24 @@ export function scoreCase(testCase, events, options = {}) {
     failures.push(`trace contains live MCP tool call: ${name}`);
   }
 
-  // Successfully reading the installed skill is the trace evidence for
-  // activation. A self-reported positive without that evidence fails, while
-  // negative controls fail on every successful matching read.
-  const skillReads = events.flatMap((event) => {
-    const command = event?.item?.command;
-    return typeof command === "string" &&
-      commandExecutionSucceeded(event) &&
-      readsLocalYdbSkill(command)
-      ? [command]
-      : [];
-  });
-  if (expectedSkill && skillReads.length === 0) {
+  // Codex records the output that reached the agent for every completed shell
+  // command. Use that observable output as activation evidence instead of
+  // attempting to reconstruct shell execution from the display command.
+  const skillOutputEvents = events.filter(commandExposesLocalYdbSkill);
+  const skillActivated = outputContainsLocalYdbSkill(
+    skillOutputEvents.map((event) => event.item.aggregated_output).join("\n"),
+  );
+  if (expectedSkill && !skillActivated) {
     failures.push("positive case has no local-ydb skill activation evidence");
   }
-  if (!expectedSkill) {
-    for (const command of skillReads) {
-      failures.push(`trace reads the local-ydb skill in a negative control: ${command}`);
-    }
+  if (!expectedSkill && skillActivated) {
+    const commands = skillOutputEvents
+      .map((event) => event.item.command)
+      .filter((command) => typeof command === "string")
+      .join("; ");
+    failures.push(
+      `trace exposes the local-ydb skill in a negative control${commands ? `: ${commands}` : ""}`,
+    );
   }
 
   if (options.exitCode && options.exitCode !== 0) {
@@ -726,6 +739,17 @@ function duplicateToolSequenceArgumentKeys(entry) {
   return [...duplicates];
 }
 
+function unknownToolSequenceArgumentKeys(entry) {
+  const allowedKeys = toolArgumentKeys.get(toolSequenceEntryName(entry));
+  if (!allowedKeys) {
+    return [];
+  }
+  return toolSequenceArguments(entry).flatMap((argument) => {
+    const key = argument.match(/^([A-Za-z][A-Za-z0-9_]*)=/)?.[1];
+    return key && !allowedKeys.has(key) ? [key] : [];
+  });
+}
+
 function unexpectedAnswerTools(text, allowedTools) {
   const unexpected = new Set();
   for (const match of text.matchAll(/\blocal_ydb_[a-z0-9_]+\b/g)) {
@@ -734,35 +758,6 @@ function unexpectedAnswerTools(text, allowedTools) {
     }
   }
   return [...unexpected];
-}
-
-function readsLocalYdbSkill(command) {
-  const directSkillFile = /(?:^|\/)skills\/local-ydb\/SKILL\.md$/;
-  const readsSkillGlob =
-    /(?:^|\/)skills\/[^/]*(?:\*|\?|\[[^\]]+\])[^/]*\/SKILL\.md$/;
-  const parts = splitShellCommandParts(command);
-  return (
-    !parts.some(({ separator }) => separator === "||") &&
-    parts.some(
-      ({ segment }, index) =>
-        readerUsesSkillInput(
-          segment,
-          (token) => directSkillFile.test(token) || readsSkillGlob.test(token),
-        ) && pipelineOutputReachesAgent(parts, index),
-    )
-  );
-}
-
-function pipelineOutputReachesAgent(parts, readerIndex) {
-  for (let index = readerIndex; index < parts.length; index += 1) {
-    if (redirectsStandardOutput(parts[index].segment)) {
-      return false;
-    }
-    if (parts[index].separator !== "|" && parts[index].separator !== "|&") {
-      return true;
-    }
-  }
-  return false;
 }
 
 function commandExecutionSucceeded(event) {
@@ -775,180 +770,19 @@ function commandExecutionSucceeded(event) {
   );
 }
 
-function readerUsesSkillInput(segment, matchesSkillPath) {
-  if (redirectsStandardOutput(segment)) {
-    return false;
-  }
-  const redirectedSkillInput = inputRedirectionTargets(segment).some(
-    matchesSkillPath,
-  );
-  const tokens = commandTokens(segment);
-  const executable = tokens[0];
-  if (!executable) {
-    return false;
-  }
-  const name = executable.slice(executable.lastIndexOf("/") + 1);
-  const args = tokens.slice(1);
-  if (!/^(?:cat|bat|head|tail|less|more|sed|awk|grep|rg|nl)$/.test(name)) {
-    return false;
-  }
-  if (readerUsesTerminalMode(name, args)) {
-    return false;
-  }
-  const inputOperands = readerInputOperands(name, args);
-  const consumesStandardInput =
-    inputOperands.length === 0 || inputOperands.includes("-");
+function commandExposesLocalYdbSkill(event) {
   return (
-    (redirectedSkillInput && consumesStandardInput) ||
-    inputOperands.some(matchesSkillPath)
+    commandExecutionSucceeded(event) &&
+    typeof event?.item?.aggregated_output === "string" &&
+    event.item.aggregated_output.length > 0
   );
 }
 
-const readerTerminalOptions = {
-  cat: new Set(["--help", "--version"]),
-  bat: new Set(["-h", "--help", "-V", "--version"]),
-  head: new Set(["--help", "--version"]),
-  tail: new Set(["--help", "--version"]),
-  less: new Set(["-?", "--help", "-V", "--version"]),
-  more: new Set(["--help", "-V", "--version"]),
-  sed: new Set(["--help", "--version"]),
-  awk: new Set(["--help", "--version"]),
-  grep: new Set(["--help", "-V", "--version"]),
-  rg: new Set(["-h", "--help", "-V", "--version"]),
-  nl: new Set(["--help", "--version"]),
-};
-
-function readerUsesTerminalMode(name, args) {
-  const optionEnd = args.indexOf("--");
-  const options = optionEnd === -1 ? args : args.slice(0, optionEnd);
+function outputContainsLocalYdbSkill(output) {
   return (
-    options.some((argument) => readerTerminalOptions[name].has(argument)) ||
-    (name === "awk" &&
-      (options.includes("-Wversion") ||
-        options.some(
-          (argument, index) => argument === "-W" && options[index + 1] === "version",
-        )))
+    /(?:^|\n)name:\s*local-ydb\s*(?:\n|$)/.test(output) &&
+    /(?:^|\n)## Output Style\s*(?:\n|$)/.test(output)
   );
-}
-
-const readerValueOptions = {
-  cat: new Set(),
-  bat: new Set(),
-  head: new Set(["-c", "-n", "--bytes", "--lines"]),
-  tail: new Set([
-    "-c", "-n", "-s", "--bytes", "--lines", "--max-unchanged-stats",
-    "--pid", "--sleep-interval",
-  ]),
-  less: new Set(),
-  more: new Set(["-n"]),
-  rg: new Set([
-    "-A", "-B", "-C", "-E", "-e", "-f", "-g", "-j", "-M", "-m", "-r", "-t", "-T",
-    "--after-context", "--before-context", "--context", "--encoding", "--engine", "--file",
-    "--glob", "--iglob", "--ignore-file", "--max-columns", "--max-count", "--max-depth",
-    "--max-filesize", "--regexp", "--replace", "--sort", "--sortr", "--threads", "--type",
-    "--type-add", "--type-clear", "--type-not",
-  ]),
-  grep: new Set([
-    "-A", "-B", "-C", "-D", "-d", "-e", "-f", "-m",
-    "--after-context", "--before-context", "--binary-files", "--context", "--directories",
-    "--exclude", "--exclude-dir", "--exclude-from", "--include", "--label", "--max-count",
-    "--regexp", "--file",
-  ]),
-  sed: new Set(["-e", "-f", "-i", "-l", "--expression", "--file", "--in-place", "--line-length"]),
-  awk: new Set(["-F", "-f", "-v", "--assign", "--field-separator", "--file", "--source"]),
-  nl: new Set([
-    "-b", "-d", "-f", "-h", "-i", "-l", "-n", "-s", "-v", "-w",
-    "--body-numbering", "--section-delimiter", "--footer-numbering",
-    "--header-numbering", "--line-increment", "--join-blank-lines",
-    "--number-format", "--number-separator", "--starting-line-number",
-    "--number-width",
-  ]),
-};
-
-const readerProgramOptions = {
-  cat: new Set(),
-  bat: new Set(),
-  head: new Set(),
-  tail: new Set(),
-  less: new Set(),
-  more: new Set(),
-  rg: new Set(["-e", "-f", "--regexp", "--file"]),
-  grep: new Set(["-e", "-f", "--regexp", "--file"]),
-  sed: new Set(["-e", "-f", "--expression", "--file"]),
-  awk: new Set(["-f", "--file", "--source"]),
-  nl: new Set(),
-};
-
-function readerInputOperands(name, args) {
-  const valueOptions = readerValueOptions[name];
-  const programOptions = readerProgramOptions[name];
-  const positional = [];
-  let programProvidedByOption = false;
-  let parsingOptions = true;
-
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-    if (parsingOptions && argument === "--") {
-      parsingOptions = false;
-      continue;
-    }
-    if (parsingOptions && argument.startsWith("-") && argument !== "-") {
-      const longOption = argument.startsWith("--");
-      const separator = longOption ? argument.indexOf("=") : -1;
-      const shortOption = longOption
-        ? undefined
-        : clusteredReaderValueOption(argument, valueOptions);
-      const option = longOption
-        ? separator === -1
-          ? argument
-          : argument.slice(0, separator)
-        : shortOption?.option;
-      if (programOptions.has(option)) {
-        programProvidedByOption = true;
-      }
-      const hasAttachedValue = longOption
-        ? separator !== -1
-        : shortOption?.hasAttachedValue === true;
-      if (valueOptions.has(option) && !hasAttachedValue) {
-        index += 1;
-      }
-      continue;
-    }
-    positional.push(argument);
-  }
-
-  return programOptions.size === 0 || programProvidedByOption
-    ? positional
-    : positional.slice(1);
-}
-
-function clusteredReaderValueOption(argument, valueOptions) {
-  for (let index = 1; index < argument.length; index += 1) {
-    const option = `-${argument[index]}`;
-    if (valueOptions.has(option)) {
-      return { option, hasAttachedValue: index < argument.length - 1 };
-    }
-  }
-  return undefined;
-}
-
-function inputRedirectionTargets(segment) {
-  const tokens = shellTokenDetails(segment);
-  const targets = [];
-  const inputRedirection = /^(?:0)?(?:<>|<(?![<&]))(.*)$/;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const match = unquotedRedirectionMatch(tokens[index], inputRedirection);
-    if (!match) {
-      continue;
-    }
-    if (match[1]) {
-      targets.push(match[1]);
-    } else if (index + 1 < tokens.length) {
-      targets.push(tokens[index + 1].value);
-      index += 1;
-    }
-  }
-  return targets;
 }
 
 function firstOrderFailure(actual, required) {
@@ -1027,18 +861,6 @@ const envValueOptions = new Set([
 ]);
 const envShortValueOptions = new Set(["a", "C", "S", "u"]);
 const unsafeEnvSplitStringExecutable = "__unsafe_env_split_string__";
-const envSplitEscapedCharacters = {
-  f: "\f",
-  n: "\n",
-  r: "\r",
-  t: "\t",
-  v: "\v",
-  "#": "#",
-  $: "$",
-  '"': '"',
-  "'": "'",
-  "\\": "\\",
-};
 
 // Standard prefixes of a direct command: environment assignments and sudo.
 const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -1047,16 +869,9 @@ function executableName(token) {
   return token.slice(token.lastIndexOf("/") + 1);
 }
 
-function skipEnvAssignments(tokens, index, environment) {
+function skipEnvAssignments(tokens, index) {
   let cursor = index;
   while (cursor < tokens.length && envAssignmentPattern.test(tokens[cursor])) {
-    if (environment) {
-      const separator = tokens[cursor].indexOf("=");
-      environment.set(
-        tokens[cursor].slice(0, separator),
-        tokens[cursor].slice(separator + 1),
-      );
-    }
     cursor += 1;
   }
   return cursor;
@@ -1162,163 +977,29 @@ function skipLauncherOptions(
   return cursor;
 }
 
-function envSplitStringOption(tokens, index) {
-  const token = tokens[index];
-  if (token === "--split-string") {
-    return {
-      value: tokens[index + 1] ?? "",
-      consumed: tokens[index + 1] ? 2 : 1,
-    };
-  }
-  if (token.startsWith("--split-string=")) {
-    return { value: token.slice("--split-string=".length), consumed: 1 };
-  }
-  if (!/^-[^-]/.test(token)) {
-    return undefined;
-  }
-  for (let offset = 1; offset < token.length; offset += 1) {
-    const option = token[offset];
-    if (!envShortValueOptions.has(option)) {
-      continue;
-    }
-    if (option !== "S") {
-      return undefined;
-    }
-    const attachedValue = token.slice(offset + 1);
-    return attachedValue
-      ? { value: attachedValue, consumed: 1 }
-      : {
-          value: tokens[index + 1] ?? "",
-          consumed: tokens[index + 1] ? 2 : 1,
-        };
-  }
-  return undefined;
-}
-
-function parseEnvSplitString(value, environment) {
-  const tokens = [];
-  let token = "";
-  let tokenStarted = false;
-  let quote;
-
-  const finishToken = () => {
-    if (tokenStarted) {
-      tokens.push(token);
-      token = "";
-      tokenStarted = false;
-    }
-  };
-  const append = (text) => {
-    token += text;
-    tokenStarted = true;
-  };
-  const expandVariable = (index) => {
-    const expansion = value.slice(index).match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
-    if (!expansion) {
-      return undefined;
-    }
-    const replacement = environment.get(expansion[1]) ?? "";
-    return /[\s\\'"#$]/.test(replacement)
-      ? undefined
-      : { length: expansion[0].length, replacement };
-  };
-
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
-    if (character === "\\") {
-      const escaped = value[index + 1];
-      if (escaped === undefined) {
-        return undefined;
-      }
-      if (quote === "'" && escaped !== "'" && escaped !== "\\") {
-        append("\\");
-        continue;
-      }
-      if (escaped === "c") {
-        if (quote) {
-          return undefined;
-        }
-        break;
-      }
-      if (escaped === "_") {
-        if (quote === '"') {
-          append(" ");
-        } else {
-          finishToken();
-        }
-      } else if (Object.hasOwn(envSplitEscapedCharacters, escaped)) {
-        const replacement = envSplitEscapedCharacters[escaped];
-        if (!quote && /\s/.test(replacement)) {
-          finishToken();
-        } else {
-          append(replacement);
-        }
-      } else {
-        return undefined;
-      }
-      index += 1;
-      continue;
-    }
-    if (quote) {
-      if (character === quote) {
-        quote = undefined;
-      } else if (character === "$" && quote !== "'") {
-        const expansion = expandVariable(index);
-        if (!expansion) {
-          return undefined;
-        }
-        append(expansion.replacement);
-        index += expansion.length - 1;
-      } else {
-        append(character);
-      }
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = character;
-      tokenStarted = true;
-      continue;
-    }
-    if (/\s/.test(character)) {
-      finishToken();
-      continue;
-    }
-    if (character === "#" && !tokenStarted) {
-      break;
-    }
-    if (character === "$") {
-      const expansion = expandVariable(index);
-      if (!expansion) {
-        return undefined;
-      }
-      append(expansion.replacement);
-      index += expansion.length - 1;
-      continue;
-    }
-    append(character);
-  }
-  if (quote) {
-    return undefined;
-  }
-  finishToken();
-  return tokens;
-}
-
-function expandEnvSplitString(tokens, envIndex, environment) {
+function envLauncherMode(tokens, envIndex) {
   let cursor = envIndex + 1;
   while (cursor < tokens.length) {
     const token = tokens[cursor];
-    if (token === "--" || token === "-" || !token.startsWith("-")) {
-      return "none";
+    if (token === "--help" || token === "--version") {
+      return "terminal";
     }
-    const splitString = envSplitStringOption(tokens, cursor);
-    if (splitString) {
-      const expanded = parseEnvSplitString(splitString.value, environment);
-      if (!expanded) {
-        return "unsafe";
+    if (token === "--" || token === "-" || !token.startsWith("-")) {
+      return "direct";
+    }
+    if (token === "--split-string" || token.startsWith("--split-string=")) {
+      return "split-string";
+    }
+    if (/^-[^-]/.test(token)) {
+      for (let offset = 1; offset < token.length; offset += 1) {
+        const option = token[offset];
+        if (option === "S") {
+          return "split-string";
+        }
+        if (envShortValueOptions.has(option)) {
+          break;
+        }
       }
-      tokens.splice(cursor, splitString.consumed, ...expanded);
-      return "expanded";
     }
     cursor += 1;
     if (
@@ -1328,7 +1009,7 @@ function expandEnvSplitString(tokens, envIndex, environment) {
       cursor += 1;
     }
   }
-  return "none";
+  return "direct";
 }
 
 function stripShellRedirections(tokens) {
@@ -1382,34 +1063,13 @@ function unquotedShellRedirections(token) {
   return redirections;
 }
 
-function redirectsStandardOutput(segment) {
-  return shellTokenDetails(segment).some((token) =>
-    unquotedShellRedirections(token).some(({ fileDescriptor, operator }) => {
-      const outputOperator = operator.startsWith(">") || operator.startsWith("&>");
-      return outputOperator && (fileDescriptor === undefined || fileDescriptor === "1");
-    }),
-  );
-}
-
-function unquotedRedirectionMatch(token, redirection) {
-  const match = token.value.match(redirection);
-  if (!match) {
-    return undefined;
-  }
-  const operatorLength = token.value.length - match[1].length;
-  return token.literalMask.slice(0, operatorLength).some(Boolean)
-    ? undefined
-    : match;
-}
-
 // Returns the tokens forming the actual command after the standard
 // direct-command prefixes: environment assignments (VAR=value), sudo, env,
 // and the command builtin. Their ordinary launcher options and `--` separators
 // are consumed; command's non-executing -v/-V modes are left intact.
 function commandTokens(segment) {
   const tokens = stripShellRedirections(shellTokenDetails(segment));
-  const environment = new Map(Object.entries(process.env));
-  let index = skipEnvAssignments(tokens, 0, environment);
+  let index = skipEnvAssignments(tokens, 0);
   while (index < tokens.length) {
     const launcher = executableName(tokens[index]);
     if (launcher === "sudo") {
@@ -1419,16 +1079,16 @@ function commandTokens(segment) {
         sudoValueOptions,
         sudoShortValueOptions,
       );
-      index = skipEnvAssignments(tokens, index, environment);
+      index = skipEnvAssignments(tokens, index);
       continue;
     }
     if (launcher === "env") {
-      const splitString = expandEnvSplitString(tokens, index, environment);
-      if (splitString === "unsafe") {
-        return [unsafeEnvSplitStringExecutable];
+      const mode = envLauncherMode(tokens, index);
+      if (mode === "terminal") {
+        return [];
       }
-      if (splitString === "expanded") {
-        continue;
+      if (mode === "split-string") {
+        return [unsafeEnvSplitStringExecutable];
       }
       index = skipLauncherOptions(
         tokens,
@@ -1437,7 +1097,7 @@ function commandTokens(segment) {
         envShortValueOptions,
         true,
       );
-      index = skipEnvAssignments(tokens, index, environment);
+      index = skipEnvAssignments(tokens, index);
       continue;
     }
     if (launcher === "command") {

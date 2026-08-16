@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   END_MARKER,
   START_MARKER,
+  renderToolArgumentKeys,
   renderToolsBlock,
   replaceGeneratedBlock,
 } from "./generate-mcp-tools-docs.mjs";
@@ -15,12 +16,14 @@ const definitions = [
     name: "local_ydb_inventory",
     description: "Inspect the selected target.",
     annotations: { readOnlyHint: true },
+    inputSchema: { properties: { profile: {}, configPath: {} } },
   },
   {
     group: "storage",
     name: "local_ydb_cleanup_storage",
     description: "Plan cleanup | execution only after confirmation.",
     annotations: { readOnlyHint: false },
+    inputSchema: { properties: { volumes: {}, confirm: {}, paths: {} } },
   },
 ];
 
@@ -37,6 +40,19 @@ test("renders groups, full tool names, safety mode, and descriptions determinist
     /`local_ydb_cleanup_storage` \| plan-first mutation \| Plan cleanup \\| execution only after confirmation\./,
   );
   assert.match(block, /<!-- END GENERATED MCP TOOLS -->$/);
+});
+
+test("renders tool argument keys deterministically", () => {
+  assert.equal(
+    renderToolArgumentKeys(definitions),
+    [
+      "{",
+      '  "local_ydb_cleanup_storage": ["confirm","paths","volumes"],',
+      '  "local_ydb_inventory": ["configPath","profile"]',
+      "}",
+      "",
+    ].join("\n"),
+  );
 });
 
 test("replaces exactly one generated marker block and reports freshness", () => {
