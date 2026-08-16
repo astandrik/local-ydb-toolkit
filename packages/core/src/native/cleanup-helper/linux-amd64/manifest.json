@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux",
+  "architecture": "amd64",
+  "source": {
+    "path": "packages/core/native/cleanup-helper/cleanup-helper.c",
+    "sha256": "ca696624aea02207b6c5f6f183317c3c07005c2fa755274a28a7582948d651ea"
+  },
+  "binary": {
+    "path": "packages/core/src/native/cleanup-helper/linux-amd64/cleanup-helper",
+    "sha256": "967b15aa0c62d3563e3e3d50d254281be3438e1627d3a0de48e9c0f535f72cd9",
+    "size": 711296
+  },
+  "builder": {
+    "image": "docker.io/library/gcc@sha256:82549aa8f90ada3236a8be70c74543132a76662ef33f0c3271ed802b81584a82",
+    "compiler": "gcc",
+    "flags": [
+      "-std=c17",
+      "-O2",
+      "-static",
+      "-D_FORTIFY_SOURCE=2",
+      "-fstack-protector-strong",
+      "-fno-ident",
+      "-ffile-prefix-map=/src=.",
+      "-fdebug-prefix-map=/src=.",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Wformat=2",
+      "-Wshadow",
+      "-Wstrict-prototypes",
+      "-Wmissing-prototypes",
+      "-Wl,--build-id=none",
+      "-Wl,-z,noexecstack",
+      "-s"
+    ],
+    "environment": {
+      "LC_ALL": "C",
+      "SOURCE_DATE_EPOCH": "0",
+      "TZ": "UTC"
+    }
+  }
+}

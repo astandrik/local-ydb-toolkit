@@ -28,7 +28,13 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run cleanup-helper:rebuild-check
+
+      - run: npm run cleanup-helper:test
+
       - run: npm run build
+
+      - run: npm run cleanup-helper:package-check
 
       - run: npm test
 
