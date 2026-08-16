@@ -147,7 +147,16 @@ describe("loadCases", () => {
         allowedExtraToolsBefore: {
           local_ydb_dump_tenant: "local_ydb_upgrade_version",
         },
-        requiredTerms: ["exact", "tag", "dump", "restore", "completed"],
+        requiredTerms: ["dump", "restore"],
+        requiredToolEntryTerms: {
+          local_ydb_pull_image: [
+            "image=ghcr.io/ydb-platform/local-ydb:26.1.1.7",
+          ],
+          local_ydb_pull_status: [
+            "jobId=<returned-jobId> until completed",
+          ],
+          local_ydb_upgrade_version: ["version=26.1.1.7"],
+        },
         forbiddenTerms: ["confirm: true", '"confirm": true', "confirm=true"],
       },
     });
@@ -182,7 +191,20 @@ describe("loadCases", () => {
       cases.find((testCase) => testCase.id === "schema-generate-apply").expected
         .requiredToolEntryTerms,
     ).toEqual({
+      local_ydb_generate_schema: [
+        "scenario=row table with secondary index",
+      ],
       local_ydb_apply_schema: ["action=validate", "action=apply"],
+    });
+    expect(
+      cases.find((testCase) => testCase.id === "version-upgrade-backup-first")
+        .expected.requiredToolEntryTerms,
+    ).toEqual({
+      local_ydb_pull_image: [
+        "image=ghcr.io/ydb-platform/local-ydb:26.1.1.7",
+      ],
+      local_ydb_pull_status: ["jobId=<returned-jobId> until completed"],
+      local_ydb_upgrade_version: ["version=26.1.1.7"],
     });
     expect(
       cases.find((testCase) => testCase.id === "path-level-dump-restore")
@@ -206,6 +228,12 @@ describe("loadCases", () => {
       cases.find((testCase) => testCase.id === "auth-hardening-backup-first")
         .prompt,
     ).toContain("instead of the copied-volume rehearsal alternative");
+    expect(
+      cases.find((testCase) => testCase.id === "auth-hardening-backup-first")
+        .expected.requiredToolEntryTerms,
+    ).toEqual({
+      local_ydb_dump_tenant: ["dumpName=pre-auth-hardening"],
+    });
     expect(
       cases.find((testCase) => testCase.id === "version-upgrade-backup-first")
         .prompt,
@@ -1546,6 +1574,9 @@ describe("scoreCase", () => {
     for (const command of [
       "rg activation skills/local-ydb/SKILL.md",
       "rg -ne'Execution Boundary' skills/local-ydb/SKILL.md",
+      "rg '<host>' skills/local-ydb/SKILL.md",
+      "rg '2>host' skills/local-ydb/SKILL.md",
+      "rg 2\\>host skills/local-ydb/SKILL.md",
       "rg -n 'Execution Boundary' skills/local-ydb/SKILL.md skills/local-ydb/references/evals.md",
       "sed -n '1,120p' skills/local-ydb/SKILL.md",
       "cat < $CODEX_HOME/skills/local-ydb/SKILL.md",

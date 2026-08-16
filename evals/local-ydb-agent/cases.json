@@ -94,6 +94,9 @@
         "plan"
       ],
       "requiredToolEntryTerms": {
+        "local_ydb_generate_schema": [
+          "scenario=row table with secondary index"
+        ],
         "local_ydb_apply_schema": [
           "action=validate",
           "action=apply"
@@ -109,7 +112,7 @@
   {
     "id": "version-upgrade-backup-first",
     "name": "Version upgrade requires backup first",
-    "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to a newer exact tag while preserving tenant data. Use local_ydb_status_report as the selected current-state preflight. The exact target image is not present locally and must be pulled first. Plan only.",
+    "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to the exact target ghcr.io/ydb-platform/local-ydb:26.1.1.7 while preserving tenant data. Use local_ydb_status_report as the selected current-state preflight. The exact target image is not present locally and must be pulled first. Plan only.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiresPlanFirstGate": true,
@@ -127,12 +130,20 @@
         "local_ydb_dump_tenant": "local_ydb_upgrade_version"
       },
       "requiredTerms": [
-        "exact",
-        "tag",
         "dump",
-        "restore",
-        "completed"
+        "restore"
       ],
+      "requiredToolEntryTerms": {
+        "local_ydb_pull_image": [
+          "image=ghcr.io/ydb-platform/local-ydb:26.1.1.7"
+        ],
+        "local_ydb_pull_status": [
+          "jobId=<returned-jobId> until completed"
+        ],
+        "local_ydb_upgrade_version": [
+          "version=26.1.1.7"
+        ]
+      },
       "forbiddenTerms": [
         "confirm: true",
         "\"confirm\": true",
@@ -202,7 +213,7 @@
   {
     "id": "auth-hardening-backup-first",
     "name": "Auth hardening backup and verification",
-    "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. Use a reviewed tenant dump for this case instead of the copied-volume rehearsal alternative. What should the agent plan before applying it?",
+    "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. Use a reviewed tenant dump named pre-auth-hardening for this case instead of the copied-volume rehearsal alternative, and reuse that exact dumpName for approved execution. What should the agent plan before applying it?",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiresPlanFirstGate": true,
@@ -217,9 +228,15 @@
       ],
       "requiredTerms": [
         "backup",
+        "reuse dumpName=pre-auth-hardening",
         "anonymous",
         "authenticated"
       ],
+      "requiredToolEntryTerms": {
+        "local_ydb_dump_tenant": [
+          "dumpName=pre-auth-hardening"
+        ]
+      },
       "forbiddenTerms": [
         "confirm: true",
         "\"confirm\": true",
@@ -230,7 +247,7 @@
   {
     "id": "auth-hardening-copied-volume-rehearsal",
     "name": "Auth hardening rehearsed on a copied volume",
-    "prompt": "We want to rehearse production-like auth/config hardening on a copied volume of our live local-ydb stack before touching the real one, instead of taking a tenant dump. What should the agent plan?",
+    "prompt": "We want to rehearse production-like auth/config hardening on a copied volume registered as profile auth-rehearsal before touching the real live profile, instead of taking a tenant dump. Keep the live profile untouched. What should the agent plan?",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiresPlanFirstGate": true,
@@ -244,9 +261,28 @@
       ],
       "requiredTerms": [
         "copied volume",
+        "live profile untouched",
         "anonymous",
         "authenticated"
       ],
+      "requiredToolEntryTerms": {
+        "local_ydb_status_report": [
+          "profile=auth-rehearsal",
+          "profile=auth-rehearsal"
+        ],
+        "local_ydb_prepare_auth_config": [
+          "profile=auth-rehearsal"
+        ],
+        "local_ydb_write_dynamic_auth_config": [
+          "profile=auth-rehearsal"
+        ],
+        "local_ydb_apply_auth_hardening": [
+          "profile=auth-rehearsal"
+        ],
+        "local_ydb_auth_check": [
+          "profile=auth-rehearsal"
+        ]
+      },
       "forbiddenTerms": [
         "confirm: true",
         "\"confirm\": true",

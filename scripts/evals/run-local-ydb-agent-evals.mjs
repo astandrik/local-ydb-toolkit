@@ -776,18 +776,18 @@ function clusteredReaderValueOption(argument, valueOptions) {
 }
 
 function inputRedirectionTargets(segment) {
-  const tokens = shellTokens(segment);
+  const tokens = shellTokenDetails(segment);
   const targets = [];
   const inputRedirection = /^\d*(?:<>|<(?![<&]))(.*)$/;
   for (let index = 0; index < tokens.length; index += 1) {
-    const match = tokens[index].match(inputRedirection);
+    const match = unquotedRedirectionMatch(tokens[index], inputRedirection);
     if (!match) {
       continue;
     }
     if (match[1]) {
       targets.push(match[1]);
     } else if (index + 1 < tokens.length) {
-      targets.push(tokens[index + 1]);
+      targets.push(tokens[index + 1].value);
       index += 1;
     }
   }
@@ -877,17 +877,18 @@ function skipEnvAssignments(tokens, index) {
   return cursor;
 }
 
-function shellTokens(segment) {
+function shellTokenDetails(segment) {
   const tokens = [];
   let token = "";
   let tokenStarted = false;
+  let literalMask = [];
   let quote;
   let escaped = false;
 
   for (const character of String(segment)) {
     if (escaped) {
       token += character;
-      tokenStarted = true;
+      literalMask.push(true);
       escaped = false;
       continue;
     }
@@ -901,6 +902,7 @@ function shellTokens(segment) {
         quote = undefined;
       } else {
         token += character;
+        literalMask.push(true);
       }
       tokenStarted = true;
       continue;
@@ -912,20 +914,23 @@ function shellTokens(segment) {
     }
     if (/\s/.test(character)) {
       if (tokenStarted) {
-        tokens.push(token);
+        tokens.push({ value: token, literalMask });
         token = "";
         tokenStarted = false;
+        literalMask = [];
       }
       continue;
     }
     token += character;
+    literalMask.push(false);
     tokenStarted = true;
   }
   if (escaped) {
     token += "\\";
+    literalMask.push(true);
   }
   if (tokenStarted) {
-    tokens.push(token);
+    tokens.push({ value: token, literalMask });
   }
   return tokens;
 }
@@ -949,9 +954,10 @@ function stripShellRedirections(tokens) {
   const result = [];
   const redirection = /^(?:\d*(?:<<<|<<|>>|<>|>&|<&|>\||>|<)|&>>?)(.*)$/;
   for (let index = 0; index < tokens.length; index += 1) {
-    const match = tokens[index].match(redirection);
+    const token = tokens[index];
+    const match = unquotedRedirectionMatch(token, redirection);
     if (!match) {
-      result.push(tokens[index]);
+      result.push(token.value);
       continue;
     }
     if (match[1] === "" && index + 1 < tokens.length) {
@@ -961,12 +967,23 @@ function stripShellRedirections(tokens) {
   return result;
 }
 
+function unquotedRedirectionMatch(token, redirection) {
+  const match = token.value.match(redirection);
+  if (!match) {
+    return undefined;
+  }
+  const operatorLength = token.value.length - match[1].length;
+  return token.literalMask.slice(0, operatorLength).some(Boolean)
+    ? undefined
+    : match;
+}
+
 // Returns the tokens forming the actual command after the standard
 // direct-command prefixes: environment assignments (VAR=value) and sudo
 // with its option tokens, combined short options, and the `--` separator.
 // Unknown sudo options are skipped valueless.
 function commandTokens(segment) {
-  const tokens = stripShellRedirections(shellTokens(segment));
+  const tokens = stripShellRedirections(shellTokenDetails(segment));
   let index = skipEnvAssignments(tokens, 0);
   if (tokens[index] === "sudo") {
     index += 1;
