@@ -128,6 +128,11 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
     arguments: [
       ...commonOptionalArguments,
       {
+        name: "dumpName",
+        description: "Optional stable tenant dump name to reuse between the reviewed plan and approved execution.",
+        required: false,
+      },
+      {
         name: "configHostPath",
         description: "Optional hardened config output path for prepare/apply auth tools.",
         required: false,
@@ -148,7 +153,7 @@ export const localYdbPromptDefinitions: readonly LocalYdbPromptDefinition[] = [
       argumentBlock(args),
       workflowSafety,
       "Run local_ydb_status_report first and note whether the profile already uses auth artifacts.",
-      "For live or production-like stacks where data must be preserved, take a reviewed tenant dump before applying auth/config hardening or rehearse the hardening on a copied volume first.",
+      "For live or production-like stacks where data must be preserved, take a reviewed tenant dump before applying auth/config hardening or rehearse the hardening on a copied volume first. If a tenant dump is selected, call local_ydb_dump_tenant without confirm. Supply a stable dumpName up front, or capture dumpName from the returned plan, then reuse that exact value when repeating the call with confirm=true after explicit approval.",
       "Call local_ydb_prepare_auth_config without confirm to review the hardened config plan. Call local_ydb_write_dynamic_auth_config without confirm to review the dynamic-node auth token plan, passing sid and tokenHostPath when the selected profile does not provide them. If the user approves both artifact plans, execute local_ydb_prepare_auth_config with confirm=true and local_ydb_write_dynamic_auth_config with confirm=true to create the files. Then call local_ydb_apply_auth_hardening without confirm to review the restart plan, and execute it only after explicit approval.",
       "After approved execution, verify that anonymous viewer checks fail as expected while authenticated tenant checks still pass by using local_ydb_auth_check and local_ydb_status_report.",
     ].join("\n\n"),

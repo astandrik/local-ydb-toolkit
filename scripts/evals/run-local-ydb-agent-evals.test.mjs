@@ -178,6 +178,15 @@ describe("loadCases", () => {
       cases.find((testCase) => testCase.id === "schema-generate-apply").expected
         .requiredTerms,
     ).toEqual(["action=validate", "action=apply", "plan"]);
+    expect(
+      cases.find((testCase) => testCase.id === "path-level-dump-restore")
+        .expected.requiredTerms,
+    ).toEqual([
+      "local_ydb_dump_tenant path=smoke_src",
+      "local_ydb_restore_tenant path=smoke_dst",
+      "describePaths",
+      "countQueries",
+    ]);
     expect(requiredTools("auth-hardening-backup-first")).toEqual([
       "local_ydb_status_report",
       "local_ydb_dump_tenant",
@@ -922,6 +931,31 @@ describe("scoreCase", () => {
     );
   });
 
+  it("requires call-specific dump source and restore destination guidance", () => {
+    const failures = scoreWith(
+      [
+        finalAnswerEvent({
+          answer:
+            "Use local_ydb_dump_tenant path=smoke_dst, then local_ydb_restore_tenant path=smoke_src.",
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredTerms: [
+          "local_ydb_dump_tenant path=smoke_src",
+          "local_ydb_restore_tenant path=smoke_dst",
+        ],
+      },
+    );
+
+    expect(failures).toContain(
+      "missing required term: local_ydb_dump_tenant path=smoke_src",
+    );
+    expect(failures).toContain(
+      "missing required term: local_ydb_restore_tenant path=smoke_dst",
+    );
+  });
+
   it("rejects a tool that first runs before a repeated prerequisite", () => {
     const failures = scoreWith(
       [
@@ -1248,6 +1282,52 @@ describe("scoreCase", () => {
     );
   });
 
+  it("requires the skill path to be a reader input operand", () => {
+    const patternOnlyFailures = scoreWith(
+      [
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command:
+              "rg skills/local-ydb/SKILL.md skills/local-ydb/references/evals.md",
+            exit_code: 0,
+            status: "completed",
+          },
+        },
+        finalAnswerEvent(),
+      ],
+      { shouldUseLocalYdbSkill: true },
+      { omitSkillActivation: true },
+    );
+    expect(patternOnlyFailures).toContain(
+      "positive case has no local-ydb skill activation evidence",
+    );
+
+    for (const command of [
+      "rg activation skills/local-ydb/SKILL.md",
+      "sed -n '1,120p' skills/local-ydb/SKILL.md",
+    ]) {
+      const failures = scoreWith(
+        [
+          {
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              command,
+              exit_code: 0,
+              status: "completed",
+            },
+          },
+          finalAnswerEvent(),
+        ],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      );
+      expect(failures, command).toEqual([]);
+    }
+  });
+
   it("validates the structured answer shape", () => {
     const run = (text) =>
       scoreWith([agentMessageEvent(text)], { shouldUseLocalYdbSkill: true });
@@ -1388,6 +1468,8 @@ describe("invokesLiveDockerOrYdb", () => {
     "sudo -n docker ps",
     "sudo -u root ydb scheme ls",
     "sudo -u root -n docker ps",
+    "sudo -nu root docker ps",
+    "sudo -Eu root ydb scheme ls",
     "sudo -E docker ps",
     "sudo -R /tmp/root docker ps",
     "sudo --chroot /tmp/root docker ps",

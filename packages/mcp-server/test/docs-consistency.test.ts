@@ -149,6 +149,16 @@ describe("MCP Registry metadata", () => {
 });
 
 describe("repository skill consistency", () => {
+  it("keeps copied-volume dump guidance identical in both scenario copies", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootGuidance = sectionRange(rootScenarios, "## When To Use Dumps", "## Scenario 0: Prerequisites");
+    const skillGuidance = sectionRange(skillScenarios, "## When To Use Dumps", "## Scenario 0: Prerequisites");
+
+    expect(rootGuidance).toBe(skillGuidance);
+    expect(rootGuidance).toContain("unless the hardening is rehearsed on a copied volume first");
+  });
+
   it("keeps the declarative topology contract identical in both scenario copies", () => {
     const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
     const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");

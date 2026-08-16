@@ -854,6 +854,7 @@ describe("mcp tools", () => {
       required: true
     }));
     expect(auth?.arguments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "dumpName" }),
       expect.objectContaining({ name: "configHostPath" }),
       expect.objectContaining({ name: "sid" }),
       expect.objectContaining({ name: "tokenHostPath" })
@@ -916,6 +917,7 @@ describe("mcp tools", () => {
 
   it("renders auth hardening artifact creation before apply", () => {
     const result = getLocalYdbPrompt("local_ydb_auth_hardening_workflow", {
+      dumpName: "pre-auth-review",
       sid: "root@builtin",
       tokenHostPath: "/tmp/dynamic-auth.txt"
     });
@@ -926,7 +928,10 @@ describe("mcp tools", () => {
     expect(text).toContain("local_ydb_prepare_auth_config with confirm=true");
     expect(text).toContain("local_ydb_write_dynamic_auth_config with confirm=true");
     expect(text).toContain("take a reviewed tenant dump before applying auth/config hardening");
+    expect(text).toContain("capture dumpName from the returned plan");
+    expect(text).toContain("reuse that exact value");
     expect(text).toContain("Then call local_ydb_apply_auth_hardening without confirm");
+    expect(text).toContain('"dumpName": "pre-auth-review"');
     expect(text).toContain("\"sid\": \"root@builtin\"");
     expect(text).toContain("\"tokenHostPath\": \"/tmp/dynamic-auth.txt\"");
   });

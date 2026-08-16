@@ -177,8 +177,8 @@
         "local_ydb_restore_tenant"
       ],
       "requiredTerms": [
-        "path",
-        "destination",
+        "local_ydb_dump_tenant path=smoke_src",
+        "local_ydb_restore_tenant path=smoke_dst",
         "describePaths",
         "countQueries"
       ],

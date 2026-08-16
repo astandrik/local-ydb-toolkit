@@ -156,7 +156,7 @@ Use `local_ydb_dump_tenant` before destructive or hard-to-rollback live changes 
 - version upgrades that rebuild a volume-backed profile;
 - storage-pool reduction, single-disk rebuilds, bind-mount migration, or manual storage surgery;
 - destroy/rebuild operations where the tenant data is still needed afterwards;
-- production-like auth or config hardening when the running data matters;
+- production-like auth or config hardening when the running data matters, unless the hardening is rehearsed on a copied volume first;
 - disposable restore rehearsals before touching a live stack.
 
 Use a tenant-wide dump (`path: "."`, the default) for full rebuild, upgrade, storage migration, or rollback coverage. Use a path-level dump only when the goal is one table or one directory, such as a targeted table restore test or a narrow data move.

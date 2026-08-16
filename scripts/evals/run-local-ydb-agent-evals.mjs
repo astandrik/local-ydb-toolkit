@@ -528,13 +528,15 @@ function unexpectedAnswerTools(text, allowedTools) {
 }
 
 function readsLocalYdbSkill(command) {
-  const directSkillFile = /skills\/local-ydb\/SKILL\.md(?:$|[\s"';&|])/;
+  const directSkillFile = /(?:^|\/)skills\/local-ydb\/SKILL\.md$/;
   const readsSkillGlob =
-    /(?:^|[\s"'=\/])skills\/[^/\s"';&|]*(?:\*|\?|\[[^\]]+\])[^/\s"';&|]*\/SKILL\.md(?:$|[\s"';&|])/;
+    /(?:^|\/)skills\/[^/]*(?:\*|\?|\[[^\]]+\])[^/]*\/SKILL\.md$/;
   const readsDirectOrGlob = splitShellCommandSegments(command).some(
     (segment) =>
-      (directSkillFile.test(segment) || readsSkillGlob.test(segment)) &&
-      invokesFileContentReader(segment),
+      readerUsesSkillInput(
+        segment,
+        (token) => directSkillFile.test(token) || readsSkillGlob.test(token),
+      ),
   );
   if (readsDirectOrGlob) {
     return true;
@@ -543,7 +545,7 @@ function readsLocalYdbSkill(command) {
   const findsSkillFiles =
     /\bfind\b[^\n;|&]*\bskills\b[^\n;|&]*(?:-name|-iname)\s+["']?(?:\*\/)?SKILL\.md["']?/;
   const readsFoundFiles =
-    /(?:-exec(?:dir)?\s+(?:cat|head|tail|less|more|sed|awk|grep|rg)\b|\|\s*xargs(?:\s+\S+)*\s+(?:cat|head|tail|less|more|sed|awk|grep|rg)\b)/;
+    /(?:-exec(?:dir)?\s+(?:cat|bat|head|tail|less|more)\b|\|\s*xargs(?:\s+\S+)*\s+(?:cat|bat|head|tail|less|more)\b)/;
   return findsSkillFiles.test(command) && readsFoundFiles.test(command);
 }
 
@@ -557,16 +559,29 @@ function commandExecutionSucceeded(event) {
   );
 }
 
-function invokesFileContentReader(command) {
-  return splitShellCommandSegments(command).some((segment) => {
-    const executableToken = commandTokens(segment)[0];
-    if (!executableToken) {
-      return false;
-    }
-    const executable = executableToken.replace(/^["']+|["']+$/g, "");
-    const name = executable.slice(executable.lastIndexOf("/") + 1);
-    return /^(?:cat|bat|head|tail|less|more|sed|awk|grep|rg)$/.test(name);
-  });
+function readerUsesSkillInput(segment, matchesSkillPath) {
+  const tokens = commandTokens(segment);
+  const executable = tokens[0];
+  if (!executable) {
+    return false;
+  }
+  const name = executable.slice(executable.lastIndexOf("/") + 1);
+  const args = tokens.slice(1);
+  const skillIndexes = args.flatMap((token, index) =>
+    matchesSkillPath(token) ? [index] : [],
+  );
+  if (/^(?:cat|bat|head|tail|less|more)$/.test(name)) {
+    return skillIndexes.length > 0;
+  }
+  if (!/^(?:sed|awk|grep|rg)$/.test(name)) {
+    return false;
+  }
+  return skillIndexes.some(
+    (index) =>
+      index === args.length - 1 &&
+      index > 0 &&
+      !args[index - 1].startsWith("-"),
+  );
 }
 
 function firstOrderFailure(actual, required) {
@@ -628,6 +643,18 @@ const sudoValueOptions = new Set([
   "--type",
   "--user",
 ]);
+const sudoShortValueOptions = new Set([
+  "C",
+  "D",
+  "g",
+  "h",
+  "p",
+  "R",
+  "r",
+  "T",
+  "t",
+  "u",
+]);
 
 // Standard prefixes of a direct command: environment assignments and sudo.
 const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -640,13 +667,80 @@ function skipEnvAssignments(tokens, index) {
   return cursor;
 }
 
+function shellTokens(segment) {
+  const tokens = [];
+  let token = "";
+  let tokenStarted = false;
+  let quote;
+  let escaped = false;
+
+  for (const character of String(segment)) {
+    if (escaped) {
+      token += character;
+      tokenStarted = true;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      tokenStarted = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      } else {
+        token += character;
+      }
+      tokenStarted = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      tokenStarted = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (tokenStarted) {
+        tokens.push(token);
+        token = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+    token += character;
+    tokenStarted = true;
+  }
+  if (escaped) {
+    token += "\\";
+  }
+  if (tokenStarted) {
+    tokens.push(token);
+  }
+  return tokens;
+}
+
+function sudoOptionConsumesNextToken(token) {
+  if (sudoValueOptions.has(token)) {
+    return true;
+  }
+  if (!/^-[^-]/.test(token)) {
+    return false;
+  }
+  for (let index = 1; index < token.length; index += 1) {
+    if (sudoShortValueOptions.has(token[index])) {
+      return index === token.length - 1;
+    }
+  }
+  return false;
+}
+
 // Returns the tokens forming the actual command after the standard
 // direct-command prefixes: environment assignments (VAR=value) and sudo
-// with its option tokens and the `--` separator. Unknown sudo options are
-// skipped valueless, and assignments whose quoted values contain whitespace
-// can still hide the executable — residual misses accepted by the contract.
+// with its option tokens, combined short options, and the `--` separator.
+// Unknown sudo options are skipped valueless.
 function commandTokens(segment) {
-  const tokens = segment.trim().split(/\s+/);
+  const tokens = shellTokens(segment);
   let index = skipEnvAssignments(tokens, 0);
   if (tokens[index] === "sudo") {
     index += 1;
@@ -660,7 +754,7 @@ function commandTokens(segment) {
         break;
       }
       index += 1;
-      if (sudoValueOptions.has(token) && index < tokens.length) {
+      if (sudoOptionConsumesNextToken(token) && index < tokens.length) {
         index += 1;
       }
     }
