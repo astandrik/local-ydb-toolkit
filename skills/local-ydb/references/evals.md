@@ -25,7 +25,7 @@ Add cases to `evals/local-ydb-agent/cases.json`. Keep each case focused on one b
 - `requiredTerms` for safety or semantics that must appear.
 - `forbiddenTerms` for dangerous actions such as confirmed mutation.
 - `requiresPlanFirstGate` for mutating cases that must state a plan-only or explicit-approval boundary.
-- `shouldUseLocalYdbSkill: false` for negative controls.
+- `shouldUseLocalYdbSkill: false` for negative controls; these fail on local-ydb tool names, explicit `$local-ydb`/local-ydb skill recommendations, or successful skill reads.
 
 The final answer shape is constrained by `evals/local-ydb-agent/final-answer.schema.json`.
 

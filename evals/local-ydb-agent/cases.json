@@ -48,7 +48,7 @@
   {
     "id": "cms-tenant-graphshard-bootstrap",
     "name": "CMS tenant and GraphShard bootstrap",
-    "prompt": "I need /local/analytics with a CMS-created tenant, GraphShard support, and a dynamic tenant node. Plan the safe MCP sequence.",
+    "prompt": "I need /local/analytics with a CMS-created tenant, GraphShard support, and a dynamic tenant node. Use the selected profile analytics, which is configured with databasePath=/local/analytics. Plan the safe MCP sequence.",
     "expected": {
       "shouldUseLocalYdbSkill": true,
       "requiresPlanFirstGate": true,
@@ -63,8 +63,29 @@
       "requiredTerms": [
         "CMS",
         "GraphShard",
-        "dynamic"
+        "dynamic",
+        "profile=analytics configured databasePath=/local/analytics"
       ],
+      "requiredToolEntryTerms": {
+        "local_ydb_check_prerequisites": [
+          "profile=analytics"
+        ],
+        "local_ydb_bootstrap": [
+          "profile=analytics"
+        ],
+        "local_ydb_database_status": [
+          "profile=analytics"
+        ],
+        "local_ydb_tenant_check": [
+          "profile=analytics"
+        ],
+        "local_ydb_nodes_check": [
+          "profile=analytics"
+        ],
+        "local_ydb_graphshard_check": [
+          "profile=analytics"
+        ]
+      },
       "forbiddenTools": [
         "local_ydb_bootstrap_root_database"
       ],
@@ -108,8 +129,18 @@
           ]
         ],
         "local_ydb_apply_schema": [
-          "action=validate",
-          "action=apply"
+          [
+            "action=validate",
+            "script=<generated-script>"
+          ],
+          [
+            "action=apply",
+            "script=<generated-script>"
+          ]
+        ],
+        "local_ydb_scheme": [
+          "action=list",
+          "action=describe"
         ]
       },
       "forbiddenTerms": [

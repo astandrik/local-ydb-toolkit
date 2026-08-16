@@ -347,6 +347,9 @@ export function scoreCase(testCase, events, options = {}) {
     if (!expectedSkill && containsToolPrefix(safetyText, "local_ydb_")) {
       failures.push("negative control must not mention local-ydb tools");
     }
+    if (!expectedSkill && containsLocalYdbSkillReference(finalSafetyText)) {
+      failures.push("negative control must not recommend the local-ydb skill");
+    }
     if (expectedSkill) {
       const allowedTools = new Set([
         ...(testCase.expected.requiredOrderedTools ?? []),
@@ -449,6 +452,12 @@ export function scoreCase(testCase, events, options = {}) {
     // message — not only in the final answer.
     if (!testCase.expected.shouldUseLocalYdbSkill && containsToolPrefix(text, "local_ydb_")) {
       failures.push("local-ydb tool mentioned in earlier agent message");
+    }
+    if (
+      !testCase.expected.shouldUseLocalYdbSkill &&
+      containsLocalYdbSkillReference(text)
+    ) {
+      failures.push("local-ydb skill recommended in earlier agent message");
     }
     if (testCase.expected.shouldUseLocalYdbSkill) {
       const allowedTools = new Set([
@@ -633,6 +642,14 @@ function containsToolName(text, tool) {
 
 function containsToolPrefix(text, prefix) {
   return new RegExp(String.raw`\b${escapeRegExp(prefix)}[A-Za-z0-9_]*\b`).test(text);
+}
+
+function containsLocalYdbSkillReference(text) {
+  return (
+    /\$local-ydb\b/i.test(text) ||
+    /\blocal-ydb\s+skill\b/i.test(text) ||
+    /\bskill\s+local-ydb\b/i.test(text)
+  );
 }
 
 function toolSequenceEntryName(entry) {

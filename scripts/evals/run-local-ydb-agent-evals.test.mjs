@@ -175,6 +175,25 @@ describe("loadCases", () => {
       "local_ydb_nodes_check",
       "local_ydb_graphshard_check",
     ]);
+    expect(
+      cases.find((testCase) => testCase.id === "cms-tenant-graphshard-bootstrap")
+        .expected,
+    ).toMatchObject({
+      requiredTerms: [
+        "CMS",
+        "GraphShard",
+        "dynamic",
+        "profile=analytics configured databasePath=/local/analytics",
+      ],
+      requiredToolEntryTerms: {
+        local_ydb_check_prerequisites: ["profile=analytics"],
+        local_ydb_bootstrap: ["profile=analytics"],
+        local_ydb_database_status: ["profile=analytics"],
+        local_ydb_tenant_check: ["profile=analytics"],
+        local_ydb_nodes_check: ["profile=analytics"],
+        local_ydb_graphshard_check: ["profile=analytics"],
+      },
+    });
     expect(requiredTools("schema-generate-apply")).toEqual([
       "local_ydb_status_report",
       "local_ydb_scheme",
@@ -204,7 +223,11 @@ describe("loadCases", () => {
           "using=secondary",
         ],
       ],
-      local_ydb_apply_schema: ["action=validate", "action=apply"],
+      local_ydb_apply_schema: [
+        ["action=validate", "script=<generated-script>"],
+        ["action=apply", "script=<generated-script>"],
+      ],
+      local_ydb_scheme: ["action=list", "action=describe"],
     });
     expect(
       cases.find((testCase) => testCase.id === "version-upgrade-backup-first")
@@ -1422,6 +1445,42 @@ describe("scoreCase", () => {
     expect(failures).toContain(
       "local-ydb tool mentioned in earlier agent message",
     );
+  });
+
+  it("rejects explicit local-ydb skill recommendations in negative controls", () => {
+    for (const recommendation of [
+      "Use the $local-ydb skill.",
+      "Use the local-ydb skill.",
+      "Select skill local-ydb.",
+    ]) {
+      const finalFailures = scoreWith(
+        [
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+            answer: recommendation,
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      );
+      expect(finalFailures, recommendation).toContain(
+        "negative control must not recommend the local-ydb skill",
+      );
+
+      const interimFailures = scoreWith(
+        [
+          agentMessageEvent(recommendation),
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      );
+      expect(interimFailures, recommendation).toContain(
+        "local-ydb skill recommended in earlier agent message",
+      );
+    }
   });
 
   it("keeps the negative control strict", () => {
