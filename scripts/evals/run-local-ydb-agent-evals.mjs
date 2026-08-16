@@ -737,22 +737,28 @@ function readerUsesSkillInput(segment, matchesSkillPath) {
   }
   const name = executable.slice(executable.lastIndexOf("/") + 1);
   const args = tokens.slice(1);
-  const skillIndexes = args.flatMap((token, index) =>
-    matchesSkillPath(token) ? [index] : [],
-  );
-  if (/^(?:cat|bat|head|tail|less|more)$/.test(name)) {
-    return redirectedSkillInput || skillIndexes.length > 0;
-  }
-  if (!/^(?:sed|awk|grep|rg|nl)$/.test(name)) {
+  if (!/^(?:cat|bat|head|tail|less|more|sed|awk|grep|rg|nl)$/.test(name)) {
     return false;
   }
-  if (redirectedSkillInput) {
-    return true;
-  }
-  return readerInputOperands(name, args).some(matchesSkillPath);
+  const inputOperands = readerInputOperands(name, args);
+  const consumesStandardInput =
+    inputOperands.length === 0 || inputOperands.includes("-");
+  return (
+    (redirectedSkillInput && consumesStandardInput) ||
+    inputOperands.some(matchesSkillPath)
+  );
 }
 
 const readerValueOptions = {
+  cat: new Set(),
+  bat: new Set(),
+  head: new Set(["-c", "-n", "--bytes", "--lines"]),
+  tail: new Set([
+    "-c", "-n", "-s", "--bytes", "--lines", "--max-unchanged-stats",
+    "--pid", "--sleep-interval",
+  ]),
+  less: new Set(),
+  more: new Set(["-n"]),
   rg: new Set([
     "-A", "-B", "-C", "-E", "-e", "-f", "-g", "-j", "-M", "-m", "-r", "-t", "-T",
     "--after-context", "--before-context", "--context", "--encoding", "--engine", "--file",
@@ -778,6 +784,12 @@ const readerValueOptions = {
 };
 
 const readerProgramOptions = {
+  cat: new Set(),
+  bat: new Set(),
+  head: new Set(),
+  tail: new Set(),
+  less: new Set(),
+  more: new Set(),
   rg: new Set(["-e", "-f", "--regexp", "--file"]),
   grep: new Set(["-e", "-f", "--regexp", "--file"]),
   sed: new Set(["-e", "-f", "--expression", "--file"]),
@@ -1221,7 +1233,7 @@ function splitShellCommandSegments(command) {
   let quote;
   let escaped = false;
   let comment = false;
-  const text = String(command);
+  const text = stripHereDocumentBodies(command);
 
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index];
@@ -1271,6 +1283,59 @@ function splitShellCommandSegments(command) {
   }
   segments.push(segment);
   return segments;
+}
+
+function stripHereDocumentBodies(command) {
+  const lines = String(command).split("\n");
+  const retained = [];
+  const pending = [];
+  for (const line of lines) {
+    if (pending.length > 0) {
+      const current = pending[0];
+      const delimiterLine = current.stripTabs
+        ? line.replace(/^\t+/, "")
+        : line;
+      if (delimiterLine === current.delimiter) {
+        pending.shift();
+      }
+      continue;
+    }
+    retained.push(line);
+    pending.push(...hereDocumentDelimiters(line));
+  }
+  return retained.join("\n");
+}
+
+function hereDocumentDelimiters(line) {
+  const tokens = shellTokenDetails(line);
+  const delimiters = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.value.startsWith("#") && !token.literalMask[0]) {
+      break;
+    }
+    for (let offset = 0; offset < token.value.length - 1; offset += 1) {
+      if (
+        token.value.slice(offset, offset + 2) !== "<<" ||
+        token.value[offset + 2] === "<" ||
+        token.literalMask.slice(offset, offset + 2).some(Boolean)
+      ) {
+        continue;
+      }
+      const stripTabs = token.value[offset + 2] === "-";
+      const delimiterOffset = offset + (stripTabs ? 3 : 2);
+      const attachedDelimiter = token.value.slice(delimiterOffset);
+      const delimiter = attachedDelimiter || tokens[index + 1]?.value;
+      if (delimiter) {
+        delimiters.push({ delimiter, stripTabs });
+        if (!attachedDelimiter) {
+          index += 1;
+        }
+      }
+      break;
+    }
+  }
+  return delimiters;
 }
 
 export function invokesLiveDockerOrYdb(command) {

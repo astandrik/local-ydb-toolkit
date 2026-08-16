@@ -1910,6 +1910,36 @@ describe("scoreCase", () => {
     );
   });
 
+  it("requires redirected stdin to be consumed for skill activation", () => {
+    const command = "cat 0<skills/local-ydb/SKILL.md README.md";
+    const commandEvent = {
+      type: "item.completed",
+      item: { type: "command_execution", command, exit_code: 0 },
+    };
+
+    expect(
+      scoreWith(
+        [commandEvent, finalAnswerEvent()],
+        { shouldUseLocalYdbSkill: true },
+        { omitSkillActivation: true },
+      ),
+    ).toContain("positive case has no local-ydb skill activation evidence");
+    expect(
+      scoreWith(
+        [
+          commandEvent,
+          finalAnswerEvent({
+            should_use_local_ydb_skill: false,
+            task_type: "other",
+          }),
+        ],
+        { shouldUseLocalYdbSkill: false },
+      ),
+    ).not.toContain(
+      `trace reads the local-ydb skill in a negative control: ${command}`,
+    );
+  });
+
   it("requires find -exec readers to consume the found skill path", () => {
     for (const command of [
       "find skills -name SKILL.md -print; echo '-exec cat'",
@@ -2224,6 +2254,7 @@ describe("invokesLiveDockerOrYdb", () => {
     "echo ok; docker ps",
     '"docker" ps',
     "echo ok\ndocker ps",
+    "cat <<EOF\npayload\nEOF\ndocker ps",
   ])("flags %j", (command) => {
     expect(invokesLiveDockerOrYdb(command)).toBe(true);
   });
@@ -2249,6 +2280,8 @@ describe("invokesLiveDockerOrYdb", () => {
     "grep docker README.md",
     "echo docker>/tmp/docker.log",
     "echo ok # docker ps",
+    "cat <<'EOF'\ndocker ps\nEOF",
+    "cat <<-EOF\n\tdocker ps\n\tEOF",
   ])("allows %j", (command) => {
     expect(invokesLiveDockerOrYdb(command)).toBe(false);
   });
