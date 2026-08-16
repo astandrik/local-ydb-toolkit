@@ -93,10 +93,12 @@
       "requiredTerms": [
         "plan"
       ],
-      "requiredOrderedTerms": [
-        "action=validate",
-        "action=apply"
-      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_apply_schema": [
+          "action=validate",
+          "action=apply"
+        ]
+      },
       "forbiddenTerms": [
         "confirm: true",
         "\"confirm\": true",

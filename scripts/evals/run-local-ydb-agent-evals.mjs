@@ -26,7 +26,6 @@ const optionalStringArrayFields = [
   "forbiddenTools",
   "forbiddenToolPrefixes",
   "requiredTerms",
-  "requiredOrderedTerms",
   "forbiddenTerms",
 ];
 const caseFields = new Set(["id", "name", "prompt", "expected"]);
@@ -34,6 +33,7 @@ const expectedFields = new Set([
   "shouldUseLocalYdbSkill",
   "requiresPlanFirstGate",
   "allowedExtraToolsBefore",
+  "requiredToolEntryTerms",
   ...optionalStringArrayFields,
 ]);
 const finalAnswerFields = new Map([
@@ -96,6 +96,7 @@ export function loadCases(casesPath = defaultCasesPath) {
       );
     }
     assertOptionalStringMap(testCase, "allowedExtraToolsBefore");
+    assertOptionalStringArrayMap(testCase, "requiredToolEntryTerms");
     // Ordering constraints must reference declared tools, otherwise a typo
     // silently disables the constraint (beforeIndex is -1 at scoring time).
     const allowedExtraTools = new Set(testCase.expected.allowedExtraTools ?? []);
@@ -106,6 +107,19 @@ export function loadCases(casesPath = defaultCasesPath) {
       }
       if (!requiredOrderedTools.has(beforeTool)) {
         throw new Error(`Agent eval case ${testCase.id} expected.allowedExtraToolsBefore target must be listed in requiredOrderedTools: ${beforeTool}`);
+      }
+    }
+    const requiredToolOccurrences = (testCase.expected.requiredOrderedTools ?? []).reduce(
+      (counts, tool) => counts.set(tool, (counts.get(tool) ?? 0) + 1),
+      new Map(),
+    );
+    for (const [tool, terms] of Object.entries(testCase.expected.requiredToolEntryTerms ?? {})) {
+      const occurrences = requiredToolOccurrences.get(tool) ?? 0;
+      if (occurrences === 0) {
+        throw new Error(`Agent eval case ${testCase.id} expected.requiredToolEntryTerms key must be listed in requiredOrderedTools: ${tool}`);
+      }
+      if (terms.length > occurrences) {
+        throw new Error(`Agent eval case ${testCase.id} expected.requiredToolEntryTerms has ${terms.length} terms for ${occurrences} required occurrences: ${tool}`);
       }
     }
   }
@@ -133,6 +147,26 @@ function assertOptionalStringMap(testCase, field) {
   for (const [key, item] of Object.entries(value)) {
     if (key.length === 0 || typeof item !== "string" || item.length === 0) {
       throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an object of string values.`);
+    }
+  }
+}
+
+function assertOptionalStringArrayMap(testCase, field) {
+  const value = testCase.expected[field];
+  if (value === undefined) {
+    return;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an object of non-empty string arrays.`);
+  }
+  for (const [key, items] of Object.entries(value)) {
+    if (
+      key.length === 0 ||
+      !Array.isArray(items) ||
+      items.length === 0 ||
+      items.some((item) => typeof item !== "string" || item.length === 0)
+    ) {
+      throw new Error(`Agent eval case ${testCase.id} expected.${field} must be an object of non-empty string arrays.`);
     }
   }
 }
@@ -333,6 +367,14 @@ export function scoreCase(testCase, events, options = {}) {
     if (orderFailure) {
       failures.push(orderFailure);
     }
+    for (const [tool, terms] of Object.entries(testCase.expected.requiredToolEntryTerms ?? {})) {
+      const entries = toolSequenceEntries.filter((entry, index) => orderedTools[index] === tool);
+      terms.forEach((term, index) => {
+        if (entries[index] !== undefined && !containsTerm(entries[index], term)) {
+          failures.push(`tool sequence entry ${tool} #${index + 1} missing required term: ${term}`);
+        }
+      });
+    }
     for (const [tool, beforeTool] of Object.entries(testCase.expected.allowedExtraToolsBefore ?? {})) {
       const beforeIndex = orderedTools.indexOf(beforeTool);
       const lateToolIndex = orderedTools.findIndex((candidate, index) => candidate === tool && index > beforeIndex);
@@ -369,13 +411,6 @@ export function scoreCase(testCase, events, options = {}) {
       if (!containsTerm(termText, term)) {
         failures.push(`missing required term: ${term}`);
       }
-    }
-    const termOrderFailure = firstTermOrderFailure(
-      termText,
-      testCase.expected.requiredOrderedTerms ?? [],
-    );
-    if (termOrderFailure) {
-      failures.push(termOrderFailure);
     }
     for (const term of testCase.expected.forbiddenTerms ?? []) {
       if (containsTerm(safetyText, term)) {
@@ -780,19 +815,6 @@ function firstOrderFailure(actual, required) {
     }
     previousRequiredIndex = index;
     searchFrom = index + 1;
-  }
-  return undefined;
-}
-
-function firstTermOrderFailure(text, required) {
-  const normalized = text.toLowerCase();
-  let searchFrom = 0;
-  for (const term of required) {
-    const index = normalized.indexOf(String(term).toLowerCase(), searchFrom);
-    if (index === -1) {
-      return `required terms are out of order: ${required.join(" -> ")}`;
-    }
-    searchFrom = index + String(term).length;
   }
   return undefined;
 }

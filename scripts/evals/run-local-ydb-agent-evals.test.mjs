@@ -180,8 +180,10 @@ describe("loadCases", () => {
     ).toEqual(["plan"]);
     expect(
       cases.find((testCase) => testCase.id === "schema-generate-apply").expected
-        .requiredOrderedTerms,
-    ).toEqual(["action=validate", "action=apply"]);
+        .requiredToolEntryTerms,
+    ).toEqual({
+      local_ydb_apply_schema: ["action=validate", "action=apply"],
+    });
     expect(
       cases.find((testCase) => testCase.id === "path-level-dump-restore")
         .expected.requiredTerms,
@@ -362,6 +364,28 @@ describe("loadCases", () => {
       ]);
       expect(() => loadCases(casesPath)).toThrow(
         /allowedExtraToolsBefore target must be listed in requiredOrderedTools: local_ydb_upgrade_version/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects tool-entry terms without enough required tool occurrences", () => {
+    const root = mkdtempSync(join(tmpdir(), "local-ydb-agent-evals-"));
+    try {
+      const casesPath = writeCases(root, [
+        minimalCase({
+          expected: {
+            shouldUseLocalYdbSkill: true,
+            requiredOrderedTools: ["local_ydb_apply_schema"],
+            requiredToolEntryTerms: {
+              local_ydb_apply_schema: ["action=validate", "action=apply"],
+            },
+          },
+        }),
+      ]);
+      expect(() => loadCases(casesPath)).toThrow(
+        /requiredToolEntryTerms has 2 terms for 1 required occurrences: local_ydb_apply_schema/,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -804,7 +828,9 @@ describe("scoreCase", () => {
           "local_ydb_apply_schema",
           "local_ydb_apply_schema",
         ],
-        requiredOrderedTerms: ["action=validate", "action=apply"],
+        requiredToolEntryTerms: {
+          local_ydb_apply_schema: ["action=validate", "action=apply"],
+        },
       },
     );
 
@@ -1071,21 +1097,34 @@ describe("scoreCase", () => {
     );
   });
 
-  it("requires ordered schema action guidance", () => {
+  it("binds schema action terms to the corresponding tool entries", () => {
     const failures = scoreWith(
       [
         finalAnswerEvent({
-          answer: "Use action=apply first, then action=validate.",
+          tool_sequence: [
+            "local_ydb_apply_schema action=apply",
+            "local_ydb_apply_schema action=validate",
+          ],
+          answer: "Use action=validate before action=apply.",
         }),
       ],
       {
         shouldUseLocalYdbSkill: true,
-        requiredOrderedTerms: ["action=validate", "action=apply"],
+        requiredOrderedTools: [
+          "local_ydb_apply_schema",
+          "local_ydb_apply_schema",
+        ],
+        requiredToolEntryTerms: {
+          local_ydb_apply_schema: ["action=validate", "action=apply"],
+        },
       },
     );
 
     expect(failures).toContain(
-      "required terms are out of order: action=validate -> action=apply",
+      "tool sequence entry local_ydb_apply_schema #1 missing required term: action=validate",
+    );
+    expect(failures).toContain(
+      "tool sequence entry local_ydb_apply_schema #2 missing required term: action=apply",
     );
   });
 
