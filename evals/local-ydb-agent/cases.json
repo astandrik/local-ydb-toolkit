@@ -84,7 +84,8 @@
         "local_ydb_scheme",
         "local_ydb_generate_schema",
         "local_ydb_apply_schema",
-        "local_ydb_apply_schema"
+        "local_ydb_apply_schema",
+        "local_ydb_scheme"
       ],
       "requiredTerms": [
         "action=validate",

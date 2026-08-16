@@ -384,12 +384,16 @@ export function scoreCase(testCase, events, options = {}) {
     failures.push(`trace contains live MCP tool call: ${name}`);
   }
 
-  // Reading the installed skill is the trace evidence for activation. A
-  // self-reported positive without that evidence fails, while negative
-  // controls fail on every matching read.
+  // Successfully reading the installed skill is the trace evidence for
+  // activation. A self-reported positive without that evidence fails, while
+  // negative controls fail on every successful matching read.
   const skillReads = events.flatMap((event) => {
     const command = event?.item?.command;
-    return typeof command === "string" && readsLocalYdbSkill(command) ? [command] : [];
+    return typeof command === "string" &&
+      commandExecutionSucceeded(event) &&
+      readsLocalYdbSkill(command)
+      ? [command]
+      : [];
   });
   if (testCase.expected.shouldUseLocalYdbSkill && skillReads.length === 0) {
     failures.push("positive case has no local-ydb skill activation evidence");
@@ -538,18 +542,26 @@ function readsLocalYdbSkill(command) {
   return findsSkillFiles.test(command) && readsFoundFiles.test(command);
 }
 
+function commandExecutionSucceeded(event) {
+  const item = event?.item;
+  if (event?.type !== "item.completed" || item?.status === "failed") {
+    return false;
+  }
+  return [item?.exit_code, item?.exitCode].every(
+    (exitCode) => exitCode === undefined || exitCode === 0,
+  );
+}
+
 function invokesFileContentReader(command) {
-  return String(command)
-    .split(/[\n;|&]+/)
-    .some((segment) => {
-      const executableToken = commandTokens(segment)[0];
-      if (!executableToken) {
-        return false;
-      }
-      const executable = executableToken.replace(/^["']+|["']+$/g, "");
-      const name = executable.slice(executable.lastIndexOf("/") + 1);
-      return /^(?:cat|bat|head|tail|less|more|sed|awk|grep|rg)$/.test(name);
-    });
+  return splitShellCommandSegments(command).some((segment) => {
+    const executableToken = commandTokens(segment)[0];
+    if (!executableToken) {
+      return false;
+    }
+    const executable = executableToken.replace(/^["']+|["']+$/g, "");
+    const name = executable.slice(executable.lastIndexOf("/") + 1);
+    return /^(?:cat|bat|head|tail|less|more|sed|awk|grep|rg)$/.test(name);
+  });
 }
 
 function firstOrderFailure(actual, required) {
@@ -580,11 +592,11 @@ function firstOrderFailure(actual, required) {
 // Plan-only tripwire, deliberately not a shell parser: a docker/ydb/ydbd
 // executable in command position (start of the command or right after a
 // command separator, optionally behind environment assignments, sudo, or an
-// absolute path) fails the eval. Wrapper chains, quoting, substitutions,
-// pipelines into shells, ssh, and other indirection are out of scope — the
-// threat model is an agent that accidentally runs a direct command, and
-// structured MCP tool calls in the trace remain the authoritative gate for
-// local-ydb mutations.
+// absolute path) fails the eval. Simple quoted arguments are preserved while
+// splitting command separators. Wrapper chains, substitutions, pipelines into
+// shells, ssh, and other indirection are out of scope — the threat model is an
+// agent that accidentally runs a direct command, and structured MCP tool calls
+// in the trace remain the authoritative gate for local-ydb mutations.
 
 // sudo options that consume the following token as their value (sudo(8)).
 // Attached forms (-uroot, --user=root) are single tokens and need no skip.
@@ -652,18 +664,56 @@ function commandTokens(segment) {
   return tokens.slice(index);
 }
 
-export function invokesLiveDockerOrYdb(command) {
-  return String(command)
-    .split(/[\n;|&]+/)
-    .some((segment) => {
-      const executableToken = commandTokens(segment)[0];
-      if (!executableToken) {
-        return false;
+function splitShellCommandSegments(command) {
+  const segments = [];
+  let segment = "";
+  let quote;
+  let escaped = false;
+
+  for (const character of String(command)) {
+    if (escaped) {
+      segment += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      segment += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      segment += character;
+      if (character === quote) {
+        quote = undefined;
       }
-      const executable = executableToken.replace(/^["']+|["']+$/g, "");
-      const name = executable.slice(executable.lastIndexOf("/") + 1);
-      return /^(?:docker|ydbd?)$/.test(name);
-    });
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      segment += character;
+      continue;
+    }
+    if (/[\n;|&]/.test(character)) {
+      segments.push(segment);
+      segment = "";
+      continue;
+    }
+    segment += character;
+  }
+  segments.push(segment);
+  return segments;
+}
+
+export function invokesLiveDockerOrYdb(command) {
+  return splitShellCommandSegments(command).some((segment) => {
+    const executableToken = commandTokens(segment)[0];
+    if (!executableToken) {
+      return false;
+    }
+    const executable = executableToken.replace(/^["']+|["']+$/g, "");
+    const name = executable.slice(executable.lastIndexOf("/") + 1);
+    return /^(?:docker|ydbd?)$/.test(name);
+  });
 }
 
 const codexTransportEnvNames = [

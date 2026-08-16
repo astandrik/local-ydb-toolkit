@@ -172,6 +172,7 @@ describe("loadCases", () => {
       "local_ydb_generate_schema",
       "local_ydb_apply_schema",
       "local_ydb_apply_schema",
+      "local_ydb_scheme",
     ]);
     expect(
       cases.find((testCase) => testCase.id === "schema-generate-apply").expected
@@ -804,6 +805,26 @@ describe("scoreCase", () => {
     expect(echoedReaderFailures).toContain(
       "positive case has no local-ydb skill activation evidence",
     );
+
+    const failedReaderFailures = scoreWith(
+      [
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "cat /does-not-exist/skills/local-ydb/SKILL.md",
+            exit_code: 1,
+            status: "failed",
+          },
+        },
+        finalAnswerEvent(),
+      ],
+      { shouldUseLocalYdbSkill: true },
+      { omitSkillActivation: true },
+    );
+    expect(failedReaderFailures).toContain(
+      "positive case has no local-ydb skill activation evidence",
+    );
   });
 
   it("requires would_execute_confirmed_mutation to stay false", () => {
@@ -866,6 +887,39 @@ describe("scoreCase", () => {
     );
 
     expect(failures).toEqual([]);
+  });
+
+  it("requires the final schema describe after plan-only apply", () => {
+    const failures = scoreWith(
+      [
+        finalAnswerEvent({
+          tool_sequence: [
+            "local_ydb_status_report",
+            "local_ydb_scheme",
+            "local_ydb_generate_schema",
+            "local_ydb_apply_schema",
+            "local_ydb_apply_schema",
+          ],
+          answer: "Use action=validate, then action=apply for the plan.",
+        }),
+      ],
+      {
+        shouldUseLocalYdbSkill: true,
+        requiredOrderedTools: [
+          "local_ydb_status_report",
+          "local_ydb_scheme",
+          "local_ydb_generate_schema",
+          "local_ydb_apply_schema",
+          "local_ydb_apply_schema",
+          "local_ydb_scheme",
+        ],
+        requiredTerms: ["action=validate", "action=apply", "plan"],
+      },
+    );
+
+    expect(failures).toContain(
+      "required tools are out of order: local_ydb_status_report -> local_ydb_scheme -> local_ydb_generate_schema -> local_ydb_apply_schema -> local_ydb_apply_schema -> local_ydb_scheme",
+    );
   });
 
   it("rejects a tool that first runs before a repeated prerequisite", () => {
@@ -1320,6 +1374,8 @@ describe("invokesLiveDockerOrYdb", () => {
     "bash -c 'docker ps'",
     "ssh host docker ps",
     "echo 'docker ps'",
+    "rg 'docker|ydb' skills/local-ydb/SKILL.md",
+    "echo 'docker && ydb'",
     "grep docker README.md",
   ])("allows %j", (command) => {
     expect(invokesLiveDockerOrYdb(command)).toBe(false);
