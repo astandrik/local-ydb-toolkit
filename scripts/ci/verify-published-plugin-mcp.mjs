@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const packageSpec = "@astandrik/local-ydb-mcp@0.15.4";
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const portableManifest = await readJson(join(repositoryRoot, "plugin.json"));
+const portableMcp = await readJson(join(repositoryRoot, "mcp.json"));
+const packageSpec = portableMcp.mcpServers["local-ydb"].args[1];
 const temporaryRoot = await mkdtemp(join(tmpdir(), "local-ydb-published-mcp-"));
 const stderrChunks = [];
 const transport = new StdioClientTransport({
@@ -21,7 +25,7 @@ const transport = new StdioClientTransport({
 transport.stderr?.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
 
 const client = new Client(
-  { name: "local-ydb-agent-plugin-smoke", version: "0.1.1" },
+  { name: "local-ydb-agent-plugin-smoke", version: portableManifest.version },
   { capabilities: {} },
 );
 
@@ -52,4 +56,8 @@ function stringEnvironment(environment) {
   return Object.fromEntries(
     Object.entries(environment).filter((entry) => typeof entry[1] === "string"),
   );
+}
+
+async function readJson(path) {
+  return JSON.parse(await readFile(path, "utf8"));
 }
