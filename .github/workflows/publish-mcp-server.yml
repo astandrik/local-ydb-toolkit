@@ -43,7 +43,7 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ github.token }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
 
@@ -116,11 +116,18 @@ jobs:
 
   post-release-plugin-pin-prepare:
     if: >-
-      needs.release-please.outputs.release_created == 'true' &&
-      needs.publish.result == 'success'
+      always() &&
+      (
+        (
+          needs.release-please.outputs.release_created == 'true' &&
+          needs.publish.result == 'success'
+        ) ||
+        needs.publish-existing-release.result == 'success'
+      )
     needs:
       - release-please
       - publish
+      - publish-existing-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -146,8 +153,8 @@ jobs:
       - name: Revalidate published MCP metadata
         id: publication
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
-          RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+          RELEASE_TAG: ${{ needs.publish-existing-release.outputs.tag_name || needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.publish-existing-release.outputs.version || needs.release-please.outputs.version }}
         run: |
           node --input-type=module <<'NODE'
           import { appendFile } from "node:fs/promises";
@@ -160,9 +167,9 @@ jobs:
 
           const version = process.env.RELEASE_VERSION;
           const tag = process.env.RELEASE_TAG;
-          assertStableSemver(version, "release-please version output");
+          assertStableSemver(version, "release version output");
           if (tag !== `mcp-server-v${version}`) {
-            throw new Error(`release-please tag output does not match version ${version}`);
+            throw new Error(`release tag output does not match version ${version}`);
           }
 
           const inputs = await loadFreshnessInputs();
@@ -218,7 +225,7 @@ jobs:
           fi
 
       - name: Run focused Agent Plugin contracts
-        run: node --test scripts/ci/update-agent-plugin-pin.test.mjs scripts/ci/check-agent-plugin-freshness.test.mjs scripts/ci/post-release-plugin-pin.test.mjs
+        run: node --test scripts/ci/update-agent-plugin-pin.test.mjs scripts/ci/check-agent-plugin-freshness.test.mjs scripts/ci/agent-plugin-workflow.test.mjs scripts/ci/post-release-plugin-pin.test.mjs
 
       - run: npm run build
 
@@ -756,6 +763,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -769,6 +779,7 @@ jobs:
           cache: npm
 
       - name: Verify published release tag
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLISH_TAG: ${{ inputs.publish_tag }}
@@ -797,6 +808,8 @@ jobs:
             echo "publish_tag must match package version: expected ${expected_tag}, got ${PUBLISH_TAG}" >&2
             exit 1
           fi
+          echo "tag_name=${PUBLISH_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
 
       - run: npm ci
 

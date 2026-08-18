@@ -207,6 +207,30 @@ test("post-release pinning is gated by a newly created release and successful pu
   assert.doesNotMatch(job, /contents: write|pull-requests: write|id-token: write/);
 });
 
+test("a successful manual recovery reaches the same post-release pin proposal", () => {
+  const prepareJob = workflowJob("post-release-plugin-pin-prepare");
+  const recoveryJob = workflowJob("publish-existing-release");
+  const tagValidation = recoveryJob.indexOf('if [ "${PUBLISH_TAG}" != "${expected_tag}" ]');
+  const outputWrite = recoveryJob.indexOf('echo "version=${package_version}" >> "${GITHUB_OUTPUT}"');
+  const install = recoveryJob.indexOf("- run: npm ci");
+
+  assert.match(prepareJob, /needs:\n(?:\s+- [a-z-]+\n)*\s+- publish-existing-release/);
+  assert.match(prepareJob, /always\(\)/);
+  assert.match(prepareJob, /needs\.publish-existing-release\.result == 'success'/);
+  assert.match(
+    prepareJob,
+    /RELEASE_TAG: \$\{\{ needs\.publish-existing-release\.outputs\.tag_name \|\| needs\.release-please\.outputs\.tag_name \}\}/,
+  );
+  assert.match(
+    prepareJob,
+    /RELEASE_VERSION: \$\{\{ needs\.publish-existing-release\.outputs\.version \|\| needs\.release-please\.outputs\.version \}\}/,
+  );
+  assert.match(recoveryJob, /outputs:\n\s+tag_name: \$\{\{ steps\.release\.outputs\.tag_name \}\}\n\s+version: \$\{\{ steps\.release\.outputs\.version \}\}/);
+  assert.match(recoveryJob, /id: release/);
+  assert.ok(outputWrite > tagValidation, "recovery outputs must follow exact tag validation");
+  assert.ok(install > outputWrite, "recovery outputs must be selected before publication checks");
+});
+
 test("publication metadata is revalidated before the updater changes plugin files", () => {
   const job = workflowJob("post-release-plugin-pin-prepare");
   const revalidate = job.indexOf("Revalidate published MCP metadata");
@@ -232,7 +256,7 @@ test("the updater is followed by focused contracts, build, package, freshness, a
   const update = job.indexOf("npm run plugin:pin -- --mcp-version");
 
   for (const command of [
-    "node --test scripts/ci/update-agent-plugin-pin.test.mjs scripts/ci/check-agent-plugin-freshness.test.mjs scripts/ci/post-release-plugin-pin.test.mjs",
+    "node --test scripts/ci/update-agent-plugin-pin.test.mjs scripts/ci/check-agent-plugin-freshness.test.mjs scripts/ci/agent-plugin-workflow.test.mjs scripts/ci/post-release-plugin-pin.test.mjs",
     "npm run build",
     "npm run plugin:freshness",
     "npm run plugin:package",
@@ -242,19 +266,23 @@ test("the updater is followed by focused contracts, build, package, freshness, a
   }
 });
 
-test("the PAT-bearing mutation runs in a fresh job after tokenless preparation", () => {
+test("Release Please and the fresh mutation job use the PAT without exposing it to preparation", () => {
+  const releasePleaseJob = workflowJob("release-please");
   const prepareJob = workflowJob("post-release-plugin-pin-prepare");
   const mutationJob = workflowJob("post-release-plugin-pin-mutate");
   const finalStep = workflowStep(mutationJob, "Create plugin pin branch and draft PR");
   const secretReference = "secrets.RELEASE_PLEASE_TOKEN";
 
+  assert.match(releasePleaseJob, /token: \$\{\{ secrets\.RELEASE_PLEASE_TOKEN \}\}/);
+  assert.doesNotMatch(releasePleaseJob, /token: \$\{\{ github\.token \}\}/);
+  assert.doesNotMatch(releasePleaseJob, /(?:^|\n)\s+- run:/);
   assert.doesNotMatch(prepareJob, /RELEASE_PLEASE_TOKEN/);
   assert.doesNotMatch(prepareJob, /github\.token/);
   assert.match(mutationJob, /needs:\n\s+- post-release-plugin-pin-prepare/);
   assert.match(mutationJob, /uses: actions\/checkout@v6[\s\S]*?persist-credentials: false/);
   assert.match(mutationJob, /uses: actions\/download-artifact@v5/);
   assert.doesNotMatch(mutationJob, /github\.token/);
-  assert.equal(workflow.split(secretReference).length - 1, 1);
+  assert.equal(workflow.split(secretReference).length - 1, 2);
   assert.doesNotMatch(workflow, /RELEASE_PLEASE_TOKEN\s*\|\|\s*github\.token/);
   assert.match(finalStep, /GH_TOKEN: \$\{\{ secrets\.RELEASE_PLEASE_TOKEN \}\}/);
   assert.match(finalStep, /gh auth setup-git/);
