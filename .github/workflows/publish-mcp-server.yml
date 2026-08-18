@@ -233,12 +233,14 @@ jobs:
         env:
           MCP_VERSION: ${{ steps.publication.outputs.mcp_version }}
         run: |
+          # BEGIN POST_RELEASE_PLUGIN_PIN_CHANGE_GATE
           echo "mcp_version=${MCP_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "base_oid=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
           if git diff --quiet; then
             echo "changed=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
+          # END POST_RELEASE_PLUGIN_PIN_CHANGE_GATE
 
           proposal_dir="${RUNNER_TEMP}/plugin-pin-proposal"
           mkdir "${proposal_dir}"
@@ -608,11 +610,23 @@ jobs:
             --state all \
             --limit 10 \
             --json url,state,isDraft,mergedAt,title,headRefName,baseRefName,body,isCrossRepository,headRepository,headRepositoryOwner,headRefOid)"
+          if [ "${branch_exists}" = "true" ]; then
+            git merge-base --is-ancestor HEAD "refs/remotes/origin/${BRANCH}" || {
+              echo "Existing draft PR branch is not based on the current main commit" >&2
+              exit 1
+            }
+            git diff --binary --full-index HEAD "refs/remotes/origin/${BRANCH}" \
+              > "${RUNNER_TEMP}/existing-plugin-pin.patch"
+          fi
           state="$(
+            BODY_PATH="proposal/pr-body.md" \
             BRANCH_EXISTS="${branch_exists}" \
             BRANCH_OID="${branch_oid}" \
+            EXISTING_PATCH_PATH="${RUNNER_TEMP}/existing-plugin-pin.patch" \
+            PROPOSAL_PATCH_PATH="proposal/plugin-pin.patch" \
             PULL_REQUESTS_JSON="${pull_requests_json}" \
               node --input-type=module <<'NODE'
+          // BEGIN POST_RELEASE_PLUGIN_PIN_STATE_CLASSIFIER
           import { readFile } from "node:fs/promises";
           const pullRequests = JSON.parse(process.env.PULL_REQUESTS_JSON);
           const branch = process.env.BRANCH;
@@ -630,7 +644,7 @@ jobs:
               throw new Error(`Existing pull request state for ${branch} is ambiguous`);
             }
             const [pr] = open;
-            const body = await readFile("proposal/pr-body.md", "utf8");
+            const body = await readFile(process.env.BODY_PATH, "utf8");
             const urlPattern = new RegExp(
               `^https://github\\.com/${process.env.GITHUB_REPOSITORY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/pull/\\d+$`,
             );
@@ -650,6 +664,13 @@ jobs:
             ) {
               throw new Error(`Open pull request for ${branch} does not match the required upstream draft contract`);
             }
+            const [proposalPatch, existingPatch] = await Promise.all([
+              readFile(process.env.PROPOSAL_PATCH_PATH),
+              readFile(process.env.EXISTING_PATCH_PATH),
+            ]);
+            if (!proposalPatch.equals(existingPatch)) {
+              throw new Error(`Existing draft PR branch ${branch} does not contain the exact proposal patch`);
+            }
             result = { action: "return", url: pr.url };
           } else if (pullRequests.length > 0) {
             throw new Error(`Refusing unexpected historical pull request state for ${branch}`);
@@ -657,18 +678,12 @@ jobs:
             throw new Error(`Refusing orphan branch ${branch}`);
           }
           process.stdout.write(JSON.stringify(result));
+          // END POST_RELEASE_PLUGIN_PIN_STATE_CLASSIFIER
           NODE
           )"
           action="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).action)' "${state}")"
           if [ "${action}" = "return" ]; then
             existing_url="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).url)' "${state}")"
-            git merge-base --is-ancestor HEAD "refs/remotes/origin/${BRANCH}" || {
-              echo "Existing draft PR branch is not based on the current main commit" >&2
-              exit 1
-            }
-            git diff --binary --full-index HEAD "refs/remotes/origin/${BRANCH}" \
-              > "${RUNNER_TEMP}/existing-plugin-pin.patch"
-            cmp "proposal/plugin-pin.patch" "${RUNNER_TEMP}/existing-plugin-pin.patch"
             echo "Existing draft PR: ${existing_url}"
             exit 0
           fi

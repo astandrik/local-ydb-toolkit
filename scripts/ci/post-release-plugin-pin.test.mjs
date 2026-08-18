@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const workflow = await readFile(
@@ -44,6 +47,19 @@ function workflowStep(job, name) {
   return nextStep === -1 ? remaining : remaining.slice(0, nextStep);
 }
 
+function inlineWorkflowBlock(beginMarker, endMarker) {
+  const start = workflow.indexOf(beginMarker);
+  const end = workflow.indexOf(endMarker);
+  assert.ok(start >= 0, `missing workflow marker: ${beginMarker}`);
+  assert.ok(end > start, `missing workflow marker: ${endMarker}`);
+  return workflow
+    .slice(start + beginMarker.length, end)
+    .split("\n")
+    .map((line) => line.startsWith("          ") ? line.slice(10) : line)
+    .join("\n")
+    .trim();
+}
+
 function validPullRequest(overrides = {}) {
   return {
     url: "https://github.com/astandrik/local-ydb-toolkit/pull/150",
@@ -60,6 +76,86 @@ function validPullRequest(overrides = {}) {
     headRefOid,
     ...overrides,
   };
+}
+
+async function runProductionClassifier({
+  branchExists = false,
+  branchOid = "",
+  pullRequests = [],
+  body = canonicalBody,
+  proposalPatch = "exact plugin patch\n",
+  existingPatch = proposalPatch,
+} = {}) {
+  const fixture = await mkdtemp(join(tmpdir(), "plugin-pin-classifier-"));
+  try {
+    const bodyPath = join(fixture, "pr-body.md");
+    const proposalPatchPath = join(fixture, "proposal.patch");
+    const existingPatchPath = join(fixture, "existing.patch");
+    await Promise.all([
+      writeFile(bodyPath, body),
+      writeFile(proposalPatchPath, proposalPatch),
+      writeFile(existingPatchPath, existingPatch),
+    ]);
+    const { GH_TOKEN: _ignored, ...environment } = process.env;
+    return spawnSync(process.execPath, ["--input-type=module"], {
+      input: inlineWorkflowBlock(
+        "// BEGIN POST_RELEASE_PLUGIN_PIN_STATE_CLASSIFIER",
+        "// END POST_RELEASE_PLUGIN_PIN_STATE_CLASSIFIER",
+      ),
+      env: {
+        ...environment,
+        BODY_PATH: bodyPath,
+        BRANCH: branch,
+        BRANCH_EXISTS: String(branchExists),
+        BRANCH_OID: branchOid,
+        EXISTING_PATCH_PATH: existingPatchPath,
+        GITHUB_REPOSITORY: repository,
+        PROPOSAL_PATCH_PATH: proposalPatchPath,
+        PULL_REQUESTS_JSON: JSON.stringify(pullRequests),
+        TITLE: title,
+      },
+      encoding: "utf8",
+    });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+}
+
+async function runProductionChangeGate() {
+  const fixture = await mkdtemp(join(tmpdir(), "plugin-pin-change-gate-"));
+  try {
+    const runGit = (args) => {
+      const result = spawnSync("git", args, { cwd: fixture, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    runGit(["init", "--quiet"]);
+    runGit(["config", "user.name", "Contract Test"]);
+    runGit(["config", "user.email", "contract@example.test"]);
+    await writeFile(join(fixture, "tracked.txt"), "clean\n");
+    runGit(["add", "tracked.txt"]);
+    runGit(["-c", "core.hooksPath=/dev/null", "commit", "--quiet", "--no-verify", "-m", "fixture"]);
+
+    const outputPath = join(fixture, "github-output");
+    const result = spawnSync("bash", ["-euo", "pipefail"], {
+      cwd: fixture,
+      input: inlineWorkflowBlock(
+        "# BEGIN POST_RELEASE_PLUGIN_PIN_CHANGE_GATE",
+        "# END POST_RELEASE_PLUGIN_PIN_CHANGE_GATE",
+      ),
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputPath,
+        MCP_VERSION: version,
+      },
+      encoding: "utf8",
+    });
+    return {
+      ...result,
+      output: await readFile(outputPath, "utf8"),
+    };
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 }
 
 function assertOnlySafePushCommand(source) {
@@ -228,79 +324,60 @@ test("the fresh mutation job independently validates the exact plugin transforma
   assert.match(job, /server\.json does not match the trusted published target/);
 });
 
-test("PR state classification creates only from an unused branch", async () => {
-  const { classifyPullRequestState } = await import("./post-release-plugin-pin.mjs");
+test("the production change gate makes a current main pin a successful no-op", async () => {
+  const result = await runProductionChangeGate();
 
-  assert.deepEqual(
-    classifyPullRequestState({
-      repository,
-      version,
-      branchExists: false,
-      branchOid: null,
-      pullRequests: [],
-    }),
-    {
-      action: "create",
-      branch,
-      title,
-    },
-  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.output, /^mcp_version=0\.17\.0$/m);
+  assert.match(result.output, /^base_oid=[0-9a-f]{40}$/m);
+  assert.match(result.output, /^changed=false$/m);
 });
 
-test("PR state classification returns one exact open draft PR", async () => {
-  const { classifyPullRequestState } = await import("./post-release-plugin-pin.mjs");
+test("the production inline classifier creates only from an unused branch", async () => {
+  const result = await runProductionClassifier();
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { action: "create", url: "" });
+});
+
+test("the production inline classifier returns one exact upstream draft", async () => {
   const pullRequest = validPullRequest();
-
-  assert.deepEqual(
-    classifyPullRequestState({
-      repository,
-      version,
-      branchExists: true,
-      branchOid: headRefOid,
-      pullRequests: [pullRequest],
-    }),
-    {
-      action: "return",
-      branch,
-      title,
-      url: pullRequest.url,
-      headRefOid,
-    },
-  );
-});
-
-test("PR state classification rejects fork heads and mismatched upstream OIDs", async (t) => {
-  const { classifyPullRequestState } = await import("./post-release-plugin-pin.mjs");
-  const base = {
-    repository,
-    version,
+  const result = await runProductionClassifier({
     branchExists: true,
     branchOid: headRefOid,
-  };
-
-  await t.test("fork head", () => {
-    assert.throws(
-      () => classifyPullRequestState({
-        ...base,
-        pullRequests: [validPullRequest({
-          isCrossRepository: true,
-          headRepositoryOwner: { login: "attacker" },
-        })],
-      }),
-      /same-repository upstream head/i,
-    );
+    pullRequests: [pullRequest],
   });
 
-  await t.test("mismatched head OID", () => {
-    assert.throws(
-      () => classifyPullRequestState({
-        ...base,
-        pullRequests: [validPullRequest({
-          headRefOid: "fedcba9876543210fedcba9876543210fedcba98",
-        })],
-      }),
-      /head OID does not match the upstream branch/i,
-    );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { action: "return", url: pullRequest.url });
+});
+
+test("the production inline classifier rejects fork and OID mismatches", async (t) => {
+  await t.test("fork head", async () => {
+    const result = await runProductionClassifier({
+      branchExists: true,
+      branchOid: headRefOid,
+      pullRequests: [validPullRequest({
+        isCrossRepository: true,
+        headRepositoryOwner: { login: "attacker" },
+      })],
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match the required upstream draft contract/i);
+  });
+
+  await t.test("head OID mismatch", async () => {
+    const result = await runProductionClassifier({
+      branchExists: true,
+      branchOid: headRefOid,
+      pullRequests: [validPullRequest({
+        headRefOid: "fedcba9876543210fedcba9876543210fedcba98",
+      })],
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match the required upstream draft contract/i);
   });
 });
 
@@ -310,104 +387,78 @@ test("the canonical PR body contains every exact release and manual-follow-up li
   assert.equal(createPullRequestBody(version), canonicalBody);
 });
 
-test("PR state classification rejects missing evidence and checklist lines", async (t) => {
-  const { classifyPullRequestState } = await import("./post-release-plugin-pin.mjs");
-  const base = {
-    repository,
-    version,
-    branchExists: true,
-    branchOid: headRefOid,
-  };
+test("the production inline classifier rejects body and patch divergence", async (t) => {
+  await t.test("body mismatch", async () => {
+    const result = await runProductionClassifier({
+      branchExists: true,
+      branchOid: headRefOid,
+      pullRequests: [validPullRequest({ body: "incomplete body" })],
+    });
 
-  await t.test("missing GitHub release evidence", () => {
-    assert.throws(
-      () => classifyPullRequestState({
-        ...base,
-        pullRequests: [validPullRequest({
-          body: canonicalBody.replace("- GitHub release output: mcp-server-v0.17.0\n", ""),
-        })],
-      }),
-      /does not match the required draft PR contract/i,
-    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match the required upstream draft contract/i);
   });
 
-  await t.test("missing Cursor rescan checklist item", () => {
-    assert.throws(
-      () => classifyPullRequestState({
-        ...base,
-        pullRequests: [validPullRequest({
-          body: canonicalBody.replace("- [ ] Submit the Cursor Directory entry for rescan.", ""),
-        })],
-      }),
-      /does not match the required draft PR contract/i,
-    );
+  await t.test("patch mismatch", async () => {
+    const result = await runProductionClassifier({
+      branchExists: true,
+      branchOid: headRefOid,
+      existingPatch: "divergent branch patch\n",
+      pullRequests: [validPullRequest()],
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not contain the exact proposal patch/i);
   });
 });
 
-test("PR state classification fails closed on orphan, closed-unmerged, and invalid open states", async (t) => {
-  const { classifyPullRequestState } = await import("./post-release-plugin-pin.mjs");
-  const base = {
-    repository,
-    version,
-    branchOid: null,
-  };
+test("the production inline classifier fails closed on orphan and closed PR state", async (t) => {
+  await t.test("orphan branch", async () => {
+    const result = await runProductionClassifier({
+      branchExists: true,
+      branchOid: headRefOid,
+    });
 
-  await t.test("orphan branch", () => {
-    assert.throws(
-      () => classifyPullRequestState({
-        ...base,
-        branchExists: true,
-        branchOid: headRefOid,
-        pullRequests: [],
-      }),
-      /orphan branch/i,
-    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /orphan branch/i);
   });
 
-  await t.test("closed unmerged PR", () => {
-    assert.throws(
-      () => classifyPullRequestState({
-        ...base,
-        branchExists: false,
-        pullRequests: [{
-          url: "https://github.com/astandrik/local-ydb-toolkit/pull/149",
-          state: "CLOSED",
-          isDraft: true,
-          mergedAt: null,
-          title: "chore(plugin): pin published MCP 0.17.0",
-          headRefName: "codex/update-plugin-mcp-pin-v0.17.0",
-          baseRefName: "main",
-          body: canonicalBody,
-        }],
-      }),
-      /closed unmerged pull request/i,
-    );
-  });
+  await t.test("closed unmerged PR", async () => {
+    const result = await runProductionClassifier({
+      pullRequests: [{
+        url: "https://github.com/astandrik/local-ydb-toolkit/pull/149",
+        state: "CLOSED",
+        mergedAt: null,
+      }],
+    });
 
-  await t.test("non-draft open PR", () => {
-    assert.throws(
-      () => classifyPullRequestState({
-        ...base,
-        branchExists: true,
-        branchOid: headRefOid,
-        pullRequests: [validPullRequest({ isDraft: false })],
-      }),
-      /does not match the required draft PR contract/i,
-    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /closed unmerged pull request/i);
   });
 });
 
-test("PR state classification rejects unsafe versions before deriving a branch", async () => {
-  const { classifyPullRequestState } = await import("./post-release-plugin-pin.mjs");
+test("the production inline classifier rejects ambiguous and invalid open PRs", async (t) => {
+  await t.test("multiple open PRs", async () => {
+    const result = await runProductionClassifier({
+      branchExists: true,
+      branchOid: headRefOid,
+      pullRequests: [validPullRequest(), validPullRequest({
+        url: "https://github.com/astandrik/local-ydb-toolkit/pull/151",
+      })],
+    });
 
-  assert.throws(
-    () => classifyPullRequestState({
-      repository,
-      version: "0.17.0;git push origin main",
-      branchExists: false,
-      branchOid: null,
-      pullRequests: [],
-    }),
-    /stable X\.Y\.Z semver/i,
-  );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /ambiguous/i);
+  });
+
+  await t.test("non-draft open PR", async () => {
+    const result = await runProductionClassifier({
+      branchExists: true,
+      branchOid: headRefOid,
+      pullRequests: [validPullRequest({ isDraft: false })],
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match the required upstream draft contract/i);
+  });
 });
