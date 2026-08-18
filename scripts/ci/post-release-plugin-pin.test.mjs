@@ -29,11 +29,11 @@ Manual Cursor Directory follow-up:
 - [ ] Confirm the Cursor command pins @astandrik/local-ydb-mcp@0.17.0.
 - [ ] Submit the Cursor Directory entry for rescan.`;
 
-function workflowJob(name) {
+function workflowJob(name, source = workflow) {
   const marker = `  ${name}:\n`;
-  const start = workflow.indexOf(marker);
+  const start = source.indexOf(marker);
   assert.notEqual(start, -1, `publish workflow must define ${name}`);
-  const remaining = workflow.slice(start + marker.length);
+  const remaining = source.slice(start + marker.length);
   const nextJob = remaining.search(/^  [a-zA-Z0-9_-]+:\n/m);
   return nextJob === -1 ? remaining : remaining.slice(0, nextJob);
 }
@@ -47,12 +47,27 @@ function workflowStep(job, name) {
   return nextStep === -1 ? remaining : remaining.slice(0, nextStep);
 }
 
-function inlineWorkflowBlock(beginMarker, endMarker) {
-  const start = workflow.indexOf(beginMarker);
-  const end = workflow.indexOf(endMarker);
-  assert.ok(start >= 0, `missing workflow marker: ${beginMarker}`);
-  assert.ok(end > start, `missing workflow marker: ${endMarker}`);
-  return workflow
+function inlineWorkflowBlock(beginMarker, endMarker, source = workflow) {
+  const scope = beginMarker.includes("STATE_CLASSIFIER")
+    ? workflowStep(
+        workflowJob("post-release-plugin-pin-mutate", source),
+        "Create plugin pin branch and draft PR",
+      )
+    : workflowStep(
+        workflowJob("post-release-plugin-pin-prepare", source),
+        "Create inert plugin pin proposal",
+      );
+  const beginCount = scope.split(beginMarker).length - 1;
+  const endCount = scope.split(endMarker).length - 1;
+  assert.equal(
+    beginCount === 1 && endCount === 1,
+    true,
+    "workflow step must contain exactly one begin and one end marker",
+  );
+  const start = scope.indexOf(beginMarker);
+  const end = scope.indexOf(endMarker);
+  assert.ok(end > start, "workflow step markers must be in begin/end order");
+  return scope
     .slice(start + beginMarker.length, end)
     .split("\n")
     .map((line) => line.startsWith("          ") ? line.slice(10) : line)
@@ -170,6 +185,17 @@ function assertOnlySafePushCommand(source) {
     `unsafe git push command: ${commands.join(" | ") || "missing"}`,
   );
 }
+
+test("inline classifier extraction rejects duplicate markers in the production step", () => {
+  const begin = "// BEGIN POST_RELEASE_PLUGIN_PIN_STATE_CLASSIFIER";
+  const end = "// END POST_RELEASE_PLUGIN_PIN_STATE_CLASSIFIER";
+  const duplicated = workflow.replace(begin, `${begin}\n          ${end}\n          ${begin}`);
+
+  assert.throws(
+    () => inlineWorkflowBlock(begin, end, duplicated),
+    /exactly one begin and one end marker/i,
+  );
+});
 
 test("post-release pinning is gated by a newly created release and successful publication", () => {
   const job = workflowJob("post-release-plugin-pin-prepare");
