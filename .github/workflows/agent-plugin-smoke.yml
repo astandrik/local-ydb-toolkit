@@ -12,6 +12,9 @@ on:
       - "package-lock.json"
       - "package.json"
       - "plugin.json"
+      - "server.json"
+      - "scripts/ci/check-agent-plugin-freshness.mjs"
+      - "scripts/ci/check-agent-plugin-freshness.test.mjs"
       - "scripts/ci/verify-published-plugin-mcp.mjs"
   pull_request:
     branches:
@@ -24,6 +27,9 @@ on:
       - "package-lock.json"
       - "package.json"
       - "plugin.json"
+      - "server.json"
+      - "scripts/ci/check-agent-plugin-freshness.mjs"
+      - "scripts/ci/check-agent-plugin-freshness.test.mjs"
       - "scripts/ci/verify-published-plugin-mcp.mjs"
   workflow_dispatch:
   schedule:
@@ -37,6 +43,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plugin-freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - run: npm run plugin:freshness
+
   published-mcp-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 5

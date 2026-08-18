@@ -13,6 +13,7 @@
     "predocs:check": "npm run build:packages",
     "docs:check": "npm run docs:check:built",
     "docs:check:built": "node scripts/ci/generate-mcp-tools-docs.mjs --check",
+    "plugin:freshness": "node scripts/ci/check-agent-plugin-freshness.mjs",
     "plugin:pin": "node scripts/ci/update-agent-plugin-pin.mjs",
     "plugin:package": "node scripts/package-agent-plugin.mjs",
     "plugin:smoke": "node scripts/ci/verify-published-plugin-mcp.mjs",
