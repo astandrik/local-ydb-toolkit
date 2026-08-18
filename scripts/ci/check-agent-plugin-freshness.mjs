@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const stableSemverSource = "(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)";
+const stableSemver = new RegExp(`^${stableSemverSource}$`);
 const SERVER_JSON_URL = new URL("../../server.json", import.meta.url);
 const PLUGIN_MCP_URL = new URL("../../mcp.json", import.meta.url);
 
@@ -28,9 +30,15 @@ export async function checkAgentPluginFreshness({
   });
   verifyRegistryVersion(registryMetadata, server, npmPackage);
 
-  if (pluginPin.version !== server.version) {
+  const comparison = compareStableSemver(pluginPin.version, server.version);
+  if (comparison < 0) {
     throw new Error(
       `Plugin pin ${pluginPin.spec} is behind published ${npmPackage.identifier}@${server.version}. Run: npm run plugin:pin -- --mcp-version ${server.version} --write`,
+    );
+  }
+  if (comparison > 0) {
+    throw new Error(
+      `Plugin pin ${pluginPin.spec} is ahead of published ${npmPackage.identifier}@${server.version}. Investigate release consistency and read back the published metadata.`,
     );
   }
 
@@ -61,6 +69,7 @@ export function npmPackageFromServer(server) {
   if (!isObject(server) || typeof server.name !== "string" || typeof server.version !== "string") {
     throw new Error("server.json must contain server name and version strings");
   }
+  assertStableSemver(server.version, "server.json version");
 
   const npmPackages = Array.isArray(server.packages)
     ? server.packages.filter((entry) => entry?.registryType === "npm")
@@ -70,11 +79,11 @@ export function npmPackageFromServer(server) {
   }
 
   const npmPackage = npmPackages[0];
-  if (
-    typeof npmPackage.identifier !== "string"
-    || typeof npmPackage.version !== "string"
-    || npmPackage.version !== server.version
-  ) {
+  if (typeof npmPackage.identifier !== "string" || typeof npmPackage.version !== "string") {
+    throw new Error("server.json npm package must define identifier and version");
+  }
+  assertStableSemver(npmPackage.version, "server.json npm package version");
+  if (npmPackage.version !== server.version) {
     throw new Error("server.json npm package must match the server version");
   }
   return npmPackage;
@@ -99,6 +108,7 @@ export function pluginPinFromConfig(plugin, expectedPackageName) {
   if (!packageName || !version || packageName !== expectedPackageName) {
     throw new Error(`mcp.json must pin ${expectedPackageName} exactly`);
   }
+  assertStableSemver(version, "mcp.json plugin pin");
 
   return { packageName, version, spec: server.args[1] };
 }
@@ -143,6 +153,7 @@ export async function fetchJson(url, target, {
 }
 
 export function verifyNpmLatest(metadata, npmPackage, expectedVersion) {
+  assertStableSemver(metadata.version, "npm latest version");
   if (
     metadata.name !== npmPackage.identifier
     || metadata.version !== expectedVersion
@@ -158,6 +169,7 @@ export function verifyRegistryVersion(metadata, server, npmPackage) {
   if (!isObject(registryServer)) {
     throw new Error("Registry response must contain a server JSON object");
   }
+  assertStableSemver(registryServer.version, "Registry server version");
   if (registryServer.name !== server.name || registryServer.version !== server.version) {
     throw new Error("Registry server identity or version does not match server.json");
   }
@@ -167,11 +179,47 @@ export function verifyRegistryVersion(metadata, server, npmPackage) {
     : [];
   if (
     registryNpmPackages.length !== 1
-    || registryNpmPackages[0].identifier !== npmPackage.identifier
+    || typeof registryNpmPackages[0].identifier !== "string"
+    || typeof registryNpmPackages[0].version !== "string"
+  ) {
+    throw new Error("Registry npm package metadata does not match server.json");
+  }
+  assertStableSemver(registryNpmPackages[0].version, "Registry npm package version");
+  if (
+    registryNpmPackages[0].identifier !== npmPackage.identifier
     || registryNpmPackages[0].version !== npmPackage.version
   ) {
     throw new Error("Registry npm package metadata does not match server.json");
   }
+}
+
+export function compareStableSemver(left, right) {
+  const leftParts = parseStableSemver(left);
+  const rightParts = parseStableSemver(right);
+  for (let index = 0; index < leftParts.length; index += 1) {
+    if (leftParts[index] !== rightParts[index]) {
+      return compareNumericIdentifiers(leftParts[index], rightParts[index]);
+    }
+  }
+  return 0;
+}
+
+export function assertStableSemver(version, label) {
+  if (typeof version !== "string" || !stableSemver.test(version)) {
+    throw new Error(`${label} must use a stable X.Y.Z semver`);
+  }
+}
+
+function parseStableSemver(version) {
+  assertStableSemver(version, "version");
+  return version.split(".");
+}
+
+function compareNumericIdentifiers(left, right) {
+  if (left.length !== right.length) {
+    return left.length < right.length ? -1 : 1;
+  }
+  return left < right ? -1 : 1;
 }
 
 function parseJson(contents, label) {

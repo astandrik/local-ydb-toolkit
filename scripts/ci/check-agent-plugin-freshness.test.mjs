@@ -95,6 +95,115 @@ test("reports the current pin, published version, and repair command when the pl
   );
 });
 
+test("fails closed without a downgrade command when the plugin pin is ahead of publication", async () => {
+  await assert.rejects(
+    checkAgentPluginFreshness({
+      server: serverMetadata(),
+      plugin: pluginConfig("0.17.0"),
+      fetchImpl: successfulFetch(),
+    }),
+    (error) => {
+      assert.match(error.message, /Plugin pin @astandrik\/local-ydb-mcp@0\.17\.0 is ahead of published @astandrik\/local-ydb-mcp@0\.16\.0/);
+      assert.match(error.message, /Investigate release consistency and read back the published metadata\./);
+      assert.doesNotMatch(error.message, /npm run plugin:pin/);
+      return true;
+    },
+  );
+});
+
+test("rejects prerelease server, package, and plugin pin versions", async (t) => {
+  await t.test("server version", async () => {
+    const server = serverMetadata();
+    server.version = "0.16.0-rc.1";
+    server.packages[0].version = "0.16.0-rc.1";
+
+    await assert.rejects(
+      checkAgentPluginFreshness({
+        server,
+        plugin: pluginConfig("0.16.0-rc.1"),
+        fetchImpl: successfulFetch(server),
+      }),
+      /server\.json version must use a stable X\.Y\.Z semver/,
+    );
+  });
+
+  await t.test("npm package version", async () => {
+    const server = serverMetadata();
+    server.packages[0].version = "0.16.0-rc.1";
+
+    await assert.rejects(
+      checkAgentPluginFreshness({
+        server,
+        plugin: pluginConfig(),
+        fetchImpl: successfulFetch(),
+      }),
+      /server\.json npm package version must use a stable X\.Y\.Z semver/,
+    );
+  });
+
+  await t.test("plugin pin", async () => {
+    await assert.rejects(
+      checkAgentPluginFreshness({
+        server: serverMetadata(),
+        plugin: pluginConfig("0.16.0-rc.1"),
+        fetchImpl: successfulFetch(),
+      }),
+      /mcp\.json plugin pin must use a stable X\.Y\.Z semver/,
+    );
+  });
+
+  await t.test("npm latest version", async () => {
+    await assert.rejects(
+      checkAgentPluginFreshness({
+        server: serverMetadata(),
+        plugin: pluginConfig(),
+        fetchImpl: async () =>
+          jsonResponse(200, {
+            name: packageName,
+            version: "0.16.0-rc.1",
+          }),
+      }),
+      /npm latest version must use a stable X\.Y\.Z semver/,
+    );
+  });
+});
+
+test("rejects prerelease Registry server and npm package versions", async (t) => {
+  await t.test("Registry server version", async () => {
+    const registry = registryResponse();
+    registry.server.version = "0.16.0-rc.1";
+
+    await assert.rejects(
+      checkAgentPluginFreshness({
+        server: serverMetadata(),
+        plugin: pluginConfig(),
+        fetchImpl: async (url) =>
+          url.endsWith("/latest")
+            ? jsonResponse(200, { name: packageName, version: publishedVersion })
+            : jsonResponse(200, registry),
+      }),
+      /Registry server version must use a stable X\.Y\.Z semver/,
+    );
+  });
+
+  await t.test("Registry npm package version", async () => {
+    const registry = registryResponse();
+    registry.server.packages[0].version = "0.16.0-rc.1";
+
+    await assert.rejects(
+      checkAgentPluginFreshness({
+        server: serverMetadata(),
+        plugin: pluginConfig(),
+        fetchImpl: async (url) =>
+          url.endsWith("/latest")
+            ? jsonResponse(200, { name: packageName, version: publishedVersion })
+            : jsonResponse(200, registry),
+      }),
+      /Registry npm package version must use a stable X\.Y\.Z semver/,
+    );
+  });
+});
+
 test("rejects npm metadata for another package even at the expected version", async () => {
   await assert.rejects(
     checkAgentPluginFreshness({
