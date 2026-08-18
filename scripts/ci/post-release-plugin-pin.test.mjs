@@ -26,13 +26,22 @@ Manual Cursor Directory follow-up:
 - [ ] Confirm the Cursor command pins @astandrik/local-ydb-mcp@0.17.0.
 - [ ] Submit the Cursor Directory entry for rescan.`;
 
-function postReleaseJob() {
-  const marker = "  post-release-plugin-pin:\n";
+function workflowJob(name) {
+  const marker = `  ${name}:\n`;
   const start = workflow.indexOf(marker);
-  assert.notEqual(start, -1, "publish workflow must define post-release-plugin-pin");
+  assert.notEqual(start, -1, `publish workflow must define ${name}`);
   const remaining = workflow.slice(start + marker.length);
   const nextJob = remaining.search(/^  [a-zA-Z0-9_-]+:\n/m);
   return nextJob === -1 ? remaining : remaining.slice(0, nextJob);
+}
+
+function workflowStep(job, name) {
+  const marker = `      - name: ${name}\n`;
+  const start = job.indexOf(marker);
+  assert.notEqual(start, -1, `workflow job must define step ${name}`);
+  const remaining = job.slice(start + marker.length);
+  const nextStep = remaining.search(/^      - (?:name|uses|run):/m);
+  return nextStep === -1 ? remaining : remaining.slice(0, nextStep);
 }
 
 function validPullRequest(overrides = {}) {
@@ -58,16 +67,16 @@ function assertOnlySafePushCommand(source) {
     .replace(/\\\n\s*/g, " ")
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => /(?:^|[\s/])git\s+push(?:\s|$)/.test(line));
+    .filter((line) => /(?:^|[\s/])git(?:\s+-c\s+\S+)*\s+push(?:\s|$)/.test(line));
   assert.deepEqual(
     commands,
-    ['git push --set-upstream origin "${branch}"'],
+    ['git -c core.hooksPath=/dev/null push --no-verify --set-upstream origin "${BRANCH}"'],
     `unsafe git push command: ${commands.join(" | ") || "missing"}`,
   );
 }
 
 test("post-release pinning is gated by a newly created release and successful publication", () => {
-  const job = postReleaseJob();
+  const job = workflowJob("post-release-plugin-pin-prepare");
 
   assert.match(job, /needs:\n\s+- release-please\n\s+- publish/);
   assert.match(job, /needs\.release-please\.outputs\.release_created == 'true'/);
@@ -77,7 +86,7 @@ test("post-release pinning is gated by a newly created release and successful pu
 });
 
 test("publication metadata is revalidated before the updater changes plugin files", () => {
-  const job = postReleaseJob();
+  const job = workflowJob("post-release-plugin-pin-prepare");
   const revalidate = job.indexOf("Revalidate published MCP metadata");
   const update = job.indexOf("npm run plugin:pin -- --mcp-version");
 
@@ -97,7 +106,7 @@ test("publication metadata is revalidated before the updater changes plugin file
 });
 
 test("the updater is followed by focused contracts, build, package, freshness, and published smoke", () => {
-  const job = postReleaseJob();
+  const job = workflowJob("post-release-plugin-pin-prepare");
   const update = job.indexOf("npm run plugin:pin -- --mcp-version");
 
   for (const command of [
@@ -111,27 +120,44 @@ test("the updater is followed by focused contracts, build, package, freshness, a
   }
 });
 
-test("the checkout and final draft PR step preserve the credential boundary", () => {
-  const job = postReleaseJob();
+test("the PAT-bearing mutation runs in a fresh job after tokenless preparation", () => {
+  const prepareJob = workflowJob("post-release-plugin-pin-prepare");
+  const mutationJob = workflowJob("post-release-plugin-pin-mutate");
+  const finalStep = workflowStep(mutationJob, "Create plugin pin branch and draft PR");
   const secretReference = "secrets.RELEASE_PLEASE_TOKEN";
 
-  assert.match(job, /uses: actions\/checkout@v6[\s\S]*?persist-credentials: false/);
+  assert.doesNotMatch(prepareJob, /RELEASE_PLEASE_TOKEN/);
+  assert.doesNotMatch(prepareJob, /github\.token/);
+  assert.match(mutationJob, /needs:\n\s+- post-release-plugin-pin-prepare/);
+  assert.match(mutationJob, /uses: actions\/checkout@v6[\s\S]*?persist-credentials: false/);
+  assert.match(mutationJob, /uses: actions\/download-artifact@v5/);
+  assert.doesNotMatch(mutationJob, /github\.token/);
   assert.equal(workflow.split(secretReference).length - 1, 1);
   assert.doesNotMatch(workflow, /RELEASE_PLEASE_TOKEN\s*\|\|\s*github\.token/);
-  assert.match(job, /if: \$\{\{ steps\.pin\.outputs\.changed == 'true' \}\}/);
-  assert.match(job, /GH_TOKEN: \$\{\{ secrets\.RELEASE_PLEASE_TOKEN \}\}/);
-  assert.match(job, /gh auth setup-git/);
-  assert.match(job, /gh pr create[\s\S]*--draft/);
-  assert.match(job, /branch="codex\/update-plugin-mcp-pin-v\$\{MCP_VERSION\}"/);
-  assert.match(job, /title="chore\(plugin\): pin published MCP \$\{MCP_VERSION\}"/);
+  assert.match(finalStep, /GH_TOKEN: \$\{\{ secrets\.RELEASE_PLEASE_TOKEN \}\}/);
+  assert.match(finalStep, /gh auth setup-git/);
+  assert.match(finalStep, /gh pr create[\s\S]*--draft/);
+  assert.doesNotMatch(finalStep, /\b(?:npm|npx)\b|node\s+(?:\.\/)?scripts\//);
+});
+
+test("the fresh mutation job never executes package or checked-out repository code", () => {
+  const job = workflowJob("post-release-plugin-pin-mutate");
+
+  assert.doesNotMatch(job, /uses: actions\/setup-node/);
+  assert.doesNotMatch(job, /(?:^|\n)\s+(?:npm|npx)\b/);
+  assert.doesNotMatch(job, /node\s+(?:\.\/)?scripts\//);
+  assert.doesNotMatch(job, /\.\/scripts\//);
+  assert.match(job, /node --input-type=module <<'NODE'/);
 });
 
 test("the workflow excludes direct, force, and automatic merge paths", () => {
-  const job = postReleaseJob();
+  const job = workflowJob("post-release-plugin-pin-mutate");
 
   assertOnlySafePushCommand(job);
   assert.doesNotMatch(job, /gh pr (merge|ready)|--auto\b/);
-  assert.doesNotMatch(job, /github\.token/);
+  assert.match(job, /git -c core\.hooksPath=\/dev\/null switch/);
+  assert.match(job, /git -c core\.hooksPath=\/dev\/null commit --no-verify/);
+  assert.match(job, /git -c core\.hooksPath=\/dev\/null push --no-verify/);
 });
 
 test("the push-command guard rejects direct-main and force refspec variants", () => {
@@ -154,14 +180,15 @@ test("the push-command guard rejects direct-main and force refspec variants", ()
 });
 
 test("the workflow delegates PR body construction to the canonical helper", () => {
-  const job = postReleaseJob();
+  const prepareJob = workflowJob("post-release-plugin-pin-prepare");
+  const mutationJob = workflowJob("post-release-plugin-pin-mutate");
 
-  assert.match(job, /node scripts\/ci\/post-release-plugin-pin\.mjs --body/);
-  assert.match(job, /--body-file "\$\{body_file\}"/);
+  assert.match(prepareJob, /node scripts\/ci\/post-release-plugin-pin\.mjs --body/);
+  assert.match(mutationJob, /--body-file "proposal\/pr-body\.md"/);
 });
 
 test("existing PR reuse is bound to the same-repository upstream branch OID", () => {
-  const job = postReleaseJob();
+  const job = workflowJob("post-release-plugin-pin-mutate");
 
   for (const field of [
     "isCrossRepository",
@@ -172,8 +199,33 @@ test("existing PR reuse is bound to the same-repository upstream branch OID", ()
     assert.ok(job.includes(field), `missing existing-PR identity field: ${field}`);
   }
   assert.match(job, /branch_oid=/);
-  assert.match(job, /git rev-parse "refs\/remotes\/origin\/\$\{branch\}"/);
-  assert.match(job, /existing_head_oid/);
+  assert.match(job, /git rev-parse "refs\/remotes\/origin\/\$\{BRANCH\}"/);
+  assert.match(job, /pr\.headRefOid !== branchOid/);
+});
+
+test("the preparation job exports only a checksummed inert proposal artifact", () => {
+  const prepareJob = workflowJob("post-release-plugin-pin-prepare");
+  const mutationJob = workflowJob("post-release-plugin-pin-mutate");
+
+  assert.match(prepareJob, /uses: actions\/upload-artifact@v4/);
+  assert.match(prepareJob, /plugin-pin-proposal\.json/);
+  assert.match(prepareJob, /plugin-pin\.patch/);
+  assert.match(prepareJob, /pr-body\.md/);
+  assert.match(prepareJob, /patch_sha256:/);
+  assert.match(mutationJob, /needs\.post-release-plugin-pin-prepare\.outputs\.patch_sha256/);
+  assert.match(mutationJob, /git apply --check "proposal\/plugin-pin\.patch"/);
+  assert.match(mutationJob, /git apply "proposal\/plugin-pin\.patch"/);
+  assert.match(mutationJob, /cmp "proposal\/plugin-pin\.patch"/);
+});
+
+test("the fresh mutation job independently validates the exact plugin transformation", () => {
+  const job = workflowJob("post-release-plugin-pin-mutate");
+
+  assert.match(job, /Validate exact plugin transformation/);
+  assert.match(job, /execFileSync\("git", \["show", `HEAD:\$\{path\}`\]/);
+  assert.match(job, /\$\{packageName\}@\$\{targetVersion\}/);
+  assert.match(job, /Expected transformed content mismatch/);
+  assert.match(job, /server\.json does not match the trusted published target/);
 });
 
 test("PR state classification creates only from an unused branch", async () => {
