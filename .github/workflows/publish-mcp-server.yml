@@ -43,7 +43,7 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          token: ${{ github.token }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
 
@@ -113,6 +113,248 @@ jobs:
 
       - name: Verify MCP Registry publication
         run: node scripts/ci/verify-mcp-publication.mjs registry --wait-seconds 300
+
+  post-release-plugin-pin:
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      needs.publish.result == 'success'
+    needs:
+      - release-please
+      - publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Revalidate published MCP metadata
+        id: publication
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFile } from "node:fs/promises";
+          import {
+            assertStableSemver,
+            checkAgentPluginFreshness,
+            loadFreshnessInputs,
+            npmPackageFromServer,
+          } from "./scripts/ci/check-agent-plugin-freshness.mjs";
+
+          const version = process.env.RELEASE_VERSION;
+          const tag = process.env.RELEASE_TAG;
+          assertStableSemver(version, "release-please version output");
+          if (tag !== `mcp-server-v${version}`) {
+            throw new Error(`release-please tag output does not match version ${version}`);
+          }
+
+          const inputs = await loadFreshnessInputs();
+          if (inputs.server.version !== version) {
+            throw new Error(`server.json version ${inputs.server.version} does not match release ${version}`);
+          }
+          if (inputs.server.name !== "io.github.astandrik/local-ydb-mcp") {
+            throw new Error("server.json contains the wrong MCP Registry identity");
+          }
+          const npmPackage = npmPackageFromServer(inputs.server);
+          if (npmPackage.identifier !== "@astandrik/local-ydb-mcp") {
+            throw new Error("server.json contains the wrong npm package identity");
+          }
+
+          const publishedPlugin = structuredClone(inputs.plugin);
+          if (!Array.isArray(publishedPlugin?.mcpServers?.["local-ydb"]?.args)) {
+            throw new Error("mcp.json does not contain the expected local-ydb MCP entry");
+          }
+          publishedPlugin.mcpServers["local-ydb"].args[1] = `${npmPackage.identifier}@${version}`;
+          await checkAgentPluginFreshness({
+            server: inputs.server,
+            plugin: publishedPlugin,
+          });
+
+          const output = process.env.GITHUB_OUTPUT;
+          if (!output) {
+            throw new Error("GITHUB_OUTPUT is required");
+          }
+          await appendFile(
+            output,
+            [
+              `mcp_version=${version}`,
+              `npm_package=${npmPackage.identifier}@${version}`,
+              `registry_server=${inputs.server.name}@${version}`,
+              "",
+            ].join("\n"),
+            "utf8",
+          );
+          NODE
+
+      - run: npm ci
+
+      - name: Update Agent Plugin MCP pin
+        id: pin
+        env:
+          MCP_VERSION: ${{ steps.publication.outputs.mcp_version }}
+        run: |
+          npm run plugin:pin -- --mcp-version "${MCP_VERSION}" --write
+          if git diff --quiet; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Run focused Agent Plugin contracts
+        run: node --test scripts/ci/update-agent-plugin-pin.test.mjs scripts/ci/check-agent-plugin-freshness.test.mjs scripts/ci/post-release-plugin-pin.test.mjs
+
+      - run: npm run build
+
+      - run: npm run plugin:freshness
+
+      - run: npm run plugin:package
+
+      - run: npm run plugin:smoke
+
+      - name: Push plugin pin branch and open draft PR
+        if: ${{ steps.pin.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          MCP_VERSION: ${{ steps.publication.outputs.mcp_version }}
+          NPM_PACKAGE: ${{ steps.publication.outputs.npm_package }}
+          REGISTRY_NPM_PACKAGE: ${{ steps.publication.outputs.npm_package }}
+          REGISTRY_SERVER: ${{ steps.publication.outputs.registry_server }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          if [[ ! "${MCP_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "MCP_VERSION must use a stable X.Y.Z semver" >&2
+            exit 1
+          fi
+
+          branch="codex/update-plugin-mcp-pin-v${MCP_VERSION}"
+          title="chore(plugin): pin published MCP ${MCP_VERSION}"
+          expected_files=(
+            .claude-plugin/plugin.json
+            .codex-plugin/plugin.json
+            .mcp.json
+            README.md
+            docs/openai-plugin-submission.md
+            gemini-extension.json
+            mcp.json
+            plugin.json
+          )
+          changed_files="$(git diff --name-only)"
+          EXPECTED_FILES="$(printf '%s\n' "${expected_files[@]}")" CHANGED_FILES="${changed_files}" \
+            node --input-type=module <<'NODE'
+          const expected = process.env.EXPECTED_FILES.split("\n").filter(Boolean).sort();
+          const changed = process.env.CHANGED_FILES.split("\n").filter(Boolean).sort();
+          if (JSON.stringify(changed) !== JSON.stringify(expected)) {
+            throw new Error(`Refusing to publish unexpected changed files: ${JSON.stringify(changed)}`);
+          }
+          NODE
+
+          gh auth setup-git --hostname github.com
+          encoded_branch="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "${branch}")"
+          branch_exists=false
+          branch_error="${RUNNER_TEMP}/plugin-pin-branch-error"
+          if gh api "repos/${GITHUB_REPOSITORY}/branches/${encoded_branch}" >/dev/null 2>"${branch_error}"; then
+            branch_exists=true
+          elif ! grep -q '(HTTP 404)' "${branch_error}"; then
+            cat "${branch_error}" >&2
+            exit 1
+          fi
+
+          pull_requests_json="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --head "${branch}" \
+            --state all \
+            --limit 10 \
+            --json url,state,isDraft,mergedAt,title,headRefName,baseRefName,body)"
+          state="$(
+            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            MCP_VERSION="${MCP_VERSION}" \
+            BRANCH_EXISTS="${branch_exists}" \
+            PULL_REQUESTS_JSON="${pull_requests_json}" \
+              node scripts/ci/post-release-plugin-pin.mjs
+          )"
+          action="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).action)' "${state}")"
+
+          if [ "${action}" = "return" ]; then
+            existing_url="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).url)' "${state}")"
+            git fetch --no-tags origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
+            git merge-base --is-ancestor HEAD "refs/remotes/origin/${branch}" || {
+              echo "Existing draft PR branch is not based on the current main commit" >&2
+              exit 1
+            }
+            git diff --binary --full-index HEAD > "${RUNNER_TEMP}/expected-plugin-pin.patch"
+            git diff --binary --full-index HEAD "refs/remotes/origin/${branch}" > "${RUNNER_TEMP}/existing-plugin-pin.patch"
+            cmp "${RUNNER_TEMP}/expected-plugin-pin.patch" "${RUNNER_TEMP}/existing-plugin-pin.patch" || {
+              echo "Existing draft PR does not contain the exact expected plugin pin update" >&2
+              exit 1
+            }
+            echo "Existing draft PR: ${existing_url}"
+            exit 0
+          fi
+          if [ "${action}" != "create" ]; then
+            echo "Unexpected pull request action: ${action}" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${branch}"
+          git add -- "${expected_files[@]}"
+          git commit -m "${title}"
+          git push --set-upstream origin "${branch}"
+
+          body_file="${RUNNER_TEMP}/plugin-pin-pr-body.md"
+          {
+            echo "This draft was created after the MCP release was published and read back."
+            echo
+            echo "Publication evidence:"
+            echo "- GitHub release output: ${RELEASE_TAG}"
+            echo "- npm latest readback: ${NPM_PACKAGE}"
+            echo "- MCP Registry readback: ${REGISTRY_SERVER}; npm package ${REGISTRY_NPM_PACKAGE}"
+            echo
+            echo "Automated checks: focused updater/freshness/workflow contracts, package build, plugin package, freshness readback, and published MCP smoke."
+            echo
+            echo "Manual Cursor Directory follow-up:"
+            echo "- [ ] Merge this draft PR only after review."
+            echo "- [ ] Update the Cursor Directory entry only after merge."
+            echo "- [ ] Confirm the Cursor command pins ${NPM_PACKAGE}."
+            echo "- [ ] Submit the Cursor Directory entry for rescan."
+          } > "${body_file}"
+
+          pr_url="$(gh pr create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head "${branch}" \
+            --title "${title}" \
+            --body-file "${body_file}" \
+            --draft)"
+          created_pr_json="$(gh pr view \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${pr_url}" \
+            --json url,state,isDraft,mergedAt,title,headRefName,baseRefName,body)"
+          readback_state="$(
+            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            MCP_VERSION="${MCP_VERSION}" \
+            BRANCH_EXISTS=true \
+            PULL_REQUESTS_JSON="[${created_pr_json}]" \
+              node scripts/ci/post-release-plugin-pin.mjs
+          )"
+          readback_url="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).url)' "${readback_state}")"
+          if [ "${readback_url}" != "${pr_url}" ]; then
+            echo "Draft PR readback URL mismatch" >&2
+            exit 1
+          fi
+          echo "Created draft PR: ${pr_url}"
 
   publish-existing-release:
     if: >-
