@@ -200,7 +200,7 @@ function replaceExactly(contents, expected, replacement) {
 
 function incrementPatch(version) {
   const [major, minor, patch] = parseSemver(version);
-  return `${major}.${minor}.${patch + 1}`;
+  return `${major}.${minor}.${BigInt(patch) + 1n}`;
 }
 
 function compareSemver(left, right) {
@@ -208,7 +208,7 @@ function compareSemver(left, right) {
   const rightParts = parseSemver(right);
   for (let index = 0; index < leftParts.length; index += 1) {
     if (leftParts[index] !== rightParts[index]) {
-      return leftParts[index] - rightParts[index];
+      return compareNumericIdentifiers(leftParts[index], rightParts[index]);
     }
   }
   return 0;
@@ -218,7 +218,14 @@ function parseSemver(version) {
   if (!stableSemver.test(version)) {
     throw new Error(`Expected a stable X.Y.Z semver version, received ${version}.`);
   }
-  return version.split(".").map(Number);
+  return version.split(".");
+}
+
+function compareNumericIdentifiers(left, right) {
+  if (left.length !== right.length) {
+    return left.length < right.length ? -1 : 1;
+  }
+  return left < right ? -1 : 1;
 }
 
 function escapeRegex(value) {

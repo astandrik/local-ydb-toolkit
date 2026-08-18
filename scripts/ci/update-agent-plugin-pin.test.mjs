@@ -90,6 +90,7 @@ test("updates every plugin surface to the exact higher MCP pin", async () => {
     }
 
     const readme = await readFile(join(fixture, "README.md"), "utf8");
+    assert.match(readme, /pinned `@astandrik\/local-ydb-mcp@0\.16\.0` package/);
     assert.match(readme, /Plugin `0\.1\.2` pins `@astandrik\/local-ydb-mcp@0\.16\.0`\./);
     assert.match(readme, /dist\/local-ydb-toolkit-0\.1\.2-skills\.zip/);
     const submission = await readFile(join(fixture, "docs/openai-plugin-submission.md"), "utf8");
@@ -117,6 +118,37 @@ test("does not increment the plugin version when the MCP pin already matches", a
   }
 });
 
+test("compares and increments large stable semver identifiers exactly", async () => {
+  const fixture = await createFixture();
+  try {
+    await seedRelease(fixture, {
+      pluginVersion: "0.1.9007199254740992",
+      mcpVersion: "9007199254740992.0.0",
+    });
+    const targetMcpVersion = "9007199254740993.0.0";
+    const result = runUpdater(fixture, ["--mcp-version", targetMcpVersion, "--write"]);
+
+    assert.equal(result.status, 0, result.stderr);
+    for (const path of [
+      "plugin.json",
+      ".codex-plugin/plugin.json",
+      ".claude-plugin/plugin.json",
+      "gemini-extension.json",
+    ]) {
+      assert.equal((await readJson(fixture, path)).version, "0.1.9007199254740993", path);
+    }
+    for (const path of ["mcp.json", ".mcp.json", "gemini-extension.json"]) {
+      const manifest = await readJson(fixture, path);
+      assert.equal(
+        manifest.mcpServers["local-ydb"].args[1],
+        `@astandrik/local-ydb-mcp@${targetMcpVersion}`,
+      );
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
 async function createFixture() {
   const fixture = await mkdtemp(join(tmpdir(), "local-ydb-plugin-pin-test-"));
   await Promise.all(
@@ -129,6 +161,14 @@ async function createFixture() {
 }
 
 async function seedPriorRelease(fixture) {
+  await seedRelease(fixture, { pluginVersion: "0.1.1", mcpVersion: "0.15.4" });
+}
+
+async function seedRelease(fixture, { pluginVersion, mcpVersion }) {
+  const currentPluginVersion = (await readJson(fixture, "plugin.json")).version;
+  const currentMcpVersion = (await readJson(fixture, "mcp.json")).mcpServers["local-ydb"].args[1].slice(
+    "@astandrik/local-ydb-mcp@".length,
+  );
   for (const path of [
     "plugin.json",
     ".codex-plugin/plugin.json",
@@ -136,12 +176,12 @@ async function seedPriorRelease(fixture) {
     "gemini-extension.json",
   ]) {
     const manifest = await readJson(fixture, path);
-    manifest.version = "0.1.1";
+    manifest.version = pluginVersion;
     await writeJson(fixture, path, manifest);
   }
   for (const path of ["mcp.json", ".mcp.json", "gemini-extension.json"]) {
     const manifest = await readJson(fixture, path);
-    manifest.mcpServers["local-ydb"].args[1] = "@astandrik/local-ydb-mcp@0.15.4";
+    manifest.mcpServers["local-ydb"].args[1] = `@astandrik/local-ydb-mcp@${mcpVersion}`;
     await writeJson(fixture, path, manifest);
   }
 
@@ -149,24 +189,24 @@ async function seedPriorRelease(fixture) {
     join(fixture, "README.md"),
     (await readFile(join(fixture, "README.md"), "utf8"))
       .replace(
-        "pinned `@astandrik/local-ydb-mcp@0.16.0` package",
-        "pinned `@astandrik/local-ydb-mcp@0.15.4` package",
+        `pinned \`@astandrik/local-ydb-mcp@${currentMcpVersion}\` package`,
+        `pinned \`@astandrik/local-ydb-mcp@${mcpVersion}\` package`,
       )
       .replace(
-        "Plugin `0.1.2` pins `@astandrik/local-ydb-mcp@0.16.0`.",
-        "Plugin `0.1.1` pins `@astandrik/local-ydb-mcp@0.15.4`.",
+        `Plugin \`${currentPluginVersion}\` pins \`@astandrik/local-ydb-mcp@${currentMcpVersion}\`.`,
+        `Plugin \`${pluginVersion}\` pins \`@astandrik/local-ydb-mcp@${mcpVersion}\`.`,
       )
       .replace(
-        "dist/local-ydb-toolkit-0.1.2-skills.zip",
-        "dist/local-ydb-toolkit-0.1.1-skills.zip",
+        `dist/local-ydb-toolkit-${currentPluginVersion}-skills.zip`,
+        `dist/local-ydb-toolkit-${pluginVersion}-skills.zip`,
       ),
     "utf8",
   );
   await writeFile(
     join(fixture, "docs/openai-plugin-submission.md"),
     (await readFile(join(fixture, "docs/openai-plugin-submission.md"), "utf8")).replace(
-      "- Version: `0.1.2`",
-      "- Version: `0.1.1`",
+      `- Version: \`${currentPluginVersion}\``,
+      `- Version: \`${pluginVersion}\``,
     ),
     "utf8",
   );
