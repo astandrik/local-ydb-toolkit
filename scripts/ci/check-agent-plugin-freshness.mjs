@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const NPM_REGISTRY_BASE_URL = "https://registry.npmjs.org";
 const stableSemverSource = "(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)";
 const stableSemver = new RegExp(`^${stableSemverSource}$`);
 const SERVER_JSON_URL = new URL("../../server.json", import.meta.url);
@@ -82,6 +83,11 @@ export function npmPackageFromServer(server) {
   if (typeof npmPackage.identifier !== "string" || typeof npmPackage.version !== "string") {
     throw new Error("server.json npm package must define identifier and version");
   }
+  if (npmPackage.registryBaseUrl !== NPM_REGISTRY_BASE_URL) {
+    throw new Error(
+      `server.json npm package must use registryBaseUrl ${NPM_REGISTRY_BASE_URL} exactly`,
+    );
+  }
   assertStableSemver(npmPackage.version, "server.json npm package version");
   if (npmPackage.version !== server.version) {
     throw new Error("server.json npm package must match the server version");
@@ -114,10 +120,10 @@ export function pluginPinFromConfig(plugin, expectedPackageName) {
 }
 
 export function npmLatestUrl(npmPackage) {
-  const baseUrl = typeof npmPackage.registryBaseUrl === "string"
-    ? npmPackage.registryBaseUrl
-    : "https://registry.npmjs.org";
-  return `${baseUrl.replace(/\/+$/, "")}/${encodeURIComponent(npmPackage.identifier)}/latest`;
+  return new URL(
+    `${encodeURIComponent(npmPackage.identifier)}/latest`,
+    `${NPM_REGISTRY_BASE_URL}/`,
+  ).href;
 }
 
 export function registryVersionUrl(server) {
@@ -133,6 +139,7 @@ export async function fetchJson(url, target, {
 } = {}) {
   const response = await fetchImpl(url, {
     headers: { accept: "application/json" },
+    redirect: "error",
     signal: abortSignalTimeoutImpl(REQUEST_TIMEOUT_MS),
   });
   if (response.status !== 200) {
@@ -145,10 +152,8 @@ export async function fetchJson(url, target, {
       throw new Error("response must be a JSON object");
     }
     return body;
-  } catch (error) {
-    throw new Error(
-      `${target} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-    );
+  } catch {
+    throw new Error(`${target} returned invalid JSON`);
   }
 }
 

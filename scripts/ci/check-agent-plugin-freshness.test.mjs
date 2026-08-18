@@ -82,6 +82,60 @@ test("accepts an exactly published npm package, Registry version, and plugin pin
   });
 });
 
+test("rejects non-canonical npm registry bases before any HTTP request", async (t) => {
+  const rejectedRegistryBaseUrls = [
+    undefined,
+    "http://registry.npmjs.org",
+    "https://127.0.0.1",
+    "https://169.254.169.254/latest/meta-data",
+    "https://registry.npmjs.org.example.test",
+    "https://user:password@registry.npmjs.org",
+    "https://registry.npmjs.org?target=https://127.0.0.1",
+    "https://registry.npmjs.org/custom",
+    "https://registry.npmjs.org/",
+  ];
+
+  for (const registryBaseUrl of rejectedRegistryBaseUrls) {
+    await t.test(String(registryBaseUrl), async () => {
+      const server = serverMetadata();
+      server.packages[0].registryBaseUrl = registryBaseUrl;
+      let requests = 0;
+
+      await assert.rejects(
+        checkAgentPluginFreshness({
+          server,
+          plugin: pluginConfig(),
+          fetchImpl: async () => {
+            requests += 1;
+            return jsonResponse(200, {});
+          },
+        }),
+        /server\.json npm package must use registryBaseUrl https:\/\/registry\.npmjs\.org exactly/,
+      );
+      assert.equal(requests, 0);
+    });
+  }
+});
+
+test("rejects a fragment that would suppress the npm package path", async () => {
+  const server = serverMetadata();
+  server.packages[0].registryBaseUrl = "https://registry.npmjs.org#ignored";
+  let requests = 0;
+
+  await assert.rejects(
+    checkAgentPluginFreshness({
+      server,
+      plugin: pluginConfig(),
+      fetchImpl: async () => {
+        requests += 1;
+        return jsonResponse(200, {});
+      },
+    }),
+    /server\.json npm package must use registryBaseUrl https:\/\/registry\.npmjs\.org exactly/,
+  );
+  assert.equal(requests, 0);
+});
+
 test("reports the current pin, published version, and repair command when the plugin drifts", async () => {
   await assert.rejects(
     checkAgentPluginFreshness({
@@ -251,20 +305,52 @@ for (const status of [404, 503]) {
   });
 }
 
-test("rejects malformed JSON from npm", async () => {
-  await assert.rejects(
-    checkAgentPluginFreshness({
-      server: serverMetadata(),
-      plugin: pluginConfig(),
-      fetchImpl: async () => ({
-        status: 200,
-        json: async () => {
-          throw new SyntaxError("Unexpected token");
+test("redacts parser details from invalid JSON errors", async (t) => {
+  const sensitiveParserDetail = "Unexpected token '<', \"<html>secret fragment\"";
+
+  for (const target of ["npm", "Registry"]) {
+    await t.test(target, async () => {
+      await assert.rejects(
+        checkAgentPluginFreshness({
+          server: serverMetadata(),
+          plugin: pluginConfig(),
+          fetchImpl: async (url) => {
+            if (target === "Registry" && url.endsWith("/latest")) {
+              return jsonResponse(200, { name: packageName, version: publishedVersion });
+            }
+            return {
+              status: 200,
+              json: async () => {
+                throw new SyntaxError(sensitiveParserDetail);
+              },
+            };
+          },
+        }),
+        (error) => {
+          assert.equal(error.message, `${target} returned invalid JSON`);
+          assert.doesNotMatch(error.message, /secret fragment|Unexpected token|<html>/);
+          return true;
         },
-      }),
-    }),
-    /npm returned invalid JSON: Unexpected token/,
-  );
+      );
+    });
+  }
+});
+
+test("disables redirects for npm and MCP Registry requests", async () => {
+  const redirects = [];
+
+  await checkAgentPluginFreshness({
+    server: serverMetadata(),
+    plugin: pluginConfig(),
+    fetchImpl: async (url, options) => {
+      redirects.push(options.redirect);
+      return url.endsWith("/latest")
+        ? jsonResponse(200, { name: packageName, version: publishedVersion })
+        : jsonResponse(200, registryResponse());
+    },
+  });
+
+  assert.deepEqual(redirects, ["error", "error"]);
 });
 
 test("uses a fresh bounded 30-second abort signal for each HTTP request", async () => {
