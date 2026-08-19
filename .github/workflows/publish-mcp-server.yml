@@ -114,7 +114,7 @@ jobs:
       - name: Verify MCP Registry publication
         run: node scripts/ci/verify-mcp-publication.mjs registry --wait-seconds 300
 
-  post-release-plugin-pin-prepare:
+  post-release-plugin-pin:
     if: >-
       always() &&
       (
@@ -131,12 +131,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      changed: ${{ steps.proposal.outputs.changed }}
-      mcp_version: ${{ steps.proposal.outputs.mcp_version }}
-      base_oid: ${{ steps.proposal.outputs.base_oid }}
-      patch_sha256: ${{ steps.proposal.outputs.patch_sha256 }}
-      body_sha256: ${{ steps.proposal.outputs.body_sha256 }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -147,610 +141,70 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
 
-      - name: Revalidate published MCP metadata
+      - name: Validate published MCP and update plugin pin
         id: publication
         env:
           RELEASE_TAG: ${{ needs.publish-existing-release.outputs.tag_name || needs.release-please.outputs.tag_name }}
           RELEASE_VERSION: ${{ needs.publish-existing-release.outputs.version || needs.release-please.outputs.version }}
         run: |
-          node --input-type=module <<'NODE'
-          import { appendFile } from "node:fs/promises";
-          import {
-            assertStableSemver,
-            checkAgentPluginFreshness,
-            loadFreshnessInputs,
-            npmPackageFromServer,
-          } from "./scripts/ci/check-agent-plugin-freshness.mjs";
-
-          const version = process.env.RELEASE_VERSION;
-          const tag = process.env.RELEASE_TAG;
-          assertStableSemver(version, "release version output");
-          if (tag !== `mcp-server-v${version}`) {
-            throw new Error(`release tag output does not match version ${version}`);
-          }
-
-          const inputs = await loadFreshnessInputs();
-          if (inputs.server.version !== version) {
-            throw new Error(`server.json version ${inputs.server.version} does not match release ${version}`);
-          }
-          if (inputs.server.name !== "io.github.astandrik/local-ydb-mcp") {
-            throw new Error("server.json contains the wrong MCP Registry identity");
-          }
-          const npmPackage = npmPackageFromServer(inputs.server);
-          if (npmPackage.identifier !== "@astandrik/local-ydb-mcp") {
-            throw new Error("server.json contains the wrong npm package identity");
-          }
-
-          const publishedPlugin = structuredClone(inputs.plugin);
-          if (!Array.isArray(publishedPlugin?.mcpServers?.["local-ydb"]?.args)) {
-            throw new Error("mcp.json does not contain the expected local-ydb MCP entry");
-          }
-          publishedPlugin.mcpServers["local-ydb"].args[1] = `${npmPackage.identifier}@${version}`;
-          await checkAgentPluginFreshness({
-            server: inputs.server,
-            plugin: publishedPlugin,
-          });
-
-          const output = process.env.GITHUB_OUTPUT;
-          if (!output) {
-            throw new Error("GITHUB_OUTPUT is required");
-          }
-          await appendFile(
-            output,
-            [
-              `mcp_version=${version}`,
-              `npm_package=${npmPackage.identifier}@${version}`,
-              `registry_server=${inputs.server.name}@${version}`,
-              "",
-            ].join("\n"),
-            "utf8",
-          );
-          NODE
-
-      - run: npm ci
-
-      - name: Update Agent Plugin MCP pin
-        id: pin
-        env:
-          MCP_VERSION: ${{ steps.publication.outputs.mcp_version }}
-        run: |
-          npm run plugin:pin -- --mcp-version "${MCP_VERSION}" --write
-          if git diff --quiet; then
-            echo "changed=false" >> "${GITHUB_OUTPUT}"
-          else
-            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          if [[ ! "${RELEASE_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release version output must use stable X.Y.Z semver" >&2
+            exit 1
           fi
-
-      - name: Run focused Agent Plugin contracts
-        run: node --test scripts/ci/update-agent-plugin-pin.test.mjs scripts/ci/check-agent-plugin-freshness.test.mjs scripts/ci/agent-plugin-workflow.test.mjs scripts/ci/post-release-plugin-pin.test.mjs
-
-      - run: npm run build
-
-      - run: npm run plugin:freshness
-
-      - run: npm run plugin:package
-
-      - run: npm run plugin:smoke
-
-      - name: Create inert plugin pin proposal
-        id: proposal
-        env:
-          MCP_VERSION: ${{ steps.publication.outputs.mcp_version }}
-        run: |
-          # BEGIN POST_RELEASE_PLUGIN_PIN_CHANGE_GATE
-          echo "mcp_version=${MCP_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "base_oid=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
-          if git diff --quiet; then
-            echo "changed=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          # END POST_RELEASE_PLUGIN_PIN_CHANGE_GATE
-
-          proposal_dir="${RUNNER_TEMP}/plugin-pin-proposal"
-          mkdir "${proposal_dir}"
-          git diff --binary --full-index HEAD > "${proposal_dir}/plugin-pin.patch"
-          MCP_VERSION="${MCP_VERSION}" \
-            node scripts/ci/post-release-plugin-pin.mjs --body > "${proposal_dir}/pr-body.md"
-          PROPOSAL_DIR="${proposal_dir}" \
-          BASE_OID="$(git rev-parse HEAD)" \
-          MCP_VERSION="${MCP_VERSION}" \
-            node --input-type=module <<'NODE'
-          import { appendFile, chmod, readFile, writeFile } from "node:fs/promises";
-          import { createHash } from "node:crypto";
-          import { join } from "node:path";
-
-          const expectedFiles = [
-            ".claude-plugin/plugin.json",
-            ".codex-plugin/plugin.json",
-            ".mcp.json",
-            "README.md",
-            "docs/openai-plugin-submission.md",
-            "gemini-extension.json",
-            "mcp.json",
-            "plugin.json",
-          ];
-          const version = process.env.MCP_VERSION;
-          const baseOid = process.env.BASE_OID;
-          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? "")) {
-            throw new Error("Proposal MCP version must use stable X.Y.Z semver");
-          }
-          if (!/^[0-9a-f]{40}$/.test(baseOid ?? "")) {
-            throw new Error("Proposal base must be a full Git object ID");
-          }
-
-          const { execFileSync } = await import("node:child_process");
-          const changedFiles = execFileSync("git", ["diff", "--name-only", "HEAD"], {
-            encoding: "utf8",
-          }).trim().split("\n").filter(Boolean).sort();
-          if (JSON.stringify(changedFiles) !== JSON.stringify(expectedFiles)) {
-            throw new Error(`Unexpected proposal files: ${JSON.stringify(changedFiles)}`);
-          }
-
-          const proposalDir = process.env.PROPOSAL_DIR;
-          const patch = await readFile(join(proposalDir, "plugin-pin.patch"));
-          const body = await readFile(join(proposalDir, "pr-body.md"));
-          const digest = (contents) => createHash("sha256").update(contents).digest("hex");
-          const patchSha256 = digest(patch);
-          const bodySha256 = digest(body);
-          const proposal = {
-            schemaVersion: 1,
-            repository: process.env.GITHUB_REPOSITORY,
-            mcpVersion: version,
-            baseOid,
-            branch: `codex/update-plugin-mcp-pin-v${version}`,
-            title: `chore(plugin): pin published MCP ${version}`,
-            changedFiles,
-            patchSha256,
-            bodySha256,
-          };
-          const metadataPath = join(proposalDir, "plugin-pin-proposal.json");
-          await writeFile(metadataPath, `${JSON.stringify(proposal, null, 2)}\n`, { mode: 0o600 });
-          await Promise.all([
-            chmod(join(proposalDir, "plugin-pin.patch"), 0o600),
-            chmod(join(proposalDir, "pr-body.md"), 0o600),
-          ]);
-          await appendFile(
-            process.env.GITHUB_OUTPUT,
-            `changed=true\npatch_sha256=${patchSha256}\nbody_sha256=${bodySha256}\n`,
-            "utf8",
-          );
-          NODE
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ steps.proposal.outputs.changed == 'true' }}
-        with:
-          name: post-release-plugin-pin-proposal
-          path: ${{ runner.temp }}/plugin-pin-proposal
-          if-no-files-found: error
-          retention-days: 1
-
-  post-release-plugin-pin-mutate:
-    if: ${{ needs.post-release-plugin-pin-prepare.outputs.changed == 'true' }}
-    needs:
-      - post-release-plugin-pin-prepare
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: refs/heads/main
-          fetch-depth: 0
-          persist-credentials: false
-
-      - uses: actions/download-artifact@v5
-        with:
-          name: post-release-plugin-pin-proposal
-          path: proposal
-
-      - name: Validate exact plugin transformation and apply inert proposal
-        id: proposal
-        env:
-          EXPECTED_BASE_OID: ${{ needs.post-release-plugin-pin-prepare.outputs.base_oid }}
-          EXPECTED_BODY_SHA256: ${{ needs.post-release-plugin-pin-prepare.outputs.body_sha256 }}
-          EXPECTED_MCP_VERSION: ${{ needs.post-release-plugin-pin-prepare.outputs.mcp_version }}
-          EXPECTED_PATCH_SHA256: ${{ needs.post-release-plugin-pin-prepare.outputs.patch_sha256 }}
-        run: |
-          git config --local core.hooksPath /dev/null
-          CURRENT_BASE_OID="$(git rev-parse HEAD)" \
-            node --input-type=module <<'NODE'
-          import { createHash } from "node:crypto";
-          import { appendFile, lstat, readFile, readdir } from "node:fs/promises";
-
-          const expectedFiles = [
-            ".claude-plugin/plugin.json",
-            ".codex-plugin/plugin.json",
-            ".mcp.json",
-            "README.md",
-            "docs/openai-plugin-submission.md",
-            "gemini-extension.json",
-            "mcp.json",
-            "plugin.json",
-          ];
-          const artifactFiles = (await readdir("proposal")).sort();
-          const expectedArtifactFiles = ["plugin-pin-proposal.json", "plugin-pin.patch", "pr-body.md"];
-          if (JSON.stringify(artifactFiles) !== JSON.stringify(expectedArtifactFiles)) {
-            throw new Error(`Unexpected proposal artifact files: ${JSON.stringify(artifactFiles)}`);
-          }
-          for (const path of artifactFiles.map((name) => `proposal/${name}`)) {
-            const stats = await lstat(path);
-            if (!stats.isFile() || (stats.mode & 0o111) !== 0) {
-              throw new Error(`Proposal artifact must be a non-executable regular file: ${path}`);
-            }
-          }
-
-          const metadata = JSON.parse(await readFile("proposal/plugin-pin-proposal.json", "utf8"));
-          const version = process.env.EXPECTED_MCP_VERSION;
-          const baseOid = process.env.EXPECTED_BASE_OID;
-          const patch = await readFile("proposal/plugin-pin.patch");
-          const body = await readFile("proposal/pr-body.md");
-          const digest = (contents) => createHash("sha256").update(contents).digest("hex");
-          const expectedBody = `This draft was created after the MCP release was published and read back.
-
-          Publication evidence:
-          - GitHub release output: mcp-server-v${version}
-          - npm latest readback: @astandrik/local-ydb-mcp@${version}
-          - MCP Registry readback: io.github.astandrik/local-ydb-mcp@${version}; npm package @astandrik/local-ydb-mcp@${version}
-
-          Automated checks: focused updater/freshness/workflow contracts, package build, plugin package, freshness readback, and published MCP smoke.
-
-          Manual Cursor Directory follow-up:
-          - [ ] Merge this draft PR only after review.
-          - [ ] Update the Cursor Directory entry only after merge.
-          - [ ] Confirm the Cursor command pins @astandrik/local-ydb-mcp@${version}.
-          - [ ] Submit the Cursor Directory entry for rescan.`.replace(/^          /gm, "");
-          const expectedMetadata = {
-            schemaVersion: 1,
-            repository: process.env.GITHUB_REPOSITORY,
-            mcpVersion: version,
-            baseOid,
-            branch: `codex/update-plugin-mcp-pin-v${version}`,
-            title: `chore(plugin): pin published MCP ${version}`,
-            changedFiles: expectedFiles,
-            patchSha256: process.env.EXPECTED_PATCH_SHA256,
-            bodySha256: process.env.EXPECTED_BODY_SHA256,
-          };
-          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? "")) {
-            throw new Error("Expected MCP version must use stable X.Y.Z semver");
-          }
-          if (!/^[0-9a-f]{40}$/.test(baseOid ?? "") || process.env.CURRENT_BASE_OID !== baseOid) {
-            throw new Error("Proposal base does not match the checked-out main commit");
-          }
-          if (JSON.stringify(metadata) !== JSON.stringify(expectedMetadata)) {
-            throw new Error("Proposal metadata does not match the trusted job outputs");
-          }
-          if (digest(patch) !== metadata.patchSha256 || digest(body) !== metadata.bodySha256) {
-            throw new Error("Proposal artifact checksum mismatch");
-          }
-          if (body.toString("utf8") !== expectedBody) {
-            throw new Error("Proposal PR body does not match the canonical evidence/checklist body");
-          }
-          await appendFile(
-            process.env.GITHUB_OUTPUT,
-            `mcp_version=${version}\nbranch=${metadata.branch}\ntitle=${metadata.title}\n`,
-            "utf8",
-          );
-          NODE
-
-          git apply --numstat -z "proposal/plugin-pin.patch" > "${RUNNER_TEMP}/plugin-pin-numstat"
-          NUMSTAT_PATH="${RUNNER_TEMP}/plugin-pin-numstat" node --input-type=module <<'NODE'
-          import { readFile } from "node:fs/promises";
-          const expected = [
-            ".claude-plugin/plugin.json",
-            ".codex-plugin/plugin.json",
-            ".mcp.json",
-            "README.md",
-            "docs/openai-plugin-submission.md",
-            "gemini-extension.json",
-            "mcp.json",
-            "plugin.json",
-          ];
-          const records = (await readFile(process.env.NUMSTAT_PATH, "utf8")).split("\0").filter(Boolean);
-          const paths = records.map((record) => record.split("\t").slice(2).join("\t")).sort();
-          if (JSON.stringify(paths) !== JSON.stringify(expected)) {
-            throw new Error(`Proposal patch paths are not allowlisted: ${JSON.stringify(paths)}`);
-          }
-          NODE
-          git apply --check "proposal/plugin-pin.patch"
-          git apply "proposal/plugin-pin.patch"
-          git diff --binary --full-index HEAD > "${RUNNER_TEMP}/applied-plugin-pin.patch"
-          cmp "proposal/plugin-pin.patch" "${RUNNER_TEMP}/applied-plugin-pin.patch"
-
-          EXPECTED_MCP_VERSION="${EXPECTED_MCP_VERSION}" node --input-type=module <<'NODE'
-          import { execFileSync } from "node:child_process";
-          import { readFile } from "node:fs/promises";
-
-          const packageName = "@astandrik/local-ydb-mcp";
-          const targetVersion = process.env.EXPECTED_MCP_VERSION;
-          const stableSemver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-          const pluginPaths = [
-            "plugin.json",
-            ".codex-plugin/plugin.json",
-            ".claude-plugin/plugin.json",
-            "gemini-extension.json",
-          ];
-          const mcpPaths = ["mcp.json", ".mcp.json", "gemini-extension.json"];
-          const jsonPaths = [...new Set([...pluginPaths, ...mcpPaths])];
-          const baseText = (path) => execFileSync("git", ["show", `HEAD:${path}`], { encoding: "utf8" });
-          const baseJson = new Map(jsonPaths.map((path) => [path, JSON.parse(baseText(path))]));
-          const pluginVersions = pluginPaths.map((path) => baseJson.get(path).version);
-          const mcpVersions = mcpPaths.map((path) => {
-            const server = baseJson.get(path)?.mcpServers?.["local-ydb"];
-            const match = typeof server?.args?.[1] === "string"
-              ? new RegExp(`^${packageName.replace("/", "\\/")}@(${stableSemver.source.slice(1, -1)})$`).exec(server.args[1])
-              : null;
-            if (server?.command !== "npx" || server.args?.[0] !== "--yes" || server.args?.length !== 2 || !match) {
-              throw new Error(`${path} base MCP shape is invalid`);
-            }
-            return match[1];
-          });
-          if (
-            !stableSemver.test(targetVersion ?? "")
-            || new Set(pluginVersions).size !== 1
-            || !stableSemver.test(pluginVersions[0] ?? "")
-            || new Set(mcpVersions).size !== 1
-          ) {
-            throw new Error("Base plugin versions are not aligned stable semver values");
-          }
-          const compare = (left, right) => {
-            const parts = [left.split("."), right.split(".")];
-            for (let index = 0; index < 3; index += 1) {
-              if (parts[0][index] === parts[1][index]) continue;
-              if (parts[0][index].length !== parts[1][index].length) {
-                return parts[0][index].length < parts[1][index].length ? -1 : 1;
-              }
-              return parts[0][index] < parts[1][index] ? -1 : 1;
-            }
-            return 0;
-          };
-          if (compare(targetVersion, mcpVersions[0]) <= 0) {
-            throw new Error("Proposal target must be higher than the base MCP pin");
-          }
-          const [pluginMajor, pluginMinor, pluginPatch] = pluginVersions[0].split(".");
-          const nextPluginVersion = `${pluginMajor}.${pluginMinor}.${BigInt(pluginPatch) + 1n}`;
-          for (const path of pluginPaths) baseJson.get(path).version = nextPluginVersion;
-          for (const path of mcpPaths) {
-            baseJson.get(path).mcpServers["local-ydb"].args[1] = `${packageName}@${targetVersion}`;
-          }
-
-          const expected = new Map(
-            jsonPaths.map((path) => [path, `${JSON.stringify(baseJson.get(path), null, 2)}\n`]),
-          );
-          const replaceExactly = (contents, search, replacement) => {
-            if (contents.split(search).length !== 2) {
-              throw new Error(`Base text does not contain exactly one ${JSON.stringify(search)}`);
-            }
-            return contents.replace(search, replacement);
-          };
-          let readme = baseText("README.md");
-          readme = replaceExactly(
-            readme,
-            `pinned \`${packageName}@${mcpVersions[0]}\` package`,
-            `pinned \`${packageName}@${targetVersion}\` package`,
-          );
-          readme = replaceExactly(
-            readme,
-            `Plugin \`${pluginVersions[0]}\` pins \`${packageName}@${mcpVersions[0]}\`.`,
-            `Plugin \`${nextPluginVersion}\` pins \`${packageName}@${targetVersion}\`.`,
-          );
-          readme = replaceExactly(
-            readme,
-            `dist/local-ydb-toolkit-${pluginVersions[0]}-skills.zip`,
-            `dist/local-ydb-toolkit-${nextPluginVersion}-skills.zip`,
-          );
-          expected.set("README.md", readme);
-          expected.set(
-            "docs/openai-plugin-submission.md",
-            replaceExactly(
-              baseText("docs/openai-plugin-submission.md"),
-              `- Version: \`${pluginVersions[0]}\``,
-              `- Version: \`${nextPluginVersion}\``,
-            ),
-          );
-
-          for (const [path, contents] of expected) {
-            if (await readFile(path, "utf8") !== contents) {
-              throw new Error(`Expected transformed content mismatch: ${path}`);
-            }
-          }
-          if (execFileSync("git", ["diff", "--summary", "HEAD"], { encoding: "utf8" }).trim()) {
-            throw new Error("Proposal must not change file modes or types");
-          }
-          const server = JSON.parse(await readFile("server.json", "utf8"));
-          const npmPackages = server.packages?.filter((entry) => entry.registryType === "npm") ?? [];
-          if (
-            server.name !== "io.github.astandrik/local-ydb-mcp"
-            || server.version !== targetVersion
-            || npmPackages.length !== 1
-            || npmPackages[0].identifier !== packageName
-            || npmPackages[0].version !== targetVersion
-          ) {
-            throw new Error("server.json does not match the trusted published target");
-          }
-          NODE
-
-      - name: Create plugin pin branch and draft PR
-        env:
-          BRANCH: ${{ steps.proposal.outputs.branch }}
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-          MCP_VERSION: ${{ steps.proposal.outputs.mcp_version }}
-          TITLE: ${{ steps.proposal.outputs.title }}
-        run: |
-          expected_branch="codex/update-plugin-mcp-pin-v${MCP_VERSION}"
-          expected_title="chore(plugin): pin published MCP ${MCP_VERSION}"
-          if [[ ! "${MCP_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
-            || [ "${BRANCH}" != "${expected_branch}" ] \
-            || [ "${TITLE}" != "${expected_title}" ]; then
-            echo "Validated proposal metadata changed before mutation" >&2
+          if [ "${RELEASE_TAG}" != "mcp-server-v${RELEASE_VERSION}" ]; then
+            echo "release tag output does not match version ${RELEASE_VERSION}" >&2
             exit 1
           fi
 
-          gh auth setup-git --hostname github.com
-          git config --local core.hooksPath /dev/null
-          encoded_branch="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "${BRANCH}")"
-          branch_exists=false
-          branch_oid=""
-          branch_error="${RUNNER_TEMP}/plugin-pin-branch-error"
-          if branch_oid="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/branches/${encoded_branch}" \
-            --jq '.commit.sha' \
-            2>"${branch_error}")"; then
-            branch_exists=true
-            git -c core.hooksPath=/dev/null fetch --no-tags origin \
-              "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
-            fetched_branch_oid="$(git rev-parse "refs/remotes/origin/${BRANCH}")"
-            if [ "${branch_oid}" != "${fetched_branch_oid}" ]; then
-              echo "Upstream branch changed during readback" >&2
-              exit 1
-            fi
-          elif ! grep -q '(HTTP 404)' "${branch_error}"; then
-            cat "${branch_error}" >&2
-            exit 1
-          fi
+          node scripts/ci/update-agent-plugin-pin.mjs --mcp-version "${RELEASE_VERSION}" --write
+          node scripts/ci/check-agent-plugin-freshness.mjs
+          node --test \
+            scripts/ci/update-agent-plugin-pin.test.mjs \
+            scripts/ci/check-agent-plugin-freshness.test.mjs \
+            scripts/ci/agent-plugin-workflow.test.mjs \
+            scripts/ci/post-release-plugin-pin.test.mjs
 
-          pull_requests_json="$(gh pr list \
-            --repo "${GITHUB_REPOSITORY}" \
-            --head "${BRANCH}" \
-            --state all \
-            --limit 10 \
-            --json url,state,isDraft,mergedAt,title,headRefName,baseRefName,body,isCrossRepository,headRepository,headRepositoryOwner,headRefOid)"
-          if [ "${branch_exists}" = "true" ]; then
-            git merge-base --is-ancestor HEAD "refs/remotes/origin/${BRANCH}" || {
-              echo "Existing draft PR branch is not based on the current main commit" >&2
-              exit 1
-            }
-            git diff --binary --full-index HEAD "refs/remotes/origin/${BRANCH}" \
-              > "${RUNNER_TEMP}/existing-plugin-pin.patch"
-          fi
-          state="$(
-            BODY_PATH="proposal/pr-body.md" \
-            BRANCH_EXISTS="${branch_exists}" \
-            BRANCH_OID="${branch_oid}" \
-            EXISTING_PATCH_PATH="${RUNNER_TEMP}/existing-plugin-pin.patch" \
-            PROPOSAL_PATCH_PATH="proposal/plugin-pin.patch" \
-            PULL_REQUESTS_JSON="${pull_requests_json}" \
-              node --input-type=module <<'NODE'
-          // BEGIN POST_RELEASE_PLUGIN_PIN_STATE_CLASSIFIER
-          import { readFile } from "node:fs/promises";
-          const pullRequests = JSON.parse(process.env.PULL_REQUESTS_JSON);
-          const branch = process.env.BRANCH;
-          const branchExists = process.env.BRANCH_EXISTS === "true";
-          const branchOid = process.env.BRANCH_OID;
-          const [owner, name] = process.env.GITHUB_REPOSITORY.split("/");
-          const closedUnmerged = pullRequests.find((pr) => pr?.state === "CLOSED" && pr.mergedAt === null);
-          if (closedUnmerged) {
-            throw new Error(`Refusing closed unmerged pull request ${String(closedUnmerged.url)}`);
-          }
-          const open = pullRequests.filter((pr) => pr?.state === "OPEN");
-          let result = { action: "create", url: "" };
-          if (open.length > 0) {
-            if (!branchExists || open.length !== 1 || pullRequests.length !== 1) {
-              throw new Error(`Existing pull request state for ${branch} is ambiguous`);
-            }
-            const [pr] = open;
-            const body = await readFile(process.env.BODY_PATH, "utf8");
-            const urlPattern = new RegExp(
-              `^https://github\\.com/${process.env.GITHUB_REPOSITORY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/pull/\\d+$`,
-            );
-            if (
-              pr.isCrossRepository !== false
-              || pr.headRepository?.name?.toLowerCase() !== name.toLowerCase()
-              || pr.headRepositoryOwner?.login?.toLowerCase() !== owner.toLowerCase()
-              || pr.headRefOid !== branchOid
-              || pr.isDraft !== true
-              || pr.mergedAt !== null
-              || pr.title !== process.env.TITLE
-              || pr.headRefName !== branch
-              || pr.baseRefName !== "main"
-              || pr.body !== body
-              || typeof pr.url !== "string"
-              || !urlPattern.test(pr.url)
-            ) {
-              throw new Error(`Open pull request for ${branch} does not match the required upstream draft contract`);
-            }
-            const [proposalPatch, existingPatch] = await Promise.all([
-              readFile(process.env.PROPOSAL_PATCH_PATH),
-              readFile(process.env.EXISTING_PATCH_PATH),
-            ]);
-            if (!proposalPatch.equals(existingPatch)) {
-              throw new Error(`Existing draft PR branch ${branch} does not contain the exact proposal patch`);
-            }
-            result = { action: "return", url: pr.url };
-          } else if (pullRequests.length > 0) {
-            throw new Error(`Refusing unexpected historical pull request state for ${branch}`);
-          } else if (branchExists) {
-            throw new Error(`Refusing orphan branch ${branch}`);
-          }
-          process.stdout.write(JSON.stringify(result));
-          // END POST_RELEASE_PLUGIN_PIN_STATE_CLASSIFIER
-          NODE
-          )"
-          action="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).action)' "${state}")"
-          if [ "${action}" = "return" ]; then
-            existing_url="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).url)' "${state}")"
-            echo "Existing draft PR: ${existing_url}"
-            exit 0
-          fi
-          if [ "${action}" != "create" ]; then
-            echo "Unexpected pull request action: ${action}" >&2
-            exit 1
-          fi
+          echo "mcp_version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -c core.hooksPath=/dev/null switch -c "${BRANCH}"
-          git add -- \
-            .claude-plugin/plugin.json \
-            .codex-plugin/plugin.json \
-            .mcp.json \
-            README.md \
-            docs/openai-plugin-submission.md \
-            gemini-extension.json \
-            mcp.json \
+      - name: Disable Git hooks
+        run: git config --local core.hooksPath /dev/null
+
+      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          base: main
+          branch: codex/update-plugin-mcp-pin-v${{ steps.publication.outputs.mcp_version }}
+          commit-message: "chore(plugin): pin published MCP ${{ steps.publication.outputs.mcp_version }}"
+          title: "chore(plugin): pin published MCP ${{ steps.publication.outputs.mcp_version }}"
+          draft: always-true
+          delete-branch: false
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          add-paths: |
+            .claude-plugin/plugin.json
+            .codex-plugin/plugin.json
+            .mcp.json
+            README.md
+            docs/openai-plugin-submission.md
+            gemini-extension.json
+            mcp.json
             plugin.json
-          git -c core.hooksPath=/dev/null commit --no-verify -m "${TITLE}"
-          git -c core.hooksPath=/dev/null push --no-verify --set-upstream origin "${BRANCH}"
+          body: |
+            This draft was created after the MCP release was published and read back.
 
-          pr_url="$(gh pr create \
-            --repo "${GITHUB_REPOSITORY}" \
-            --base main \
-            --head "${BRANCH}" \
-            --title "${TITLE}" \
-            --body-file "proposal/pr-body.md" \
-            --draft)"
-          created_pr_json="$(gh pr view \
-            --repo "${GITHUB_REPOSITORY}" \
-            "${pr_url}" \
-            --json url,state,isDraft,mergedAt,title,headRefName,baseRefName,body,isCrossRepository,headRepository,headRepositoryOwner,headRefOid)"
-          CREATED_PR_JSON="${created_pr_json}" \
-          CREATED_HEAD_OID="$(git rev-parse HEAD)" \
-          CREATED_URL="${pr_url}" \
-            node --input-type=module <<'NODE'
-          import { readFile } from "node:fs/promises";
-          const pr = JSON.parse(process.env.CREATED_PR_JSON);
-          const [owner, name] = process.env.GITHUB_REPOSITORY.split("/");
-          const body = await readFile("proposal/pr-body.md", "utf8");
-          if (
-            pr.url !== process.env.CREATED_URL
-            || pr.state !== "OPEN"
-            || pr.isDraft !== true
-            || pr.mergedAt !== null
-            || pr.title !== process.env.TITLE
-            || pr.headRefName !== process.env.BRANCH
-            || pr.baseRefName !== "main"
-            || pr.body !== body
-            || pr.isCrossRepository !== false
-            || pr.headRepository?.name?.toLowerCase() !== name.toLowerCase()
-            || pr.headRepositoryOwner?.login?.toLowerCase() !== owner.toLowerCase()
-            || pr.headRefOid !== process.env.CREATED_HEAD_OID
-          ) {
-            throw new Error("Created draft PR readback does not match the exact proposal");
-          }
-          NODE
-          echo "Created draft PR: ${pr_url}"
+            Publication evidence:
+            - GitHub release output: `mcp-server-v${{ steps.publication.outputs.mcp_version }}`
+            - npm latest readback: `@astandrik/local-ydb-mcp@${{ steps.publication.outputs.mcp_version }}`
+            - MCP Registry readback: `io.github.astandrik/local-ydb-mcp@${{ steps.publication.outputs.mcp_version }}` with npm package `@astandrik/local-ydb-mcp@${{ steps.publication.outputs.mcp_version }}`
+
+            Automated checks before proposal: exact npm/MCP Registry freshness readback and focused updater/freshness/workflow contracts. Full build, package, published MCP smoke, and live integration run in this PR's CI.
+
+            Manual Cursor Directory follow-up:
+            - [ ] Merge this draft PR only after review.
+            - [ ] Update the Cursor Directory entry only after merge.
+            - [ ] Confirm the Cursor command pins `@astandrik/local-ydb-mcp@${{ steps.publication.outputs.mcp_version }}`.
+            - [ ] Submit the Cursor Directory entry for rescan.
 
   publish-existing-release:
     if: >-
