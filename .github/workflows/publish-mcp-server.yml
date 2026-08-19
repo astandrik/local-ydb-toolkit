@@ -43,7 +43,7 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
 
@@ -114,6 +114,98 @@ jobs:
       - name: Verify MCP Registry publication
         run: node scripts/ci/verify-mcp-publication.mjs registry --wait-seconds 300
 
+  post-release-plugin-pin:
+    if: >-
+      always() &&
+      (
+        (
+          needs.release-please.outputs.release_created == 'true' &&
+          needs.publish.result == 'success'
+        ) ||
+        needs.publish-existing-release.result == 'success'
+      )
+    needs:
+      - release-please
+      - publish
+      - publish-existing-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Validate published MCP and update plugin pin
+        id: publication
+        env:
+          RELEASE_TAG: ${{ needs.publish-existing-release.outputs.tag_name || needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.publish-existing-release.outputs.version || needs.release-please.outputs.version }}
+        run: |
+          if [[ ! "${RELEASE_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release version output must use stable X.Y.Z semver" >&2
+            exit 1
+          fi
+          if [ "${RELEASE_TAG}" != "mcp-server-v${RELEASE_VERSION}" ]; then
+            echo "release tag output does not match version ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+
+          node scripts/ci/update-agent-plugin-pin.mjs --mcp-version "${RELEASE_VERSION}" --write
+          node scripts/ci/check-agent-plugin-freshness.mjs
+          node --test \
+            scripts/ci/update-agent-plugin-pin.test.mjs \
+            scripts/ci/check-agent-plugin-freshness.test.mjs \
+            scripts/ci/agent-plugin-workflow.test.mjs \
+            scripts/ci/post-release-plugin-pin.test.mjs
+
+          echo "mcp_version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Disable Git hooks
+        run: git config --local core.hooksPath /dev/null
+
+      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          base: main
+          branch: codex/update-plugin-mcp-pin-v${{ steps.publication.outputs.mcp_version }}
+          commit-message: "chore(plugin): pin published MCP ${{ steps.publication.outputs.mcp_version }}"
+          title: "chore(plugin): pin published MCP ${{ steps.publication.outputs.mcp_version }}"
+          draft: always-true
+          delete-branch: false
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          add-paths: |
+            .claude-plugin/plugin.json
+            .codex-plugin/plugin.json
+            .mcp.json
+            README.md
+            docs/openai-plugin-submission.md
+            gemini-extension.json
+            mcp.json
+            plugin.json
+          body: |
+            This draft was created after the MCP release was published and read back.
+
+            Publication evidence:
+            - GitHub release output: `mcp-server-v${{ steps.publication.outputs.mcp_version }}`
+            - npm latest readback: `@astandrik/local-ydb-mcp@${{ steps.publication.outputs.mcp_version }}`
+            - MCP Registry readback: `io.github.astandrik/local-ydb-mcp@${{ steps.publication.outputs.mcp_version }}` with npm package `@astandrik/local-ydb-mcp@${{ steps.publication.outputs.mcp_version }}`
+
+            Automated checks before proposal: exact npm/MCP Registry freshness readback and focused updater/freshness/workflow contracts. Full build, package, published MCP smoke, and live integration run in this PR's CI.
+
+            Manual Cursor Directory follow-up:
+            - [ ] Merge this draft PR only after review.
+            - [ ] Update the Cursor Directory entry only after merge.
+            - [ ] Confirm the Cursor command pins `@astandrik/local-ydb-mcp@${{ steps.publication.outputs.mcp_version }}`.
+            - [ ] Submit the Cursor Directory entry for rescan.
+
   publish-existing-release:
     if: >-
       github.event_name == 'workflow_dispatch' &&
@@ -125,6 +217,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -138,6 +233,7 @@ jobs:
           cache: npm
 
       - name: Verify published release tag
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLISH_TAG: ${{ inputs.publish_tag }}
@@ -166,6 +262,8 @@ jobs:
             echo "publish_tag must match package version: expected ${expected_tag}, got ${PUBLISH_TAG}" >&2
             exit 1
           fi
+          echo "tag_name=${PUBLISH_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
 
       - run: npm ci
 

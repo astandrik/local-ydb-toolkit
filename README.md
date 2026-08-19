@@ -40,7 +40,7 @@ codex plugin marketplace add astandrik/local-ydb-toolkit --ref main
 codex plugin add local-ydb-toolkit@local-ydb-toolkit
 ```
 
-Start a new Codex session after installation so the bundled skill and MCP server are loaded. The MCP launcher requires Node.js 20.19 or newer plus `npx`; its first start can access the npm registry to install the pinned `@astandrik/local-ydb-mcp@0.15.4` package.
+Start a new Codex session after installation so the bundled skill and MCP server are loaded. The MCP launcher requires Node.js 20.19 or newer plus `npx`; its first start can access the npm registry to install the pinned `@astandrik/local-ydb-mcp@0.16.0` package.
 
 Agent Plugins start a stdio server with the installed plugin root as its working directory. Use an absolute `configPath` on profile-based tool calls, or set `LOCAL_YDB_TOOLKIT_CONFIG` in the MCP client environment. Do not rely on a project-local `local-ydb.config.json` being discovered from the caller's repository.
 
@@ -438,7 +438,7 @@ Upstream YDB defaults to no password complexity requirements: even an empty pass
 
 The repo marketplace loads the full Agent Plugin from the repository root. `plugin.json` and `mcp.json` are the portable Agent Plugins 1.0 entry points; `.codex-plugin/plugin.json` and `.mcp.json` preserve compatibility with Codex clients that use the earlier layout. Contract tests keep both representations aligned.
 
-The plugin version is independent from the MCP npm package version. Plugin `0.1.1` pins `@astandrik/local-ydb-mcp@0.15.4`. Update that pin only in a follow-up change after the exact npm version has been published and read back successfully; do not make release-please point the plugin at an unpublished version.
+The plugin version is independent from the MCP npm package version. Plugin `0.1.2` pins `@astandrik/local-ydb-mcp@0.16.0`. Update that pin only in a follow-up change after the exact npm version has been published and read back successfully; do not make release-please point the plugin at an unpublished version.
 
 Build the OpenAI skills-only review artifact with:
 
@@ -446,7 +446,7 @@ Build the OpenAI skills-only review artifact with:
 npm run plugin:package
 ```
 
-This writes `dist/local-ydb-toolkit-0.1.1-skills.zip`. The generated compatibility manifest omits `mcpServers`, and the ZIP excludes both MCP config files. Submission copy, reviewer cases, and external approval gates are recorded in [`docs/openai-plugin-submission.md`](docs/openai-plugin-submission.md). Building the artifact does not authorize uploading or publishing it.
+This writes `dist/local-ydb-toolkit-0.1.2-skills.zip`. The generated compatibility manifest omits `mcpServers`, and the ZIP excludes both MCP config files. Submission copy, reviewer cases, and external approval gates are recorded in [`docs/openai-plugin-submission.md`](docs/openai-plugin-submission.md). Building the artifact does not authorize uploading or publishing it.
 
 ### MCP npm package
 
@@ -467,12 +467,13 @@ Normal release flow:
 2. release-please opens or updates a release PR that bumps `packages/mcp-server/package.json`, updates `package-lock.json` and `server.json`, updates `packages/mcp-server/.release-please-version`, updates the release manifest, and writes `packages/mcp-server/CHANGELOG.md`.
 3. Review and merge the release PR.
 4. The same workflow creates the GitHub release, publishes and readbacks the matching npm version when it is missing, validates `server.json` with the pinned official `mcp-publisher`, and then publishes and readbacks the exact version from the official MCP Registry.
+5. After those readbacks succeed, one post-release job checks out `main`, validates the release tag and stable version, applies the deterministic plugin pin updater, and verifies the updated pin against `server.json`, npm latest, and the exact MCP Registry record. Dependency-free focused contracts run before the final [`peter-evans/create-pull-request`](https://github.com/peter-evans/create-pull-request) action, pinned to an immutable commit, updates `codex/update-plugin-mcp-pin-v<version>` and opens a draft PR titled `chore(plugin): pin published MCP <version>`. The draft includes the exact Registry/npm identities and a manual Cursor Directory checklist; it never merges or edits Cursor automatically.
 
-Publication is idempotent across partial failures. Before either publish action, the workflow checks the exact immutable version. If npm already contains the matching package, it skips the npm publish step. If that npm version exists but the Registry step did not complete, run the workflow manually from `main` with `dry_run: false` and the existing `publish_tag`; the recovery run accepts only a published, non-prerelease GitHub release tag whose commit is contained in `main`, publishes only the missing MCP Registry record, and verifies the final metadata. A Registry version that already exists with different metadata is never overwritten: correct `server.json` and release a new patch version instead.
+Publication is idempotent across partial failures. Before either publish action, the workflow checks the exact immutable version. If npm already contains the matching package, it skips the npm publish step. If that npm version exists but the Registry step did not complete, run the workflow manually from `main` with `dry_run: false` and the existing `publish_tag`; the recovery run accepts only a published, non-prerelease GitHub release tag whose commit is contained in `main`, publishes only the missing MCP Registry record, verifies the final metadata, and routes the recovered version through the same post-release plugin proposal job. A Registry version that already exists with different metadata is never overwritten: correct `server.json` and release a new patch version instead. The PR action provides the proposal lifecycle: no diff is a successful no-op, an open proposal PR is updated, and a proposal that becomes unnecessary may be closed.
 
 To run a non-publishing package check from GitHub Actions, start the workflow manually with `dry_run: true`. The dry run executes build, tests, typecheck, npm package inspection, and `mcp-publisher validate`, but does not log in or publish to npm or the MCP Registry.
 
-The release-please workflow can use the default `GITHUB_TOKEN`. If release PRs must trigger CI checks immediately when release-please updates them, create a fine-grained `RELEASE_PLEASE_TOKEN` secret with repository contents and pull request write access.
+Release Please and final post-release plugin PR creation use the existing fine-grained `RELEASE_PLEASE_TOKEN` with repository contents and pull request write access. Release Please receives it only as the action's token input so its generated pull request can trigger the required checks. The post-release job does not install dependencies; it runs only the checked-in dependency-free updater, freshness checker, and focused Node contracts before disabling Git hooks. The PAT is exposed only as the pinned PR action's token input, never to shell or environment steps, and neither credential path falls back to `github.token`.
 
 Branch protection is configured outside the repository files. The intended `main` rule is:
 

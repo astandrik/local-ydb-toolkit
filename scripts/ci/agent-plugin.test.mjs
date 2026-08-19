@@ -49,7 +49,7 @@ test("portable and Codex manifests expose identical plugin metadata", async () =
   assertSchema(validatePlugin, portableManifest, "plugin.json");
   assert.deepEqual(portableMetadata(portableManifest), legacyMetadata(legacyManifest));
   assert.equal(portableManifest.name, "local-ydb-toolkit");
-  assert.equal(portableManifest.version, "0.1.1");
+  assertStableSemver(portableManifest.version, "plugin.json version");
   assert.equal(legacyManifest.skills, "./skills/");
   assert.equal(legacyManifest.mcpServers, "./.mcp.json");
 
@@ -86,8 +86,22 @@ test("portable and Codex manifests expose identical plugin metadata", async () =
   assert.doesNotMatch(serializedConfig, /"(?:password|secret|token|api[_-]?key)"\s*:/i);
 });
 
-test("portable and legacy MCP configs use the same exact published package", () => {
+test("plugin surfaces use aligned stable versions and the exact pinned package shape", () => {
   assertSchema(validateMcp, portableMcp, "mcp.json");
+  const pluginVersion = portableManifest.version;
+  const packageSpec = packageSpecFrom(portableMcp.mcpServers["local-ydb"]);
+  const mcpVersion = packageSpec.slice(`${packageName}@`.length);
+
+  for (const [label, version] of [
+    ["portable manifest", portableManifest.version],
+    ["Codex manifest", legacyManifest.version],
+    ["Claude manifest", claudeManifest.version],
+    ["Gemini extension", geminiManifest.version],
+  ]) {
+    assertStableSemver(version, `${label} version`);
+    assert.equal(version, pluginVersion, `${label} version must align`);
+  }
+  assertStableSemver(mcpVersion, "pinned MCP version");
   assert.deepEqual(Object.keys(portableMcp.mcpServers), ["local-ydb"]);
   assert.deepEqual(Object.keys(legacyMcp.mcpServers), ["local-ydb"]);
 
@@ -95,7 +109,7 @@ test("portable and legacy MCP configs use the same exact published package", () 
   assert.equal(type, "stdio");
   assert.deepEqual(portableServer, legacyMcp.mcpServers["local-ydb"]);
   assert.equal(portableServer.command, "npx");
-  assert.deepEqual(portableServer.args, ["--yes", "@astandrik/local-ydb-mcp@0.15.4"]);
+  assert.deepEqual(portableServer.args, ["--yes", packageSpec]);
   assert.equal("env" in portableServer, false);
   assert.doesNotMatch(portableServer.args.join(" "), /@latest|[~^*]/);
 });
@@ -127,6 +141,7 @@ test("Gemini extension mirrors portable metadata and the pinned local MCP", asyn
   const { cwd, ...geminiServer } = geminiManifest.mcpServers["local-ydb"];
   assert.equal(cwd, "${extensionPath}");
   assert.deepEqual(geminiServer, legacyMcp.mcpServers["local-ydb"]);
+  assert.deepEqual(geminiServer.args, ["--yes", packageSpecFrom(portableMcp.mcpServers["local-ydb"])]);
   assert.doesNotMatch(geminiServer.args.join(" "), /@latest|[~^*]/);
   assert.equal("env" in geminiServer, false);
 
@@ -190,6 +205,10 @@ test("submission materials contain exactly five positive and three negative case
   assert.match(submission, /^- Submission type: `Skills only`$/m);
   assert.match(
     submission,
+    new RegExp(`^- Version: \`${escapeRegex(portableManifest.version)}\`$`, "m"),
+  );
+  assert.match(
+    submission,
     /^- Availability: all countries and regions supported by OpenAI$/m,
   );
   const submissionLines = submission.split(/\r?\n/);
@@ -204,6 +223,18 @@ test("submission materials contain exactly five positive and three negative case
   assert.doesNotMatch(
     submission,
     /(?:published|available) (?:on|in) (?:the )?(?:public )?OpenAI marketplace/i,
+  );
+  assert.match(
+    readme,
+    new RegExp(
+      `Plugin \`${escapeRegex(portableManifest.version)}\` pins \`${escapeRegex(packageSpecFrom(portableMcp.mcpServers["local-ydb"]))}\`\\.`,
+    ),
+  );
+  assert.match(
+    readme,
+    new RegExp(
+      `dist/local-ydb-toolkit-${escapeRegex(portableManifest.version)}-skills\\.zip`,
+    ),
   );
 });
 
@@ -315,6 +346,27 @@ function coreMetadata(manifest) {
 
 function assertSchema(validate, value, label) {
   assert(validate(value), `${label} schema errors: ${JSON.stringify(validate.errors)}`);
+}
+
+const packageName = "@astandrik/local-ydb-mcp";
+const stableSemver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+function packageSpecFrom(server) {
+  assert.equal(server.command, "npx");
+  assert.deepEqual(server.args.slice(0, 1), ["--yes"]);
+  assert.equal(server.args.length, 2);
+  const packageSpec = server.args[1];
+  assert(packageSpec.startsWith(`${packageName}@`));
+  assertStableSemver(packageSpec.slice(`${packageName}@`.length), "pinned MCP version");
+  return packageSpec;
+}
+
+function assertStableSemver(version, label) {
+  assert.match(version, stableSemver, `${label} must be a stable X.Y.Z semver`);
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function packagePlugin(args = []) {

@@ -6,7 +6,7 @@
       "command": "npx",
       "args": [
         "--yes",
-        "@astandrik/local-ydb-mcp@0.15.4"
+        "@astandrik/local-ydb-mcp@0.16.0"
       ]
     }
   }
