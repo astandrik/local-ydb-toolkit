@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 describe("security policy", () => {
   const rootReadme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
   const securityPolicy = readFileSync(new URL("../../../SECURITY.md", import.meta.url), "utf8");
+  const packageSecurityPolicy = readFileSync(new URL("../SECURITY.md", import.meta.url), "utf8");
+  const packageManifest = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8")
+  );
 
   it("documents the supported security boundary and private reporting path", () => {
     expect(rootReadme).toContain("[Security policy](SECURITY.md)");
@@ -16,5 +20,10 @@ describe("security policy", () => {
     expect(securityPolicy).toContain("application-level approval gate");
     expect(securityPolicy).toContain("not an operating-system sandbox");
     expect(securityPolicy).toContain("local, development, and test environments");
+  });
+
+  it("publishes the repository security policy with the MCP package", () => {
+    expect(packageSecurityPolicy).toBe(securityPolicy);
+    expect(packageManifest.files.filter((path: string) => path === "SECURITY.md")).toHaveLength(1);
   });
 });
