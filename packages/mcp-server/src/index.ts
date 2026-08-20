@@ -12,6 +12,7 @@ export {
   createLocalYdbMcpServer,
   callLocalYdbToolForTest,
 } from "./server.js";
+export type { LocalYdbMcpApplication } from "./server.js";
 export { localYdbInstructions } from "./tools/instructions.js";
 export { localYdbTools } from "./tools/registry.js";
 

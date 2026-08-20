@@ -3,6 +3,7 @@ import { ErrorCode, McpError, type GetPromptResult, type Prompt } from "@modelco
 import { z, type ZodRawShape } from "zod";
 
 type PromptArguments = Record<string, string | undefined>;
+type UnvalidatedPromptArguments = Record<string, unknown>;
 
 type LocalYdbPromptDefinition<ArgsSchema extends ZodRawShape = ZodRawShape> = {
   title: string;
@@ -237,7 +238,7 @@ export function registerLocalYdbPrompts(application: McpServer): void {
 
 export function getLocalYdbPrompt(
   name: string,
-  args: PromptArguments = {},
+  args: UnvalidatedPromptArguments = {},
 ): GetPromptResult {
   const definition = resolvePromptDefinition(name);
   if (!definition) {
@@ -262,7 +263,7 @@ export function getLocalYdbPrompt(
 function validatePromptArguments(
   promptName: string,
   definition: LocalYdbPromptDefinition,
-  args: PromptArguments,
+  args: UnvalidatedPromptArguments,
 ): PromptArguments {
   const allowed = new Set(Object.keys(definition.argsSchema));
   const unknown = Object.keys(args).filter((name) => !allowed.has(name));
@@ -272,7 +273,18 @@ function validatePromptArguments(
       `Unknown argument ${unknown.join(", ")} for prompt ${promptName}`,
     );
   }
-  return args;
+
+  const validated: PromptArguments = {};
+  for (const [name, value] of Object.entries(args)) {
+    if (value !== undefined && typeof value !== "string") {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Argument ${name} for prompt ${promptName} must be a string`,
+      );
+    }
+    validated[name] = value;
+  }
+  return validated;
 }
 
 function requiredArgument(

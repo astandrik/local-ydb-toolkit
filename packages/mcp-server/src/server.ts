@@ -1,5 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   CallToolRequestSchema,
   GetPromptRequestSchema,
@@ -13,7 +14,15 @@ import { localYdbInstructions } from "./tools/instructions.js";
 import { handlers, localYdbTools } from "./tools/registry.js";
 import type { HandlerOptions, ToolHandler } from "./tools/context.js";
 
-export function createLocalYdbMcpApplication(options: HandlerOptions = {}): McpServer {
+export interface LocalYdbMcpApplication {
+  readonly server: Server;
+  connect(transport: Transport): Promise<void>;
+  close(): Promise<void>;
+}
+
+export function createLocalYdbMcpApplication(
+  options: HandlerOptions = {},
+): LocalYdbMcpApplication {
   const application = new McpServer(
     { name: "local-ydb-toolkit", version: localYdbMcpServerVersion },
     { capabilities: { tools: {} }, instructions: localYdbInstructions },
@@ -52,7 +61,11 @@ export function createLocalYdbMcpApplication(options: HandlerOptions = {}): McpS
     }
   });
 
-  return application;
+  return {
+    server,
+    connect: (transport) => application.connect(transport),
+    close: () => application.close(),
+  };
 }
 
 /** @deprecated Use createLocalYdbMcpApplication for new integrations. */

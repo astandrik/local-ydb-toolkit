@@ -1,6 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { decode } from "@toon-format/toon";
@@ -13,9 +12,10 @@ import {
   getLocalYdbPrompt,
   localYdbPrompts,
   localYdbTools,
+  type LocalYdbMcpApplication,
 } from "../src/index.js";
 
-type ProtocolServer = McpServer | Server;
+type ProtocolServer = LocalYdbMcpApplication | Server;
 
 const openConnections: Array<{ client: Client; server: ProtocolServer }> = [];
 
@@ -39,6 +39,14 @@ describe("MCP protocol contract", () => {
     expect(canonicalJson(applicationSnapshot.tools)).toBe(canonicalJson(localYdbTools));
     expect(applicationSnapshot.prompts).toHaveLength(8);
     expect(JSON.stringify(applicationSnapshot.prompts)).toBe(JSON.stringify(localYdbPrompts));
+  });
+
+  it("exposes only the supported application lifecycle surface", () => {
+    const application = createLocalYdbMcpApplication();
+
+    expect(Object.keys(application).sort()).toEqual(["close", "connect", "server"]);
+    expect(application).not.toHaveProperty("registerPrompt");
+    expect(application).not.toHaveProperty("registerTool");
   });
 
   it("renders every prompt and preserves strict prompt argument errors", async () => {
@@ -83,6 +91,25 @@ describe("MCP protocol contract", () => {
       name: "__proto__",
       arguments: {},
     })).rejects.toThrow("Prompt __proto__ not found");
+  });
+
+  it("rejects non-string arguments passed directly to the prompt helper", () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["local_ydb_upgrade_version_workflow", { version: 123 }],
+      ["local_ydb_diagnose_stack", { profile: false }],
+    ];
+
+    for (const [name, args] of cases) {
+      let error: unknown;
+      try {
+        getLocalYdbPrompt(name, args);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({ code: ErrorCode.InvalidParams });
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("must be a string");
+    }
   });
 
   it("preserves tool errors and JSON/TOON response formatting over MCP", async () => {
