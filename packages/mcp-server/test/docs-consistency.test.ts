@@ -149,6 +149,33 @@ describe("MCP Registry metadata", () => {
 });
 
 describe("repository skill consistency", () => {
+  it("keeps restore prerequisites before both Scenario 7 restore calls", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootScenario = sectionRange(rootScenarios, "## Scenario 7: Dump and Restore", "## Scenario 8:");
+    const skillScenario = sectionRange(skillScenarios, "## Scenario 7: Dump and Restore", "## Scenario 8:");
+    const pathExampleIndex = rootScenario.indexOf("Path-level example:");
+    const mainCalls = rootScenario.slice(0, pathExampleIndex);
+    const pathCalls = rootScenario.slice(pathExampleIndex);
+
+    expect(rootScenario).toBe(skillScenario);
+    for (const calls of [mainCalls, pathCalls]) {
+      const restoreIndex = calls.indexOf('"tool": "local_ydb_restore_tenant"');
+      expect(calls.indexOf('"tool": "local_ydb_list_dumps"')).toBeLessThan(restoreIndex);
+      expect(calls.indexOf('"tool": "local_ydb_tenant_check"')).toBeLessThan(restoreIndex);
+    }
+  });
+
+  it("keeps copied-volume dump guidance identical in both scenario copies", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootGuidance = sectionRange(rootScenarios, "## When To Use Dumps", "## Scenario 0: Prerequisites");
+    const skillGuidance = sectionRange(skillScenarios, "## When To Use Dumps", "## Scenario 0: Prerequisites");
+
+    expect(rootGuidance).toBe(skillGuidance);
+    expect(rootGuidance).toContain("unless the hardening is rehearsed on a copied volume first");
+  });
+
   it("keeps the declarative topology contract identical in both scenario copies", () => {
     const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
     const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
@@ -264,5 +291,24 @@ describe("Mintlify declarative topology documentation", () => {
     expect(workflow).toContain("still attempts every preflight-running one-off container");
     expect(workflow).toContain("restore only one-off suffixes above");
     expect(tools).toContain("bootstrap/restart configured nodes; add/remove one-off nodes");
+  });
+});
+
+describe("MCP prompt documentation", () => {
+  const repositoryReadme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const packageReadme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const promptSafetySummary = "Tenant dumps are mandatory for data-preserving version upgrades and storage-group reduction";
+  const authSafetySummary = "live or production-like auth hardening requires a reviewed tenant dump or copied-volume rehearsal";
+  const normalizeWhitespace = (value: string) => value.replace(/\s+/g, " ");
+
+  it.each([
+    ["repository README", repositoryReadme],
+    ["package README", packageReadme],
+  ])("documents destructive prompt preconditions in the %s", (_name, readme) => {
+    const normalizedReadme = normalizeWhitespace(readme);
+
+    expect(normalizedReadme).toContain(promptSafetySummary);
+    expect(normalizedReadme).toContain(authSafetySummary);
+    expect(normalizedReadme).not.toContain("storage group reduction");
   });
 });

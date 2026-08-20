@@ -117,6 +117,8 @@ The action starts `ghcr.io/ydb-platform/local-ydb`, creates the tenant database,
 
 This repository dogfoods the Marketplace action in CI. `.github/workflows/setup-local-ydb-smoke.yml` keeps a short action-level smoke test, while `.github/workflows/local-ydb-mcp-integration.yml` starts the real stdio MCP server and verifies prompts, read-only tools, schema DDL apply, the managed SQL query/explain/execute safety matrix, plan-only behavior, path-level dump/list/restore with restore hooks, and a confirmed dynamic-node add/remove against a live YDB tenant. The concise GitHub Developer Program artifact is in `docs/github-developer-program.md`.
 
+The reusable agent guidance is also covered by a plan-only Codex eval suite. It requires the `codex` CLI and `CODEX_API_KEY` for actual runs. Run `npm run eval:agent -- --list` to inspect scenarios, `CODEX_API_KEY=... npm run eval:agent -- --case explicit-database-diagnosis` for a smoke case, or `CODEX_API_KEY=... npm run eval:agent` for the full suite. Results are written to ignored `eval-results/local-ydb-agent/<timestamp>-<random-suffix>/`. The eval suite is local-only in this PR; no GitHub Actions workflow is added for passing `CODEX_API_KEY` into repository-controlled scripts. The scoring contract — what the suite checks and what it deliberately does not — is documented in `skills/local-ydb/references/evals.md`.
+
 ## Skill Contents
 
 ```text
@@ -125,6 +127,7 @@ skills/local-ydb/
   agents/openai.yaml
   references/
     auth-hardening.md
+    evals.md
     history-and-non-goals.md
     storage-migration.md
     topology.md
@@ -310,9 +313,11 @@ Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH 
 The MCP server exposes tools for local-ydb operations and prompts for guided
 workflows. Prompt templates cover stack diagnosis, root database bootstrap,
 database diagnostics, tenant topology bootstrap, schema generation/apply,
-version upgrades, auth hardening, and storage group reduction. Prompts do not execute commands; they
-return workflow instructions that guide the MCP client toward the existing
-`local_ydb_*` tools.
+version upgrades, auth hardening, and storage-group reduction. Tenant dumps are
+mandatory for data-preserving version upgrades and storage-group reduction;
+live or production-like auth hardening requires a reviewed tenant dump or
+copied-volume rehearsal. Prompts do not execute commands; they return workflow
+instructions that guide the MCP client toward the existing `local_ydb_*` tools.
 
 Mutating tools remain plan-only unless called with `confirm: true`. Static MCP
 resources are intentionally left for a separate follow-up so the server does not

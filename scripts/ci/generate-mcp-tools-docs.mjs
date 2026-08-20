@@ -57,6 +57,19 @@ export function renderToolsBlock(toolDefinitions) {
   return lines.join("\n");
 }
 
+export function renderToolArgumentKeys(toolDefinitions) {
+  const entries = toolDefinitions
+    .map(({ inputSchema, name }) => [
+      name,
+      Object.keys(inputSchema.properties ?? {}).sort(),
+    ])
+    .sort(([left], [right]) => left.localeCompare(right));
+  const lines = entries.map(
+    ([name, keys]) => `  ${JSON.stringify(name)}: ${JSON.stringify(keys)}`,
+  );
+  return `{\n${lines.join(",\n")}\n}\n`;
+}
+
 export function replaceGeneratedBlock(source, expectedBlock) {
   const startCount = source.split(START_MARKER).length - 1;
   const endCount = source.split(END_MARKER).length - 1;
@@ -91,6 +104,7 @@ async function main() {
   );
   const { toolDefinitions } = await import(pathToFileURL(registryPath).href);
   const expectedBlock = renderToolsBlock(toolDefinitions);
+  const expectedToolArgumentKeys = renderToolArgumentKeys(toolDefinitions);
   const readmes = [
     resolve(repoRoot, "README.md"),
     resolve(repoRoot, "packages/mcp-server/README.md"),
@@ -110,16 +124,29 @@ async function main() {
     }
   }
 
+  const toolArgumentKeysPath = resolve(
+    repoRoot,
+    "evals/local-ydb-agent/tool-argument-keys.json",
+  );
+  const currentToolArgumentKeys = readFileSync(toolArgumentKeysPath, "utf8");
+  if (currentToolArgumentKeys !== expectedToolArgumentKeys) {
+    if (mode === "--write") {
+      writeFileSync(toolArgumentKeysPath, expectedToolArgumentKeys);
+    } else {
+      stale.push(toolArgumentKeysPath);
+    }
+  }
+
   if (stale.length > 0) {
     throw new Error(
-      `Generated MCP tools documentation is stale:\n${stale.join("\n")}\nRun npm run docs:generate.`,
+      `Generated MCP tool artifacts are stale:\n${stale.join("\n")}\nRun npm run docs:generate.`,
     );
   }
 
   console.log(
     mode === "--write"
-      ? `Updated MCP tools documentation for ${toolDefinitions.length} tools.`
-      : `MCP tools documentation is current for ${toolDefinitions.length} tools.`,
+      ? `Updated MCP tool artifacts for ${toolDefinitions.length} tools.`
+      : `MCP tool artifacts are current for ${toolDefinitions.length} tools.`,
   );
 }
 

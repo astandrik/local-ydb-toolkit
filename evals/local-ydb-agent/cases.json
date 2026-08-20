@@ -1,0 +1,444 @@
+[
+  {
+    "id": "explicit-database-diagnosis",
+    "name": "Explicit local-ydb database diagnosis",
+    "prompt": "Use $local-ydb. A tenant looks unhealthy and I need a safe first-pass diagnosis. Plan the MCP tool sequence only; do not execute anything.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_healthcheck"
+      ],
+      "requiredTerms": [
+        "read-only",
+        "selfCheckResult"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "root-bootstrap-default",
+    "name": "Root database bootstrap for generic local database",
+    "prompt": "I just need to create a generic local YDB database at /local for development. Which MCP workflow should I use? Plan only.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_check_prerequisites",
+        "local_ydb_bootstrap_root_database"
+      ],
+      "requiredTerms": [
+        "root",
+        "plan"
+      ],
+      "forbiddenTools": [
+        "local_ydb_bootstrap"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "cms-tenant-graphshard-bootstrap",
+    "name": "CMS tenant and GraphShard bootstrap",
+    "prompt": "I need /local/analytics with a CMS-created tenant, GraphShard support, and a dynamic tenant node. Use the selected profile analytics, which is configured with databasePath=/local/analytics. Plan the safe MCP sequence.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_check_prerequisites",
+        "local_ydb_bootstrap",
+        "local_ydb_database_status",
+        "local_ydb_tenant_check",
+        "local_ydb_nodes_check",
+        "local_ydb_graphshard_check"
+      ],
+      "requiredTerms": [
+        "CMS",
+        "GraphShard",
+        "dynamic",
+        "profile=analytics configured databasePath=/local/analytics"
+      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_check_prerequisites": [
+          "profile=analytics"
+        ],
+        "local_ydb_bootstrap": [
+          "profile=analytics"
+        ],
+        "local_ydb_database_status": [
+          "profile=analytics"
+        ],
+        "local_ydb_tenant_check": [
+          "profile=analytics"
+        ],
+        "local_ydb_nodes_check": [
+          "profile=analytics"
+        ],
+        "local_ydb_graphshard_check": [
+          "profile=analytics"
+        ]
+      },
+      "forbiddenTools": [
+        "local_ydb_bootstrap_root_database"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "schema-generate-apply",
+    "name": "Schema generate validate apply flow",
+    "prompt": "Plan a safe flow to create a row table with a secondary index in local-ydb using the MCP schema tools.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_scheme",
+        "local_ydb_generate_schema",
+        "local_ydb_apply_schema",
+        "local_ydb_apply_schema",
+        "local_ydb_scheme"
+      ],
+      "requiredTerms": [
+        "plan"
+      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_generate_schema": [
+          [
+            "statements=[{kind=createTable,tableName=<table>,columns=<columns>,primaryKey=<primary-key>,store=row,indexes=[{name=<index>,columns=<index-columns>,using=secondary,global=true}]}]",
+            "validate=true"
+          ]
+        ],
+        "local_ydb_apply_schema": [
+          [
+            "action=validate",
+            "script=<generated-script>"
+          ],
+          [
+            "action=apply",
+            "script=<generated-script>"
+          ]
+        ],
+        "local_ydb_scheme": [
+          "action=list",
+          [
+            "action=describe",
+            "path=<table>"
+          ]
+        ]
+      },
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "version-upgrade-backup-first",
+    "name": "Version upgrade requires backup first",
+    "prompt": "We want to upgrade a volume-backed local-ydb stack from 26.1.1.6 to the exact target ghcr.io/ydb-platform/local-ydb:26.1.1.7 while preserving tenant data. Use local_ydb_status_report as the selected current-state preflight. The exact target image is not present locally and must be pulled first. Plan only.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_list_versions",
+        "local_ydb_pull_image",
+        "local_ydb_pull_status",
+        "local_ydb_upgrade_version"
+      ],
+      "allowedExtraTools": [
+        "local_ydb_dump_tenant"
+      ],
+      "allowedExtraToolsBefore": {
+        "local_ydb_dump_tenant": "local_ydb_upgrade_version"
+      },
+      "requiredTerms": [
+        "dump",
+        "restore",
+        "until completed"
+      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_pull_image": [
+          "image=ghcr.io/ydb-platform/local-ydb:26.1.1.7"
+        ],
+        "local_ydb_pull_status": [
+          "jobId=<returned-jobId>"
+        ],
+        "local_ydb_upgrade_version": [
+          "version=26.1.1.7"
+        ]
+      },
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "storage-reduction-rebuild",
+    "name": "Storage reduction by dump rebuild restore",
+    "prompt": "The tenant storage pool was over-allocated and we need to remove exactly 1 group safely. Reuse the concrete poolName returned by storage placement. Give the MCP sequence and safety checks, plan only.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_storage_placement",
+        "local_ydb_reduce_storage_groups"
+      ],
+      "allowedExtraTools": [
+        "local_ydb_dump_tenant"
+      ],
+      "allowedExtraToolsBefore": {
+        "local_ydb_dump_tenant": "local_ydb_reduce_storage_groups"
+      },
+      "requiredTerms": [
+        "dump",
+        "rebuild",
+        "restore",
+        "verification",
+        "BSC"
+      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_reduce_storage_groups": [
+          [
+            "count=1",
+            "poolName=<returned-poolName>"
+          ]
+        ]
+      },
+      "forbiddenTerms": [
+        "DecommitGroups",
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "path-level-dump-restore",
+    "name": "Path-level dump list restore with hooks",
+    "prompt": "I have one directory smoke_src and want to dump it, discover the dump, and restore it into smoke_dst with describe and COUNT verification hooks. Plan the MCP sequence only.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_dump_tenant",
+        "local_ydb_list_dumps",
+        "local_ydb_tenant_check",
+        "local_ydb_restore_tenant"
+      ],
+      "requiredTerms": [
+        "local_ydb_dump_tenant path=smoke_src",
+        "local_ydb_restore_tenant path=smoke_dst",
+        "describePaths",
+        "countQueries"
+      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_dump_tenant": [
+          "path=smoke_src"
+        ],
+        "local_ydb_restore_tenant": [
+          [
+            "path=smoke_dst",
+            "dumpName=<selected-dumpName>",
+            "describePaths=<verification-paths>",
+            "countQueries=<verification-queries>"
+          ]
+        ]
+      },
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "auth-hardening-backup-first",
+    "name": "Auth hardening backup and verification",
+    "prompt": "We need to enable production-like auth/config hardening on a local-ydb tenant. Use a reviewed tenant dump named pre-auth-hardening for this case instead of the copied-volume rehearsal alternative, and reuse that exact dumpName for approved execution. The selected profile does not provide auth artifact inputs, so use configHostPath=<prepared-config-host-path>, sid=<selected-sid>, and tokenHostPath=<dynamic-token-host-path>. What should the agent plan before applying it?",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_dump_tenant",
+        "local_ydb_prepare_auth_config",
+        "local_ydb_write_dynamic_auth_config",
+        "local_ydb_apply_auth_hardening",
+        "local_ydb_auth_check",
+        "local_ydb_status_report"
+      ],
+      "requiredTerms": [
+        "backup",
+        "reuse dumpName=pre-auth-hardening",
+        "anonymous",
+        "authenticated"
+      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_dump_tenant": [
+          "dumpName=pre-auth-hardening"
+        ],
+        "local_ydb_prepare_auth_config": [
+          [
+            "configHostPath=<prepared-config-host-path>",
+            "sid=<selected-sid>"
+          ]
+        ],
+        "local_ydb_write_dynamic_auth_config": [
+          [
+            "sid=<selected-sid>",
+            "tokenHostPath=<dynamic-token-host-path>"
+          ]
+        ],
+        "local_ydb_apply_auth_hardening": [
+          "configHostPath=<prepared-config-host-path>"
+        ]
+      },
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "auth-hardening-copied-volume-rehearsal",
+    "name": "Auth hardening rehearsed on a copied volume",
+    "prompt": "We want to rehearse production-like auth/config hardening on a copied volume registered as profile auth-rehearsal before touching the real live profile, instead of taking a tenant dump. Keep the live profile untouched. Use configHostPath=<rehearsal-config-host-path>, sid=<rehearsal-sid>, and tokenHostPath=<rehearsal-token-host-path> for the rehearsal artifacts. What should the agent plan?",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_status_report",
+        "local_ydb_prepare_auth_config",
+        "local_ydb_write_dynamic_auth_config",
+        "local_ydb_apply_auth_hardening",
+        "local_ydb_auth_check",
+        "local_ydb_status_report"
+      ],
+      "requiredTerms": [
+        "copied volume",
+        "live profile untouched",
+        "anonymous",
+        "authenticated"
+      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_status_report": [
+          "profile=auth-rehearsal",
+          "profile=auth-rehearsal"
+        ],
+        "local_ydb_prepare_auth_config": [
+          [
+            "profile=auth-rehearsal",
+            "configHostPath=<rehearsal-config-host-path>",
+            "sid=<rehearsal-sid>"
+          ]
+        ],
+        "local_ydb_write_dynamic_auth_config": [
+          [
+            "profile=auth-rehearsal",
+            "sid=<rehearsal-sid>",
+            "tokenHostPath=<rehearsal-token-host-path>"
+          ]
+        ],
+        "local_ydb_apply_auth_hardening": [
+          [
+            "profile=auth-rehearsal",
+            "configHostPath=<rehearsal-config-host-path>"
+          ]
+        ],
+        "local_ydb_auth_check": [
+          "profile=auth-rehearsal"
+        ]
+      },
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "cleanup-storage-plan-only",
+    "name": "Cleanup storage remains destructive and plan-first",
+    "prompt": "There are old local-ydb dump directories and volumes after a migration. Plan how to inspect and clean them safely using MCP tools.",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiresPlanFirstGate": true,
+      "requiredOrderedTools": [
+        "local_ydb_storage_leftovers",
+        "local_ydb_cleanup_storage"
+      ],
+      "requiredTerms": [
+        "plan",
+        "destructive",
+        "verify"
+      ],
+      "requiredToolEntryTerms": {
+        "local_ydb_cleanup_storage": [
+          [
+            "paths=<reviewed-leftover-paths>",
+            "volumes=<reviewed-leftover-volumes>"
+          ]
+        ]
+      },
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "upstream-ydb-source-lookup",
+    "name": "Upstream source lookup for YDB semantics",
+    "prompt": "The YDB CLI dump/restore path semantics are unclear. What should the agent inspect before changing toolkit behavior?",
+    "expected": {
+      "shouldUseLocalYdbSkill": true,
+      "requiredOrderedTools": [],
+      "requiredTerms": [
+        "ydb-platform/ydb",
+        "gh api",
+        "tools dump",
+        "tools restore"
+      ],
+      "forbiddenToolPrefixes": [
+        "local_ydb_"
+      ],
+      "forbiddenTerms": [
+        "confirm: true",
+        "\"confirm\": true",
+        "confirm=true"
+      ]
+    }
+  },
+  {
+    "id": "negative-unrelated-python-test",
+    "name": "Negative control unrelated Python unit test",
+    "prompt": "A Python function reverses strings incorrectly. Explain how to write a small unit test for it. Do not discuss databases.",
+    "expected": {
+      "shouldUseLocalYdbSkill": false,
+      "requiredOrderedTools": [],
+      "requiredTerms": [
+        "unit test"
+      ]
+    }
+  }
+]

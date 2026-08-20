@@ -112,13 +112,14 @@ Before mutating live config or volumes, provide a rollback plan: previous run co
 
 Field-proven MCP sequence for a fresh stable `26.1.1.6` GHCR stack:
 
-1. `local_ydb_dump_tenant(confirm=true, dumpName="pre-auth-...")`
-2. bootstrap a fresh clean stack on separate container names, network, volume, and ports with exact image `ghcr.io/ydb-platform/local-ydb:26.1.1.6`
-3. `local_ydb_restore_tenant(confirm=true, dumpName="pre-auth-...")`
-4. `local_ydb_prepare_auth_config(confirm=true)` to extract current config and root password file
-5. `local_ydb_write_dynamic_auth_config(confirm=true)` for the dynamic auth text-proto
-6. `local_ydb_apply_auth_hardening(confirm=true)` on the same stack
-7. verify: `viewer whoami = 401`, authenticated `scheme ls /local/<tenant>` works, authenticated `nodelist` works, authenticated GraphShard capability works
+1. `local_ydb_dump_tenant(confirm=false, dumpName="pre-auth-...")` and review the plan
+2. after approval, repeat `local_ydb_dump_tenant(confirm=true, dumpName="pre-auth-...")` with the exact same returned `dumpName`
+3. bootstrap a fresh clean stack on separate container names, network, volume, and ports with exact image `ghcr.io/ydb-platform/local-ydb:26.1.1.6`
+4. `local_ydb_restore_tenant(confirm=true, dumpName="pre-auth-...")`
+5. `local_ydb_prepare_auth_config(confirm=true)` to extract current config and root password file
+6. `local_ydb_write_dynamic_auth_config(confirm=true)` for the dynamic auth text-proto
+7. `local_ydb_apply_auth_hardening(confirm=true)` on the same stack
+8. verify: `viewer whoami = 401`, authenticated `scheme ls /local/<tenant>` works, authenticated `nodelist` works, authenticated GraphShard capability works
 
 ## Monitoring Exposure
 
