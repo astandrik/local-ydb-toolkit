@@ -10,6 +10,16 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const portableManifest = await readJson(join(repositoryRoot, "plugin.json"));
 const portableMcp = await readJson(join(repositoryRoot, "mcp.json"));
 const packageSpec = portableMcp.mcpServers["local-ydb"].args[1];
+const expectedPromptNames = [
+  "local_ydb_auth_hardening_workflow",
+  "local_ydb_bootstrap_root_workflow",
+  "local_ydb_bootstrap_tenant_workflow",
+  "local_ydb_diagnose_database",
+  "local_ydb_diagnose_stack",
+  "local_ydb_reduce_storage_groups_workflow",
+  "local_ydb_schema_generate_apply_workflow",
+  "local_ydb_upgrade_version_workflow",
+];
 const temporaryRoot = await mkdtemp(join(tmpdir(), "local-ydb-published-mcp-"));
 const stderrChunks = [];
 const transport = new StdioClientTransport({
@@ -40,8 +50,13 @@ try {
   assert.equal(new Set(toolResult.tools.map((tool) => tool.name)).size, 39);
   assert(toolResult.tools.some((tool) => tool.name === "local_ydb_status_report"));
   assert(toolResult.tools.some((tool) => tool.name === "local_ydb_sql"));
+  const promptResult = await client.listPrompts(undefined, { timeout: 60_000 });
+  assert.deepEqual(
+    promptResult.prompts.map((prompt) => prompt.name).sort(),
+    expectedPromptNames,
+  );
 
-  console.log(`Published plugin MCP smoke passed for ${packageSpec} with 39 tools.`);
+  console.log(`Published plugin MCP smoke passed for ${packageSpec} with 39 tools and 8 prompts.`);
 } finally {
   await client.close().catch(() => {});
   await rm(temporaryRoot, { recursive: true, force: true });
