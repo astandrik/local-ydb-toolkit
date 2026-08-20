@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.16.1...mcp-server-v0.17.0) (2026-08-20)
+
+
+### Features
+
+* **mcp-server:** adopt high-level prompt registration ([a8f53f3](https://github.com/astandrik/local-ydb-toolkit/commit/a8f53f31b4ede0ea13ca0ace56688951ffbe85f2))
+* **mcp-server:** adopt high-level prompt registration ([19a0b92](https://github.com/astandrik/local-ydb-toolkit/commit/19a0b92942be16b522429838b01b396c726eeac4))
+
+
+### Bug Fixes
+
+* **mcp-server:** narrow application factory contract ([eb01c74](https://github.com/astandrik/local-ydb-toolkit/commit/eb01c7418f8093431c57ec4553b4f1cf1ea79637))
+
 ## [0.16.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.16.0...mcp-server-v0.16.1) (2026-08-20)
 
 
