@@ -2368,12 +2368,12 @@ describe("mcp tools", () => {
     expect(server._instructions).toContain("PENDING_RESOURCES");
   });
 
-  it("declares tools and static prompts capabilities", () => {
+  it("declares tools and list-change-aware prompts capabilities", () => {
     const server = createLocalYdbMcpServer() as unknown as {
       _capabilities?: { tools?: object; prompts?: { listChanged?: boolean } };
     };
     expect(server._capabilities?.tools).toEqual({});
-    expect(server._capabilities?.prompts).toEqual({});
+    expect(server._capabilities?.prompts).toEqual({ listChanged: true });
   });
 
   it("mentions every public local-ydb tool in server instructions", () => {

@@ -12,6 +12,16 @@ import {
 import { contiguousPortCandidates } from "./live-port-allocation.mjs";
 
 const profileName = "ci-action";
+const expectedPromptNames = [
+  "local_ydb_auth_hardening_workflow",
+  "local_ydb_bootstrap_root_workflow",
+  "local_ydb_bootstrap_tenant_workflow",
+  "local_ydb_diagnose_database",
+  "local_ydb_diagnose_stack",
+  "local_ydb_reduce_storage_groups_workflow",
+  "local_ydb_schema_generate_apply_workflow",
+  "local_ydb_upgrade_version_workflow",
+];
 const tenantPath = requiredEnv("LOCAL_YDB_DATABASE");
 const dynamicEndpoint = requiredEnv("LOCAL_YDB_ENDPOINT");
 const staticEndpoint = requiredEnv("LOCAL_YDB_STATIC_ENDPOINT");
@@ -256,9 +266,11 @@ async function verifyPromptRegistry(client) {
   console.log("::group::prompts/list-get");
   try {
     const result = await client.listPrompts(undefined, { timeout: 60_000 });
-    const promptNames = new Set(result.prompts.map((prompt) => prompt.name));
-    assert(promptNames.has("local_ydb_diagnose_stack"), "Missing diagnose prompt.");
-    assert(promptNames.has("local_ydb_bootstrap_tenant_workflow"), "Missing tenant bootstrap prompt.");
+    const promptNames = result.prompts.map((prompt) => prompt.name).sort();
+    assert(
+      JSON.stringify(promptNames) === JSON.stringify(expectedPromptNames),
+      `Unexpected prompt registry: ${JSON.stringify(promptNames)}.`,
+    );
 
     const prompt = await client.getPrompt(
       {
@@ -273,7 +285,7 @@ async function verifyPromptRegistry(client) {
       "Diagnose prompt did not render expected guidance.",
     );
 
-    console.log(JSON.stringify({ promptCount: result.prompts.length, checked: [...promptNames].sort() }, null, 2));
+    console.log(JSON.stringify({ promptCount: result.prompts.length, checked: promptNames }, null, 2));
   } finally {
     console.log("::endgroup::");
   }

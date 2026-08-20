@@ -1,29 +1,38 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   CallToolRequestSchema,
   GetPromptRequestSchema,
-  ListPromptsRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { localYdbMcpServerVersion } from "./metadata.js";
-import { getLocalYdbPrompt, localYdbPrompts } from "./prompts.js";
+import { getLocalYdbPrompt, registerLocalYdbPrompts } from "./prompts.js";
 import { resolveResponseContentFormat } from "./response-format.js";
 import { errorResult, successResult } from "./responses.js";
 import { localYdbInstructions } from "./tools/instructions.js";
 import { handlers, localYdbTools } from "./tools/registry.js";
 import type { HandlerOptions, ToolHandler } from "./tools/context.js";
 
-export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
-  const server = new Server(
+export interface LocalYdbMcpApplication {
+  readonly server: Server;
+  connect(transport: Transport): Promise<void>;
+  close(): Promise<void>;
+}
+
+export function createLocalYdbMcpApplication(
+  options: HandlerOptions = {},
+): LocalYdbMcpApplication {
+  const application = new McpServer(
     { name: "local-ydb-toolkit", version: localYdbMcpServerVersion },
-    { capabilities: { tools: {}, prompts: {} }, instructions: localYdbInstructions },
+    { capabilities: { tools: {} }, instructions: localYdbInstructions },
   );
+  const { server } = application;
+
+  registerLocalYdbPrompts(application);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: localYdbTools,
-  }));
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-    prompts: localYdbPrompts,
   }));
   server.setRequestHandler(GetPromptRequestSchema, async (request) =>
     getLocalYdbPrompt(request.params.name, request.params.arguments ?? {}),
@@ -52,7 +61,16 @@ export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
     }
   });
 
-  return server;
+  return {
+    server,
+    connect: (transport) => application.connect(transport),
+    close: () => application.close(),
+  };
+}
+
+/** @deprecated Use createLocalYdbMcpApplication for new integrations. */
+export function createLocalYdbMcpServer(options: HandlerOptions = {}): Server {
+  return createLocalYdbMcpApplication(options).server;
 }
 
 export async function callLocalYdbToolForTest(
