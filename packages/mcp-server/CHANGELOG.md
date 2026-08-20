@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.16.0...mcp-server-v0.16.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **mcp-server:** publish security policy ([26276e8](https://github.com/astandrik/local-ydb-toolkit/commit/26276e89cc5b42eeca5dd799fd15f2a9ee392fb9))
+* **mcp-server:** publish security policy ([1e48a73](https://github.com/astandrik/local-ydb-toolkit/commit/1e48a73971bf07ca9c6e5036842dada89c8c4e91))
+
 ## [0.16.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.15.4...mcp-server-v0.16.0) (2026-08-15)
 
 
