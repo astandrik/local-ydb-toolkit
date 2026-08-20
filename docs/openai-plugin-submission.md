@@ -8,7 +8,7 @@ Build the review archive with `npm run plugin:package`. Upload it as **Skills on
 
 - Name: `Local YDB Toolkit`
 - Package name: `local-ydb-toolkit`
-- Version: `0.1.2`
+- Version: `0.1.3`
 - Publisher: `astandrik`
 - Submission type: `Skills only`
 - Availability: all countries and regions supported by OpenAI
