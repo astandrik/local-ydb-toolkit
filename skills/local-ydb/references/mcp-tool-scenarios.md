@@ -314,12 +314,14 @@ Expected:
 
 - plan-only output includes `docker image inspect` and `docker pull`
 - with `confirm: true`, the tool returns quickly with `status: running` and a `jobId`, unless the image is already present
-- status polling eventually returns `completed` or `failed`
+- status polling returns a monotonic integer `progressPercent` based on completed known Docker layers, starting at `0` and remaining below `100` while the pull is running
+- successful completion returns `status: completed` with `progressPercent: 100`; failure returns `status: failed` with the last observed percentage
 - bootstrap and upgrade image preflight failures point back to `local_ydb_pull_image` instead of hanging inside `docker run`
 
 Avoid:
 
 - relying on `docker run` to implicitly pull large images inside a synchronous MCP tool call
+- interpreting `progressPercent` as exact byte-level progress
 - treating a 120-second MCP client timeout during image download as a YDB bootstrap failure
 
 ## Scenario 2: Fresh Root Database Bootstrap

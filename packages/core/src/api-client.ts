@@ -23,8 +23,16 @@ export interface CommandResult {
   timedOut: boolean;
 }
 
+export type CommandOutputStream = "stdout" | "stderr";
+/** Receives raw process output for in-process observation; do not persist or return chunks without redaction. */
+export type CommandOutputObserver = (stream: CommandOutputStream, chunk: string) => void;
+
 export interface CommandExecutor {
-  run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult>;
+  run(
+    profile: ResolvedLocalYdbProfile,
+    spec: CommandSpec,
+    outputObserver?: CommandOutputObserver
+  ): Promise<CommandResult>;
   display(profile: ResolvedLocalYdbProfile, spec: CommandSpec): string;
 }
 
@@ -58,7 +66,11 @@ export class ShellCommandExecutor implements CommandExecutor {
     return redactCommand(commandToShell(displaySpec), redactions);
   }
 
-  run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+  run(
+    profile: ResolvedLocalYdbProfile,
+    spec: CommandSpec,
+    outputObserver?: CommandOutputObserver
+  ): Promise<CommandResult> {
     spec.signal?.throwIfAborted();
     const redactions = collectRedactions(profile, spec);
     const timeoutMs = spec.timeoutMs ?? 30_000;
@@ -102,9 +114,11 @@ export class ShellCommandExecutor implements CommandExecutor {
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         stdout += chunk;
+        notifyOutputObserver(outputObserver, "stdout", chunk);
       });
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
+        notifyOutputObserver(outputObserver, "stderr", chunk);
       });
       child.once("error", (error) => {
         settle(() => reject(
@@ -136,6 +150,18 @@ export class ShellCommandExecutor implements CommandExecutor {
         child.stdin.end();
       }
     });
+  }
+}
+
+function notifyOutputObserver(
+  outputObserver: CommandOutputObserver | undefined,
+  stream: CommandOutputStream,
+  chunk: string
+): void {
+  try {
+    outputObserver?.(stream, chunk);
+  } catch {
+    // Output observation is best-effort and must not change command execution.
   }
 }
 
@@ -307,8 +333,8 @@ export class LocalYdbApiClient {
     return this.executor.display(this.profile, spec);
   }
 
-  run(spec: CommandSpec): Promise<CommandResult> {
-    return this.executor.run(this.profile, spec);
+  run(spec: CommandSpec, outputObserver?: CommandOutputObserver): Promise<CommandResult> {
+    return this.executor.run(this.profile, spec, outputObserver);
   }
 
   docker(args: string[], options: Omit<CommandSpec, "command" | "args"> = {}): CommandSpec {

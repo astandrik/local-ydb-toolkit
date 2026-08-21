@@ -171,6 +171,51 @@ Status {
     expect(mountCommand).not.toContain("quote");
   });
 
+  it("observes stdout and stderr before command completion without changing the result", async () => {
+    const profile = resolveProfile(ConfigSchema.parse({}));
+    const executor = new ShellCommandExecutor();
+    const observed: Array<{ stream: "stdout" | "stderr"; chunk: string; resolved: boolean }> = [];
+    let resolved = false;
+
+    const pending = executor.run(profile, {
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('stdout chunk'); process.stderr.write('stderr chunk');"]
+    }, (stream, chunk) => {
+      observed.push({ stream, chunk, resolved });
+    });
+    void pending.then(() => {
+      resolved = true;
+    });
+
+    const result = await pending;
+
+    expect(observed.every((event) => !event.resolved)).toBe(true);
+    expect(observed.filter((event) => event.stream === "stdout").map((event) => event.chunk).join(""))
+      .toBe("stdout chunk");
+    expect(observed.filter((event) => event.stream === "stderr").map((event) => event.chunk).join(""))
+      .toBe("stderr chunk");
+    expect(result.stdout).toBe("stdout chunk");
+    expect(result.stderr).toBe("stderr chunk");
+  });
+
+  it("keeps command execution successful when the output observer throws", async () => {
+    const profile = resolveProfile(ConfigSchema.parse({}));
+    const executor = new ShellCommandExecutor();
+
+    const result = await executor.run(profile, {
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('still captured');"]
+    }, () => {
+      throw new Error("observer failure");
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      stdout: "still captured",
+      stderr: ""
+    });
+  });
+
   it("does not redact broad parent directories for top-level sensitive files", () => {
     const executor = new ShellCommandExecutor();
     const tmpProfile = resolveProfile(ConfigSchema.parse({

@@ -68,7 +68,7 @@ The server exposes 39 tools. This index is generated from the runtime tool regis
 | `local_ydb_storage_placement` | read-only | Read-only storage inspection that returns ReadStoragePool output and BSC physical placement. Use before adding or reducing storage groups to confirm the exact pool shape. |
 | `local_ydb_storage_leftovers` | read-only | Read-only search for candidate leftover local-ydb Docker volumes, dumps, and PDisk/data paths. It scans Docker volume names plus profile.storageSearchPaths and deletes nothing; use before local_ydb_cleanup_storage to decide exact paths or volumes to remove. |
 | `local_ydb_list_versions` | read-only | List published GHCR or Docker Hub tags for a local-ydb container image, with numeric version tags sorted newest first. Use before local_ydb_upgrade_version; registry pagination and authentication are restricted to trusted origins, and pageSize and maxPages bound pagination. |
-| `local_ydb_pull_status` | read-only | Check the status of a background Docker image pull started by local_ydb_pull_image. |
+| `local_ydb_pull_status` | read-only | Check the status of a background Docker image pull started by local_ydb_pull_image. For known jobs it returns a monotonic progressPercent based on completed known Docker layers rather than bytes: 0-99 while running, 100 after successful completion, and the last observed value after failure. |
 
 ### Schema
 

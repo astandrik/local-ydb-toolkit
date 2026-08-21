@@ -9,6 +9,7 @@ import {
   commandToShell,
   ConfigSchema,
   type CommandExecutor,
+  type CommandOutputObserver,
   type CommandResult,
   type CommandSpec,
   type ResolvedLocalYdbProfile,
@@ -105,6 +106,56 @@ class RecordingExecutor implements CommandExecutor {
       return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
     }
     return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+  }
+}
+
+class DeferredMcpImagePullExecutor implements CommandExecutor {
+  private outputObserver: CommandOutputObserver | undefined;
+  private resolvePull: ((result: CommandResult) => void) | undefined;
+  private pullCommand = "";
+
+  display(_profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
+    return commandToShell(spec);
+  }
+
+  run(
+    profile: ResolvedLocalYdbProfile,
+    spec: CommandSpec,
+    outputObserver?: CommandOutputObserver
+  ): Promise<CommandResult> {
+    const command = this.display(profile, spec);
+    if (command.startsWith("docker image inspect ")) {
+      return Promise.resolve({ command, exitCode: 1, stdout: "", stderr: "", ok: false, timedOut: false });
+    }
+    if (command.startsWith("docker pull ")) {
+      this.pullCommand = command;
+      this.outputObserver = outputObserver;
+      return new Promise((resolve) => {
+        this.resolvePull = resolve;
+      });
+    }
+    return Promise.resolve({ command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false });
+  }
+
+  emit(chunk: string): void {
+    if (!this.outputObserver) {
+      throw new Error("Image pull output observer is not attached");
+    }
+    this.outputObserver("stdout", chunk);
+  }
+
+  finish(): void {
+    if (!this.resolvePull) {
+      throw new Error("Image pull is not running");
+    }
+    this.resolvePull({
+      command: this.pullCommand,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      ok: true,
+      timedOut: false
+    });
   }
 }
 
@@ -1682,6 +1733,36 @@ describe("mcp tools", () => {
 
     expect(result.found).toBe(false);
     expect(result.status).toBe("unknown");
+  });
+
+  it("returns image pull percentage through structured and readable MCP content", async () => {
+    const executor = new DeferredMcpImagePullExecutor();
+    const pull = await callLocalYdbToolForTest("local_ydb_pull_image", {
+      image: "ghcr.io/ydb-platform/local-ydb:mcp-progress-test",
+      confirm: true
+    }, {
+      config: ConfigSchema.parse({}),
+      executor
+    }) as { jobId: string };
+
+    executor.emit("aaaa1111: Pulling fs layer\nbbbb2222: Waiting\naaaa1111: Pull complete\n");
+    const status = await callLocalYdbToolForTest("local_ydb_pull_status", {
+      jobId: pull.jobId
+    }) as { progressPercent: number; summary: string };
+    const response = successResult(status, { responseContentFormat: "json" });
+
+    expect(status.progressPercent).toBe(49);
+    expect(status.summary).toContain("49%");
+    expect(response.structuredContent).toMatchObject({ progressPercent: 49 });
+    expect(response.content.at(-1)?.text).toContain('"progressPercent": 49');
+
+    executor.finish();
+    await expect.poll(async () => {
+      const completed = await callLocalYdbToolForTest("local_ydb_pull_status", { jobId: pull.jobId }) as {
+        status: string;
+      };
+      return completed.status;
+    }).toBe("completed");
   });
 
   it("can list registry tags through the MCP handler", async () => {
