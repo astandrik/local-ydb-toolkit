@@ -233,6 +233,7 @@ function observeImagePullLine(job: ImagePullJob, line: string): void {
   if (COMPLETED_LAYER_STATUSES.has(status)) {
     job.completedLayers.add(layer);
   }
+  job.updatedAt = new Date().toISOString();
 
   const progressPercent = Math.min(
     99,
@@ -240,7 +241,6 @@ function observeImagePullLine(job: ImagePullJob, line: string): void {
   );
   if (progressPercent > job.progressPercent) {
     job.progressPercent = progressPercent;
-    job.updatedAt = new Date().toISOString();
   }
 }
 

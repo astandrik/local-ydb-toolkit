@@ -1234,6 +1234,34 @@ describe("mutating operations", () => {
     expect(pullImageStatus(jobId).summary).toContain("100%");
   });
 
+  it("refreshes image pull updatedAt for recognized activity without percentage changes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-21T00:00:00.000Z"));
+    const { executor, jobId } = await startDeferredImagePull(
+      "ghcr.io/ydb-platform/local-ydb:progress-activity-test"
+    );
+
+    executor.emit("stdout", "aaaa1111: Pulling fs layer\nbbbb2222: Waiting\naaaa1111: Pull complete\n");
+    expect(pullImageStatus(jobId)).toMatchObject({
+      progressPercent: 49,
+      updatedAt: "2026-08-21T00:00:00.000Z"
+    });
+
+    vi.setSystemTime(new Date("2026-08-21T00:00:01.000Z"));
+    executor.emit("stdout", "bbbb2222: Downloading\n");
+    expect(pullImageStatus(jobId)).toMatchObject({
+      progressPercent: 49,
+      updatedAt: "2026-08-21T00:00:01.000Z"
+    });
+
+    vi.setSystemTime(new Date("2026-08-21T00:00:02.000Z"));
+    executor.emit("stdout", "Digest: sha256:ignored\n");
+    expect(pullImageStatus(jobId)).toMatchObject({
+      progressPercent: 49,
+      updatedAt: "2026-08-21T00:00:01.000Z"
+    });
+  });
+
   it("preserves the last image pull percentage on failure", async () => {
     const { executor, jobId } = await startDeferredImagePull(
       "ghcr.io/ydb-platform/local-ydb:progress-failure-test"
