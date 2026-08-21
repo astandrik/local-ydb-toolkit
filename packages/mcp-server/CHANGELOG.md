@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.18.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.17.0...mcp-server-v0.18.0) (2026-08-21)
+
+
+### Features
+
+* **mcp-server:** report Docker image pull progress ([53fb058](https://github.com/astandrik/local-ydb-toolkit/commit/53fb0580375aa643880c90fd056fc6aff45c661c))
+* **mcp-server:** report image pull progress ([66eae05](https://github.com/astandrik/local-ydb-toolkit/commit/66eae055728c2eb232b4b9d5ac3bd35193d5b286))
+
+
+### Bug Fixes
+
+* **core:** refresh image pull activity timestamp ([d841830](https://github.com/astandrik/local-ydb-toolkit/commit/d841830f5786a47866563111f8aeb02aaa4af382))
+
 ## [0.17.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.16.1...mcp-server-v0.17.0) (2026-08-20)
 
 
