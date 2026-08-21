@@ -172,7 +172,7 @@ The server exposes 39 tools. This index is generated from the runtime tool regis
 | `local_ydb_storage_placement` | read-only | Read-only storage inspection that returns ReadStoragePool output and BSC physical placement. Use before adding or reducing storage groups to confirm the exact pool shape. |
 | `local_ydb_storage_leftovers` | read-only | Read-only search for candidate leftover local-ydb Docker volumes, dumps, and PDisk/data paths. It scans Docker volume names plus profile.storageSearchPaths and deletes nothing; use before local_ydb_cleanup_storage to decide exact paths or volumes to remove. |
 | `local_ydb_list_versions` | read-only | List published GHCR or Docker Hub tags for a local-ydb container image, with numeric version tags sorted newest first. Use before local_ydb_upgrade_version; registry pagination and authentication are restricted to trusted origins, and pageSize and maxPages bound pagination. |
-| `local_ydb_pull_status` | read-only | Check the status of a background Docker image pull started by local_ydb_pull_image. |
+| `local_ydb_pull_status` | read-only | Check the status of a background Docker image pull started by local_ydb_pull_image. For known jobs it returns a monotonic progressPercent based on completed known Docker layers rather than bytes: 0-99 while running, 100 after successful completion, and the last observed value after failure. |
 
 ### Schema
 
@@ -389,7 +389,7 @@ For table creation, prefer a CMS tenant path such as `/local/example`. A root-on
 
 `local_ydb_permissions` manages YDB schema ACLs through `scheme permissions`. Its read-only `list` action defaults to the configured tenant root and runs without `confirm`. Mutating actions `grant`, `revoke`, `set`, `clear`, `chown`, `set-inheritance`, and `clear-inheritance` return a plan unless `confirm: true` is supplied. For `grant`, `revoke`, and `set`, pass permission names as a structured `permissions` array; each item is emitted as a separate `-p` CLI argument.
 
-`local_ydb_pull_image` starts a background `docker pull` for a profile image or explicit image and returns a `jobId` immediately. Poll `local_ydb_pull_status` with that `jobId` until it reaches `completed` before retrying bootstrap or upgrade. This keeps slow registry downloads out of synchronous bootstrap/upgrade tool calls.
+`local_ydb_pull_image` starts a background `docker pull` for a profile image or explicit image and returns a `jobId` immediately. Poll `local_ydb_pull_status` with that `jobId` until it reaches `completed` before retrying bootstrap or upgrade. Known jobs include a monotonic `progressPercent`: an approximate completed-layer percentage from 0 to 99 while running, 100 after successful completion, and the last observed value after failure. This keeps slow registry downloads out of synchronous bootstrap/upgrade tool calls without claiming byte-level progress.
 
 `local_ydb_bootstrap_root_database` creates only the root local database stack:
 

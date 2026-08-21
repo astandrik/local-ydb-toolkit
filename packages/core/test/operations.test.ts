@@ -35,6 +35,7 @@ import {
   setRootPassword,
   writeDynamicNodeAuthConfig,
   type CommandExecutor,
+  type CommandOutputObserver,
   type CommandResult,
   type CommandSpec,
   type ResolvedLocalYdbProfile
@@ -74,6 +75,66 @@ class RecordingExecutor implements CommandExecutor {
       timedOut: false
     };
   }
+}
+
+class DeferredImagePullExecutor implements CommandExecutor {
+  private outputObserver: CommandOutputObserver | undefined;
+  private resolvePull: ((result: CommandResult) => void) | undefined;
+  private pullCommand = "";
+
+  display(_profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
+    return commandToShell(spec);
+  }
+
+  run(
+    profile: ResolvedLocalYdbProfile,
+    spec: CommandSpec,
+    outputObserver?: CommandOutputObserver
+  ): Promise<CommandResult> {
+    const command = this.display(profile, spec);
+    if (command.startsWith("docker image inspect ")) {
+      return Promise.resolve(commandResult(command, { exitCode: 1, ok: false }));
+    }
+    if (command.startsWith("docker pull ")) {
+      this.pullCommand = command;
+      this.outputObserver = outputObserver;
+      return new Promise((resolve) => {
+        this.resolvePull = resolve;
+      });
+    }
+    return Promise.resolve(commandResult(command));
+  }
+
+  emit(stream: "stdout" | "stderr", chunk: string): void {
+    if (!this.outputObserver) {
+      throw new Error("Image pull output observer is not attached");
+    }
+    this.outputObserver(stream, chunk);
+  }
+
+  finish(ok: boolean): void {
+    if (!this.resolvePull) {
+      throw new Error("Image pull is not running");
+    }
+    this.resolvePull(commandResult(this.pullCommand, {
+      exitCode: ok ? 0 : 1,
+      ok,
+      stderr: ok ? "" : "pull failed"
+    }));
+  }
+}
+
+async function startDeferredImagePull(image: string): Promise<{
+  executor: DeferredImagePullExecutor;
+  jobId: string;
+}> {
+  const executor = new DeferredImagePullExecutor();
+  const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+  const response = await pullImage(ctx, { confirm: true, image });
+  if (!response.jobId) {
+    throw new Error("Expected background image pull to return a jobId");
+  }
+  return { executor, jobId: response.jobId };
 }
 
 afterEach(() => {
@@ -1127,10 +1188,124 @@ describe("mutating operations", () => {
   });
 
   it("reports unknown image pull jobs without throwing", () => {
-    expect(pullImageStatus("missing-job")).toMatchObject({
+    const status = pullImageStatus("missing-job");
+    expect(status).toMatchObject({
       found: false,
       jobId: "missing-job",
       status: "unknown"
+    });
+    expect(status).not.toHaveProperty("progressPercent");
+  });
+
+  it("reports monotonic image pull progress from fragmented layer output", async () => {
+    const { executor, jobId } = await startDeferredImagePull(
+      "ghcr.io/ydb-platform/local-ydb:progress-test"
+    );
+
+    expect(pullImageStatus(jobId)).toMatchObject({
+      status: "running",
+      progressPercent: 0
+    });
+
+    executor.emit("stdout", "aaaa1111: Pulling fs ");
+    executor.emit("stdout", "layer\nbbbb2222: Waiting\n");
+    executor.emit("stderr", "aaaa1111: Pull complete\n");
+    expect(pullImageStatus(jobId)).toMatchObject({
+      status: "running",
+      progressPercent: 49
+    });
+
+    executor.emit("stdout", "aaaa1111: Waiting\ncccc3333: Downloading\n");
+    expect(pullImageStatus(jobId).progressPercent).toBe(49);
+
+    executor.emit("stdout", "bbbb2222: Pull complete\ncccc3333: Already exists\n");
+    expect(pullImageStatus(jobId)).toMatchObject({
+      status: "running",
+      progressPercent: 99
+    });
+
+    executor.finish(true);
+    await vi.waitFor(() => {
+      expect(pullImageStatus(jobId)).toMatchObject({
+        status: "completed",
+        progressPercent: 100
+      });
+    });
+    expect(pullImageStatus(jobId).summary).toContain("100%");
+  });
+
+  it("refreshes image pull updatedAt for recognized activity without percentage changes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-21T00:00:00.000Z"));
+    const { executor, jobId } = await startDeferredImagePull(
+      "ghcr.io/ydb-platform/local-ydb:progress-activity-test"
+    );
+
+    executor.emit("stdout", "aaaa1111: Pulling fs layer\nbbbb2222: Waiting\naaaa1111: Pull complete\n");
+    expect(pullImageStatus(jobId)).toMatchObject({
+      progressPercent: 49,
+      updatedAt: "2026-08-21T00:00:00.000Z"
+    });
+
+    vi.setSystemTime(new Date("2026-08-21T00:00:01.000Z"));
+    executor.emit("stdout", "bbbb2222: Downloading\n");
+    expect(pullImageStatus(jobId)).toMatchObject({
+      progressPercent: 49,
+      updatedAt: "2026-08-21T00:00:01.000Z"
+    });
+
+    vi.setSystemTime(new Date("2026-08-21T00:00:02.000Z"));
+    executor.emit("stdout", "Digest: sha256:ignored\n");
+    expect(pullImageStatus(jobId)).toMatchObject({
+      progressPercent: 49,
+      updatedAt: "2026-08-21T00:00:01.000Z"
+    });
+  });
+
+  it("preserves the last image pull percentage on failure", async () => {
+    const { executor, jobId } = await startDeferredImagePull(
+      "ghcr.io/ydb-platform/local-ydb:progress-failure-test"
+    );
+
+    executor.emit("stdout", "aaaa1111: Pulling fs layer\nbbbb2222: Waiting\naaaa1111: Pull complete\n");
+    expect(pullImageStatus(jobId).progressPercent).toBe(49);
+
+    executor.finish(false);
+    await vi.waitFor(() => {
+      expect(pullImageStatus(jobId)).toMatchObject({
+        status: "failed",
+        progressPercent: 49
+      });
+    });
+    expect(pullImageStatus(jobId).summary).toContain("49%");
+  });
+
+  it("flushes a final image pull layer line without a newline", async () => {
+    const { executor, jobId } = await startDeferredImagePull(
+      "ghcr.io/ydb-platform/local-ydb:progress-tail-test"
+    );
+
+    executor.emit("stdout", "aaaa1111: Pulling fs layer\nbbbb2222: Waiting\naaaa1111: Pull complete");
+    expect(pullImageStatus(jobId).progressPercent).toBe(0);
+
+    executor.finish(false);
+    await vi.waitFor(() => {
+      expect(pullImageStatus(jobId)).toMatchObject({
+        status: "failed",
+        progressPercent: 49
+      });
+    });
+  });
+
+  it("completes image pulls without layer output at 100 percent", async () => {
+    const { executor, jobId } = await startDeferredImagePull(
+      "ghcr.io/ydb-platform/local-ydb:no-layer-output-test"
+    );
+
+    expect(pullImageStatus(jobId).progressPercent).toBe(0);
+    executor.finish(true);
+    await vi.waitFor(() => {
+      expect(pullImageStatus(jobId).progressPercent).toBe(100);
     });
   });
 

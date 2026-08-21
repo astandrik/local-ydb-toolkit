@@ -1,4 +1,8 @@
-import type { CommandResult, CommandSpec } from "../api-client.js";
+import type {
+  CommandOutputStream,
+  CommandResult,
+  CommandSpec
+} from "../api-client.js";
 import { bash, shellQuote } from "../api-client.js";
 import type {
   ImagePullOptions,
@@ -11,6 +15,9 @@ import type {
 const IMAGE_PULL_TIMEOUT_MS = 60 * 60 * 1000;
 const IMAGE_INSPECT_TIMEOUT_MS = 30_000;
 const OUTPUT_TAIL_LIMIT = 4000;
+const OUTPUT_REMAINDER_LIMIT = 1024;
+const DOCKER_PULL_LAYER_LINE = /^([^:\s]+):\s+(Pulling fs layer|Waiting|Downloading|Verifying Checksum|Download complete|Extracting|Pull complete|Already exists)(?:\s|$)/;
+const COMPLETED_LAYER_STATUSES = new Set(["Pull complete", "Already exists"]);
 
 interface ImagePullJob {
   jobId: string;
@@ -18,6 +25,10 @@ interface ImagePullJob {
   profile: string;
   command: string;
   status: ImagePullStatus;
+  progressPercent: number;
+  knownLayers: Set<string>;
+  completedLayers: Set<string>;
+  outputRemainders: Record<CommandOutputStream, string>;
   startedAt: string;
   updatedAt: string;
   result?: CommandResult;
@@ -106,7 +117,7 @@ export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions =
   }
 
   const job = createImagePullJob(ctx, image, pullSpec);
-  void ctx.client.run(pullSpec)
+  void ctx.client.run(pullSpec, (stream, chunk) => observeImagePullOutput(job, stream, chunk))
     .then((result) => finishImagePullJob(job, result))
     .catch((error: unknown) => finishImagePullJob(job, {
       command: job.command,
@@ -146,13 +157,14 @@ export function pullImageStatus(jobId: string): ImagePullStatusResponse {
 
   const result = job.result;
   return {
-    summary: `Docker image pull job ${job.jobId} is ${job.status}.`,
+    summary: `Docker image pull job ${job.jobId} is ${job.status} (${job.progressPercent}%).`,
     found: true,
     jobId: job.jobId,
     image: job.image,
     profile: job.profile,
     status: job.status,
     command: job.command,
+    progressPercent: job.progressPercent,
     startedAt: job.startedAt,
     updatedAt: job.updatedAt,
     exitCode: result?.exitCode,
@@ -171,6 +183,10 @@ function createImagePullJob(ctx: ToolkitContext, image: string, spec: CommandSpe
     profile: ctx.profile.name,
     command: ctx.client.display(spec),
     status: "running",
+    progressPercent: 0,
+    knownLayers: new Set(),
+    completedLayers: new Set(),
+    outputRemainders: { stdout: "", stderr: "" },
     startedAt: now,
     updatedAt: now
   };
@@ -179,13 +195,63 @@ function createImagePullJob(ctx: ToolkitContext, image: string, spec: CommandSpe
 }
 
 function finishImagePullJob(job: ImagePullJob, result: CommandResult): void {
+  flushImagePullOutput(job);
   job.result = result;
   job.status = result.ok ? "completed" : "failed";
+  if (result.ok) {
+    job.progressPercent = 100;
+  }
   job.updatedAt = new Date().toISOString();
 }
 
+function observeImagePullOutput(job: ImagePullJob, stream: CommandOutputStream, chunk: string): void {
+  const lines = `${job.outputRemainders[stream]}${chunk}`.split(/\r\n|\r|\n/);
+  job.outputRemainders[stream] = tailToLimit(lines.pop() ?? "", OUTPUT_REMAINDER_LIMIT);
+  for (const line of lines) {
+    observeImagePullLine(job, line);
+  }
+}
+
+function flushImagePullOutput(job: ImagePullJob): void {
+  for (const stream of ["stdout", "stderr"] as const) {
+    const line = job.outputRemainders[stream];
+    job.outputRemainders[stream] = "";
+    if (line) {
+      observeImagePullLine(job, line);
+    }
+  }
+}
+
+function observeImagePullLine(job: ImagePullJob, line: string): void {
+  const match = DOCKER_PULL_LAYER_LINE.exec(stripAnsi(line).trim());
+  if (!match) {
+    return;
+  }
+
+  const [, layer, status] = match;
+  job.knownLayers.add(layer);
+  if (COMPLETED_LAYER_STATUSES.has(status)) {
+    job.completedLayers.add(layer);
+  }
+  job.updatedAt = new Date().toISOString();
+
+  const progressPercent = Math.min(
+    99,
+    Math.floor(99 * job.completedLayers.size / job.knownLayers.size)
+  );
+  if (progressPercent > job.progressPercent) {
+    job.progressPercent = progressPercent;
+  }
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function tailToLimit(value: string, limit: number): string {
+  return value.length > limit ? value.slice(value.length - limit) : value;
+}
+
 function tail(value: string): string {
-  return value.length > OUTPUT_TAIL_LIMIT
-    ? value.slice(value.length - OUTPUT_TAIL_LIMIT)
-    : value;
+  return tailToLimit(value, OUTPUT_TAIL_LIMIT);
 }

@@ -403,7 +403,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_pull_status",
     description:
-      "Check the status of a background Docker image pull started by local_ydb_pull_image.",
+      "Check the status of a background Docker image pull started by local_ydb_pull_image. For known jobs it returns a monotonic progressPercent based on completed known Docker layers rather than bytes: 0-99 while running, 100 after successful completion, and the last observed value after failure.",
     inputSchema: pullStatusSchema(),
     annotations: readOnlyAnnotations(),
     handler: async (args) => {

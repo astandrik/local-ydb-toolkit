@@ -149,6 +149,20 @@ describe("MCP Registry metadata", () => {
 });
 
 describe("repository skill consistency", () => {
+  it("keeps the background image pull scenario identical and percentage-aware", () => {
+    const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
+    const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");
+    const rootSection = sectionRange(rootScenarios, "## Scenario 1D: Background Image Pull", "## Scenario 2: Fresh Root Database Bootstrap");
+    const skillSection = sectionRange(skillScenarios, "## Scenario 1C: Background Image Pull", "## Scenario 2: Fresh Root Database Bootstrap");
+    const rootBody = rootSection.split("\n").slice(1).join("\n");
+    const skillBody = skillSection.split("\n").slice(1).join("\n");
+
+    expect(rootBody).toBe(skillBody);
+    expect(rootBody).toContain("monotonic integer `progressPercent`");
+    expect(rootBody).toContain("`progressPercent: 100`");
+    expect(rootBody).toContain("exact byte-level progress");
+  });
+
   it("keeps the declarative topology contract identical in both scenario copies", () => {
     const rootScenarios = readFileSync(new URL("../../../MCP_TOOL_TEST_SCENARIOS.md", import.meta.url), "utf8");
     const skillScenarios = readFileSync(new URL("../../../skills/local-ydb/references/mcp-tool-scenarios.md", import.meta.url), "utf8");

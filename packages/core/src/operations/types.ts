@@ -441,6 +441,8 @@ export interface ImagePullStatusResponse {
   image?: string;
   profile?: string;
   command?: string;
+  /** Monotonic 0-100 estimate based on completed known Docker layers, not bytes. */
+  progressPercent?: number;
   startedAt?: string;
   updatedAt?: string;
   exitCode?: number | null;
