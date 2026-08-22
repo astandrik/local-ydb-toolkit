@@ -4,6 +4,9 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { decode } from "@toon-format/toon";
 import { StatusIds_StatusCode } from "@ydbjs/api/operation";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "@local-ydb-toolkit/core";
 import {
@@ -159,6 +162,47 @@ describe("MCP protocol contract", () => {
       });
       expect(responseContentFormat === "json" ? JSON.parse(text) : decode(text)).toEqual(jsonModel);
     }
+  });
+
+  it("returns safe structured config errors without parser snippets or paths", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-mcp-config-error-"));
+    const configPath = join(dir, "config.json");
+    const marker = "BENIGN_MCP_CONFIG_MARKER";
+    writeFileSync(configPath, `${marker}\n`, "utf8");
+    try {
+      const { client } = await connect(createLocalYdbMcpApplication());
+      const result = await client.callTool({
+        name: "local_ydb_inventory",
+        arguments: { configPath },
+      });
+
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: "CONFIG_INVALID_JSON",
+          error: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(marker);
+      expect(JSON.stringify(result)).not.toContain(configPath);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown top-level MCP tool arguments", async () => {
+    const { client } = await connect(createLocalYdbMcpApplication({
+      config: ConfigSchema.parse({}),
+    }));
+    const result = await client.callTool({
+      name: "local_ydb_inventory",
+      arguments: { unexpected: true },
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: { error: expect.any(String) },
+    });
   });
 
   it("propagates client cancellation to the tool handler abort signal", async () => {
