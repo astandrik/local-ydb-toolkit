@@ -2288,7 +2288,8 @@ describe("mutating operations", () => {
     const compatibilityCommand = (command: string) => command.includes("expected_image_id=")
       && command.includes("docker inspect --type container")
       && command.includes("does not match profile image ID");
-    const dynamicRunCommand = (command: string) => command.includes("docker run")
+    const dynamicRunCommand = (command: string) => command.includes("docker create")
+      && command.includes("docker start")
       && command.includes("--network container:ydb-local");
 
     const primaryCompatibilityIndex = primary.plannedCommands.findIndex(compatibilityCommand);
@@ -2322,7 +2323,7 @@ describe("mutating operations", () => {
 
     expect(response.executed).toBe(true);
     expect(response.results?.at(-1)).toMatchObject({ ok: false, stderr: "static image ID mismatch" });
-    expect(executor.commands.some((command) => command.includes("docker run") && command.includes("--name ydb-dyn-example"))).toBe(false);
+    expect(executor.commands.some((command) => command.includes("docker create") && command.includes("--name ydb-dyn-example"))).toBe(false);
   });
 
   it("fails an additional-node batch before the first node when the static image ID differs", async () => {
@@ -2343,7 +2344,7 @@ describe("mutating operations", () => {
     expect(response.plannedCommands).toEqual(plan.plannedCommands);
     expect(response.nodeChecks).toEqual([]);
     expect(response.summary).toContain("verified 0/2 nodes");
-    expect(executor.commands.some((command) => command.includes("docker run") && command.includes("--name ydb-dyn-example-"))).toBe(false);
+    expect(executor.commands.some((command) => command.includes("docker create") && command.includes("--name ydb-dyn-example-"))).toBe(false);
   });
 
   it("stops an additional-node batch when the compatibility check fails before the next node", async () => {
@@ -2372,8 +2373,8 @@ describe("mutating operations", () => {
     expect(response.plannedCommands).toEqual(plan.plannedCommands);
     expect(response.nodeChecks).toHaveLength(1);
     expect(response.summary).toContain("verified 1/2 nodes");
-    expect(executor.commands.some((command) => command.includes("docker run") && command.includes("--name ydb-dyn-example-2"))).toBe(true);
-    expect(executor.commands.some((command) => command.includes("docker run") && command.includes("--name ydb-dyn-example-3"))).toBe(false);
+    expect(executor.commands.some((command) => command.includes("docker create") && command.includes("--name ydb-dyn-example-2"))).toBe(true);
+    expect(executor.commands.some((command) => command.includes("docker create") && command.includes("--name ydb-dyn-example-3"))).toBe(false);
   });
 
   it("defaults one-off scaling to the node after the configured topology", async () => {
@@ -3666,7 +3667,7 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.plannedCommands.join("\n")).not.toContain("/tmp/local-ydb/root.password");
     expect(response.plannedCommands.some((command) => command.includes("<redacted> | docker exec -i"))).toBe(true);
-    const dynamicRecreateIndex = response.plannedCommands.findIndex((command) => command.includes("docker run -d --name ydb-dyn-example"));
+    const dynamicRecreateIndex = response.plannedCommands.findIndex((command) => command.includes("docker create --name ydb-dyn-example"));
     const waitIndex = response.plannedCommands.findIndex((command) => command.includes("scheme ls /local/example"));
     expect(dynamicRecreateIndex).toBeGreaterThanOrEqual(0);
     expect(waitIndex).toBeGreaterThan(dynamicRecreateIndex);

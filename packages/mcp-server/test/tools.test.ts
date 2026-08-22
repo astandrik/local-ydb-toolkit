@@ -1131,6 +1131,7 @@ describe("mcp tools", () => {
     expect(addTool?.description).toContain("current image ID");
     expect(addTool?.description).toContain("immediately before each node start");
     expect(addTool?.description).toContain("destroy followed by bootstrap");
+    expect(addTool?.description).toContain("created but not started until its resolved image ID matches");
 
     const bootstrapTool = localYdbTools.find((tool) => tool.name === "local_ydb_bootstrap");
     const restartTool = localYdbTools.find((tool) => tool.name === "local_ydb_restart_stack");
@@ -1145,6 +1146,7 @@ describe("mcp tools", () => {
     expect(startTool?.description).toContain("current image ID");
     expect(startTool?.description).toContain("immediately before the dynamic container start");
     expect(startTool?.description).toContain("destroy followed by bootstrap");
+    expect(startTool?.description).toContain("created but not started until its resolved image ID matches");
     expect(restartTool?.description).toContain("full check-only static compatibility preflight");
     expect(restartTool?.description).toContain("Before stopping any container");
     expect(restartTool?.description).toContain("configured binding changes require destroy followed by bootstrap");

@@ -85,7 +85,7 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Restart rollback uses restart or bootstrap reconciliation because inventory does not retain removed configured container definitions.
 - Removal rollback restores configured nodes through restart or bootstrap and recreates one-off nodes through add; a mixed selection returns both instructions.
 - Auth hardening runs the full static compatibility preflight before any config or container mutation, then recreates and verifies every configured node in index order, including profiles without a dynamic-node token file; rollback also uses restart or bootstrap reconciliation.
-- Partial primary starts and one-off additions repeat the full static compatibility preflight after checking image presence and immediately before every dynamic container launch; mutable named-image drift fails closed before that node and all later nodes, requiring destroy followed by bootstrap.
+- Partial primary starts and one-off additions repeat the full static compatibility preflight after checking image presence and immediately before every dynamic container launch. Each container is created but not started until its resolved immutable image ID matches the static container; a concurrent named-tag refresh removes the never-started container and fails closed before later nodes, while a preflight mismatch requires destroy followed by bootstrap.
 - Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy; an incomplete container definition aborts the rebuild before destructive work.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
 
@@ -438,7 +438,7 @@ Expected:
 
 - `create_tenant` waits until `admin database ... status` is readable. It should not insist on `RUNNING` before the first dynamic node.
 - `database_status` can show `PENDING_RESOURCES` before dynamic registration and `RUNNING` afterwards.
-- `start_dynamic_node` recreates the container if it is stale or exited, but first verifies that the static container still matches the current image ID and full configured topology.
+- `start_dynamic_node` recreates the container if it is stale or exited, but first verifies that the static container still matches the current image ID and full configured topology; the recreated container starts only after its resolved image ID matches the static node.
 - `tenant_check` succeeds only after the dynamic node is actually serving the tenant gRPC path.
 
 Avoid:
