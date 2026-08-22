@@ -280,14 +280,9 @@ export function commandForDynamicEnsureRun(profile: ResolvedLocalYdbProfile, nod
     icPort: profile.ports.dynamicIc
   };
   const container = shellQuote(target.container);
-  const staticContainer = shellQuote(profile.staticContainer);
-  const imageIdTemplate = shellQuote("{{.Image}}");
   return [
-    "set -euo pipefail",
     `if docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null | grep -qx true; then`,
-    `  if [ \"$(docker inspect --type container --format ${imageIdTemplate} ${container})\" = \"$(docker inspect --type container --format ${imageIdTemplate} ${staticContainer})\" ]; then`,
-    "    exit 0",
-    "  fi",
+    "  exit 0",
     "fi",
     `docker rm -f ${container} 2>/dev/null || true`,
     commandForDynamicNodeRun(profile, target)
