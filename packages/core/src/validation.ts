@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 
-export const DEFAULT_IMAGE = "ghcr.io/ydb-platform/local-ydb:26.1.1.6";
+export const DEFAULT_IMAGE = "ghcr.io/ydb-platform/local-ydb:stable-26-1-1";
 
 export const PortsSchema = z.object({
   staticGrpc: z.number().int().positive().default(2136),

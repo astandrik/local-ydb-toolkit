@@ -118,11 +118,16 @@ export async function bootstrapRootDatabase(ctx: ToolkitContext, options: Mutati
 export async function startDynamicNode(ctx: ToolkitContext, options: MutatingOptions = {}) {
   const plan = dynamicNodePlan(ctx.profile, 1);
   validateDynamicNodePlans(ctx.profile, [plan]);
+  const configuredPlans = configuredDynamicNodePlans(ctx.profile);
   return runMutating(ctx, {
     summary: `Start dynamic node ${ctx.profile.dynamicContainer}.`,
     risk: "medium",
     specs: [
       ensureImagePresentSpec(ctx.profile.image),
+      bash(commandForStaticCompatibilityCheck(ctx.profile, {
+        requireGraphShard: true,
+        publishedDynamicGrpcPorts: configuredPlans.map((configuredPlan) => configuredPlan.grpcPort)
+      }), { timeoutMs: 60_000, description: "Verify static local-ydb node compatibility before dynamic node start" }),
       bash(commandForDynamicEnsureRun(ctx.profile, plan), { timeoutMs: 60_000 })
     ],
     rollback: [`docker rm -f ${ctx.profile.dynamicContainer}`],

@@ -376,7 +376,6 @@ async function verifyLiveTools(client) {
   assert(staticLogs.ok === true, staticLogs.stderr || "static container logs failed");
 
   await verifyBackupRestore(client, profile);
-  await verifyConfirmedDynamicNodeMutation(client, profile);
 }
 
 async function verifySchemaApply(client, profile) {
@@ -597,77 +596,6 @@ async function cleanupBackupRestoreDump(client, profile, dumpName, dumpPath) {
     !Array.isArray(afterCleanup.dumps) || !afterCleanup.dumps.some((dump) => dump.name === dumpName),
     "list dumps still included the CI backup/restore dump after cleanup.",
   );
-}
-
-async function verifyConfirmedDynamicNodeMutation(client, profile) {
-  const extraContainer = `${containerPrefix}-dynamic-2`;
-  const extraIcPort = 19003;
-  const dynamicNodePlan = await callTool(client, "local_ydb_add_dynamic_nodes", {
-    profile,
-    count: 1,
-  });
-  assert(
-    dynamicNodePlan.executed === false,
-    "plan-only dynamic-node tool should not execute without confirm=true.",
-  );
-  assert(
-    Array.isArray(dynamicNodePlan.plannedCommands) && dynamicNodePlan.plannedCommands.length > 0,
-    "dynamic-node plan did not include commands.",
-  );
-
-  let added = false;
-  try {
-    const addResult = await callTool(client, "local_ydb_add_dynamic_nodes", {
-      profile,
-      count: 1,
-      confirm: true,
-    });
-    added = true;
-    assert(addResult.executed === true, "confirmed dynamic-node add did not execute.");
-    assert(
-      addResult.results?.every((result) => result.ok === true) === true,
-      "confirmed dynamic-node add had failed command results.",
-    );
-    assert(
-      addResult.nodeChecks?.every((check) => check.ok === true) === true,
-      "confirmed dynamic-node add did not verify the extra node.",
-    );
-
-    const afterAdd = await callTool(client, "local_ydb_nodes_check", { profile });
-    assert(
-      nodePorts(afterAdd).includes(extraIcPort),
-      "extra dynamic node IC port was not visible after confirmed add.",
-    );
-  } finally {
-    if (added) {
-      const removeResult = await callTool(client, "local_ydb_remove_dynamic_nodes", {
-        profile,
-        containers: [extraContainer],
-        confirm: true,
-      });
-      assert(removeResult.executed === true, "confirmed dynamic-node removal did not execute.");
-      assert(
-        removeResult.results?.some((result) => result.ok === true) === true,
-        "confirmed dynamic-node removal had no successful command results.",
-      );
-      assert(
-        removeResult.nodeChecks?.every((check) => check.ok === true) === true,
-        "confirmed dynamic-node removal did not verify node disappearance.",
-      );
-
-      const afterRemove = await callTool(client, "local_ydb_nodes_check", { profile });
-      assert(
-        !nodePorts(afterRemove).includes(extraIcPort),
-        "extra dynamic node IC port was still visible after confirmed removal.",
-      );
-
-      const tenantAfterRemove = await callTool(client, "local_ydb_tenant_check", { profile });
-      assert(
-        tenantAfterRemove.ok === true,
-        tenantAfterRemove.stderr || "tenant check failed after confirmed dynamic-node removal",
-      );
-    }
-  }
 }
 
 async function runYdbCli(args, description) {
@@ -984,6 +912,48 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
       await assertConfiguredGrpcBindingsAndEndpoints();
       const recreatedInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+
+      const configuredIdsBeforeIncompatibleAdd = configuredContainers.map((container) => findContainer(recreatedInventory, container)?.id);
+      const setIncompatibleRestartPolicy = await runCommand("docker", ["update", "--restart=no", topologyStaticContainer]);
+      assert(setIncompatibleRestartPolicy.exitCode === 0, setIncompatibleRestartPolicy.stderr || "failed to create the incompatible static fixture.");
+      try {
+        const incompatibleAddPlan = await callTool(client, "local_ydb_add_dynamic_nodes", {
+          profile: topologyProfileName,
+          count: 1,
+        });
+        const compatibilityIndex = incompatibleAddPlan.plannedCommands?.findIndex(
+          (command) => command.includes("expected_image_id=") && command.includes("HostConfig.RestartPolicy.Name"),
+        ) ?? -1;
+        const createIndex = incompatibleAddPlan.plannedCommands?.findIndex(
+          (command) => command.includes("docker create") && command.includes(`--name ${oneOffContainer}`),
+        ) ?? -1;
+        assert(compatibilityIndex >= 0, "owned incompatible add plan omitted static compatibility.");
+        assert(createIndex > compatibilityIndex, "owned incompatible add plan placed compatibility after container creation.");
+
+        const incompatibleAdd = await callTool(client, "local_ydb_add_dynamic_nodes", {
+          profile: topologyProfileName,
+          count: 1,
+          confirm: true,
+        });
+        const failedResult = incompatibleAdd.results?.find((result) => result.ok === false);
+        assert(
+          failedResult?.stderr?.includes("does not match profile restart policy"),
+          failedResult?.stderr || "owned static incompatibility did not identify restart policy.",
+        );
+        assert(
+          !incompatibleAdd.results?.some((result) => result.command.includes("docker create") && result.command.includes(`--name ${oneOffContainer}`)),
+          "owned incompatible add reached dynamic container creation.",
+        );
+        const afterIncompatibleAdd = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
+        assert(!findContainer(afterIncompatibleAdd, oneOffContainer), "owned incompatible add created a one-off container.");
+        assert(
+          JSON.stringify(configuredContainers.map((container) => findContainer(afterIncompatibleAdd, container)?.id)) === JSON.stringify(configuredIdsBeforeIncompatibleAdd),
+          "owned incompatible add changed configured container identities.",
+        );
+      } finally {
+        const restoreRestartPolicy = await runCommand("docker", ["update", "--restart=unless-stopped", topologyStaticContainer]);
+        assert(restoreRestartPolicy.exitCode === 0, restoreRestartPolicy.stderr || "failed to restore the task-owned static restart policy.");
+      }
 
       const configuredIdsBeforeRejectedAdd = configuredContainers.map((container) => findContainer(recreatedInventory, container)?.id);
       const overlappingAdd = await client.callTool(

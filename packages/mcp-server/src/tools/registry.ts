@@ -476,7 +476,7 @@ export const toolDefinitions = [
     instructionOrder: 4,
     name: "local_ydb_start_dynamic_node",
     description:
-      "Start the configured primary dynamic tenant node for an existing CMS tenant. Before returning or executing a plan, it rejects a primary name that aliases the static container and ports that collide in the shared network namespace, including static IC port 19001. Use after local_ydb_create_tenant or when admin status is PENDING_RESOURCES; use local_ydb_add_dynamic_nodes for extra nodes. Without confirm=true this returns a plan only.",
+      "Start the configured primary dynamic tenant node for an existing CMS tenant. Before returning or executing a plan, it rejects a primary name that aliases the static container and ports that collide in the shared network namespace, including static IC port 19001. After checking that the image is present, it runs the full check-only static compatibility preflight, including the current image ID, immediately before the dynamic container start; a mismatch fails closed and requires destroy followed by bootstrap. The dynamic container is created but not started until its resolved image ID matches the static container, closing a concurrent named-tag refresh race. Use after local_ydb_create_tenant or when admin status is PENDING_RESOURCES; use local_ydb_add_dynamic_nodes for extra nodes. Without confirm=true this returns a plan only.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations({ idempotent: true }),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -487,7 +487,7 @@ export const toolDefinitions = [
     group: "dynamic nodes",
     name: "local_ydb_add_dynamic_nodes",
     description:
-      "Add one-off dynamic tenant nodes beyond the declarative profile.dynamicNodeCount topology, one at a time. By default the first suffix is dynamicNodeCount + 1; an explicit startIndex must be greater than dynamicNodeCount, and port overrides remain available. Every planned name must be distinct from the static container and all configured plus one-off ports must be valid and unique in the shared network namespace. Without confirm=true it returns container/port plans; with confirm=true each node must have a stable running exact Docker container and its IC port in viewer/json nodelist before tenant metadata is checked.",
+      "Add one-off dynamic tenant nodes beyond the declarative profile.dynamicNodeCount topology, one at a time. By default the first suffix is dynamicNodeCount + 1; an explicit startIndex must be greater than dynamicNodeCount, and port overrides remain available. Every planned name must be distinct from the static container and all configured plus one-off ports must be valid and unique in the shared network namespace. After each image-presence check, it repeats the full check-only static compatibility preflight, including the current image ID, immediately before each node start; a mismatch stops that node and all later nodes and requires destroy followed by bootstrap. Each dynamic container is created but not started until its resolved image ID matches the static container, closing a concurrent named-tag refresh race. Without confirm=true it returns container/port plans; with confirm=true each node must have a stable running exact Docker container and its IC port in viewer/json nodelist before tenant metadata is checked.",
     inputSchema: addDynamicNodesSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(AddDynamicNodesArgs, (context, parsed) =>

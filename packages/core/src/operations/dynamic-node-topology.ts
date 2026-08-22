@@ -1,4 +1,4 @@
-import { bash, shellQuote, type CommandResult, type DockerContainerSummary } from "../api-client.js";
+import { bash, shellQuote, type CommandResult, type CommandSpec, type DockerContainerSummary } from "../api-client.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { nodesCheck } from "./checks.js";
 import { dynamicNodeStartSpecs } from "./commands.js";
@@ -100,14 +100,15 @@ export function classifyDynamicTopologyDrift(
 export async function startDynamicNodePlans(
   ctx: ToolkitContext,
   plans: DynamicNodePlan[],
-  mode: "ensure" | "recreate" = "ensure"
+  mode: "ensure" | "recreate" = "ensure",
+  beforeRunSpecs: readonly CommandSpec[] = []
 ): Promise<DynamicTopologyExecution> {
   const results: CommandResult[] = [];
   const nodeChecks: DynamicNodeCheck[] = [];
   let completedNodes = 0;
 
   for (const plan of plans) {
-    for (const spec of dynamicNodeStartSpecs(ctx.profile, plan, mode)) {
+    for (const spec of dynamicNodeStartSpecs(ctx.profile, plan, mode, beforeRunSpecs)) {
       const result = await ctx.client.run(spec);
       results.push(result);
       if (!result.ok) {
