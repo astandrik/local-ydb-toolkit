@@ -8,8 +8,8 @@ export function createContext(
   config?: LocalYdbConfig,
   configPath?: string
 ): ToolkitContext {
+  const effectiveConfig = config ?? loadConfig(configPath);
   const effectiveConfigPath = configPath ? resolveConfigPath(configPath) : config ? undefined : resolveConfigPath();
-  const effectiveConfig = config ?? loadConfig(effectiveConfigPath);
   const profile = resolveProfile(effectiveConfig, profileName);
   return {
     config: effectiveConfig,

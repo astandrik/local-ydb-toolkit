@@ -32,7 +32,7 @@ Use `npx` so clients can run the server without a manual checkout:
 
 This form checks the npm registry when the MCP server starts, so clients pick up newly published versions after restarting the MCP client.
 
-The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. If that file is missing, it uses a default local profile.
+The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. Only when that implicit file is absent does the server use a default local profile. `LOCAL_YDB_TOOLKIT_CONFIG` and per-call `configPath` values must be absolute and must name a readable regular JSON file no larger than 1 MiB. Missing, unreadable, oversized, malformed, or schema-invalid explicit files fail closed and return a stable error code without exposing file contents, parser snippets, or the absolute path.
 
 Official MCP Registry metadata uses the name `io.github.astandrik/local-ydb-mcp` and is published from the repository root `server.json` after the matching npm version is available.
 

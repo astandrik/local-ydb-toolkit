@@ -42,7 +42,7 @@ codex plugin add local-ydb-toolkit@local-ydb-toolkit
 
 Start a new Codex session after installation so the bundled skill and MCP server are loaded. The MCP launcher requires Node.js 20.19 or newer plus `npx`; its first start can access the npm registry to install the pinned `@astandrik/local-ydb-mcp@0.18.0` package.
 
-Agent Plugins start a stdio server with the installed plugin root as its working directory. Use an absolute `configPath` on profile-based tool calls, or set `LOCAL_YDB_TOOLKIT_CONFIG` in the MCP client environment. Do not rely on a project-local `local-ydb.config.json` being discovered from the caller's repository.
+Agent Plugins start a stdio server with the installed plugin root as its working directory. Use an absolute `configPath` on profile-based tool calls, or set `LOCAL_YDB_TOOLKIT_CONFIG` to an absolute path in the MCP client environment. An explicit path must name a readable regular JSON file no larger than 1 MiB; missing or invalid explicit files fail closed instead of selecting the default profile. Do not rely on a project-local `local-ydb.config.json` being discovered from the caller's repository.
 
 The public OpenAI submission artifact is deliberately skills-only because public MCP-backed submissions require a production HTTPS MCP server. Local Docker/YDB operations remain in the repo-marketplace plugin and the npm stdio package.
 
@@ -304,6 +304,8 @@ Example MCP client config for a local checkout:
 `LOCAL_YDB_MCP_CONTENT_FORMAT` is optional. Use `toon` to prefer TOON for the LLM-facing text content block while keeping MCP JSON-RPC and `structuredContent` as JSON; omit it or set `json` for the default pretty JSON text. If a payload cannot be represented as lossless, decodable TOON, the server falls back to pretty JSON for that text block.
 
 Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH keys, password files, and backup paths outside committed config.
+
+Explicit configuration through `configPath` or `LOCAL_YDB_TOOLKIT_CONFIG` supports arbitrary absolute files. The file must exist, be a readable regular file no larger than 1 MiB, and match the strict configuration schema. Only an absent implicit `local-ydb.config.json` in the server's current working directory falls back to the built-in default profile; explicit configuration errors never do. Configuration errors expose a stable code without echoing file contents, parser snippets, or the absolute path.
 
 ### MCP Features
 
