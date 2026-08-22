@@ -91,7 +91,7 @@ export const localYdbPromptDefinitions = {
     description: "Plan a file-backed profile version upgrade by image preflight, dump, rebuild, restore, and verification.",
     argsSchema: {
       version: requiredStringArgument(
-        "Target local-ydb image tag, for example 25.2.1.7 or latest.",
+        "Target local-ydb image tag selected with local_ydb_list_versions.",
       ),
       ...commonOptionalArguments,
       dumpName: optionalStringArgument(

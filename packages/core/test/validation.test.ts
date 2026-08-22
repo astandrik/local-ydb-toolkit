@@ -5,6 +5,7 @@ describe("config validation", () => {
   it("builds a default local profile", () => {
     const config = ConfigSchema.parse({});
     const profile = resolveProfile(config);
+    expect(DEFAULT_IMAGE).toBe("ghcr.io/ydb-platform/local-ydb:stable-26-1-1");
     expect(profile.mode).toBe("local");
     expect(profile.image).toBe(DEFAULT_IMAGE);
     expect(profile.staticContainer).toBe("ydb-local");

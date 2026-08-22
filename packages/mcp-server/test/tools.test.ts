@@ -902,7 +902,8 @@ describe("mcp tools", () => {
 
     expect(upgrade?.arguments).toContainEqual(expect.objectContaining({
       name: "version",
-      required: true
+      required: true,
+      description: "Target local-ydb image tag selected with local_ydb_list_versions."
     }));
     expect(auth?.arguments).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "configHostPath" }),
@@ -1706,7 +1707,9 @@ describe("mcp tools", () => {
 
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
+    const versionSchema = tool?.inputSchema.properties?.version as { description?: string } | undefined;
     expect(tool?.inputSchema.required).toContain("version");
+    expect(versionSchema?.description).toBe("Target image tag returned by local_ydb_list_versions.");
   });
 
   it("requires jobId for the pull status tool schema", () => {

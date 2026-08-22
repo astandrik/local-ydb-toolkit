@@ -32,7 +32,9 @@ Use `npx` so clients can run the server without a manual checkout:
 
 This form checks the npm registry when the MCP server starts, so clients pick up newly published versions after restarting the MCP client.
 
-The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. If that file is missing, it uses a default local profile.
+The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. If that file is missing, it uses a default local profile with `ghcr.io/ydb-platform/local-ydb:stable-26-1-1`. This named upstream tag is mutable. Set `profiles.<name>.image` explicitly to control upgrades; use a digest for immutable pulls, noting that `local_ydb_upgrade_version` does not accept digest-pinned source profiles.
+
+After a package update changes the implicit default, an existing stack created with the previous default will fail the profile compatibility check instead of mixing YDB images. Add the stack's current image reference to a file-backed profile before restart or bootstrap, then use `local_ydb_upgrade_version` for an intentional dump-and-rebuild upgrade.
 
 Official MCP Registry metadata uses the name `io.github.astandrik/local-ydb-mcp` and is published from the repository root `server.json` after the matching npm version is available.
 

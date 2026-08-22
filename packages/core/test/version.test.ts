@@ -167,8 +167,14 @@ describe("version operations", () => {
       tag: "26.1.1.6",
       digest: undefined
     });
+    expect(parseImageReference("ghcr.io/ydb-platform/local-ydb:stable-26-1-1")).toMatchObject({
+      imageName: "ghcr.io/ydb-platform/local-ydb",
+      tag: "stable-26-1-1",
+      digest: undefined
+    });
     expect(parseImageReference("docker.io/ydb-platform/local-ydb").registry).toBe("docker.io");
     expect(replaceImageTag("ghcr.io/ydb-platform/local-ydb:26.1.1.6", "latest")).toBe("ghcr.io/ydb-platform/local-ydb:latest");
+    expect(replaceImageTag("ghcr.io/ydb-platform/local-ydb:stable-26-1-1", "stable-26-2-1")).toBe("ghcr.io/ydb-platform/local-ydb:stable-26-2-1");
   });
 
   it("lists registry tags across paginated Bearer-authenticated responses", async () => {

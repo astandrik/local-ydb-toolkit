@@ -1177,14 +1177,14 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("docker pull ghcr.io/ydb-platform/local-ydb:25.4");
   });
 
-  it("does not start a pull job when the image is already present", async () => {
+  it("uses the default stable image when a pull image is omitted", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
     const response = await pullImage(ctx, { confirm: true });
     expect(response.executed).toBe(true);
     expect(response.status).toBe("already-present");
     expect(response.jobId).toBeUndefined();
-    expect(executor.commands).toEqual(["docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6"]);
+    expect(executor.commands).toEqual(["docker image inspect ghcr.io/ydb-platform/local-ydb:stable-26-1-1"]);
   });
 
   it("reports unknown image pull jobs without throwing", () => {
