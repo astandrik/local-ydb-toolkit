@@ -1128,6 +1128,9 @@ describe("mcp tools", () => {
     expect(startIndexSchema?.description).toContain("profile.dynamicNodeCount + 1");
     expect(startIndexSchema?.description).toContain("must be greater than profile.dynamicNodeCount");
     expect(addTool?.description).toContain("stable running exact Docker container");
+    expect(addTool?.description).toContain("current image ID");
+    expect(addTool?.description).toContain("immediately before each node start");
+    expect(addTool?.description).toContain("destroy followed by bootstrap");
 
     const bootstrapTool = localYdbTools.find((tool) => tool.name === "local_ydb_bootstrap");
     const restartTool = localYdbTools.find((tool) => tool.name === "local_ydb_restart_stack");
@@ -1139,6 +1142,9 @@ describe("mcp tools", () => {
     expect(bootstrapTool?.description).toContain("every configured dynamic gRPC port");
     expect(bootstrapTool?.description).toContain("configured container names must be distinct from the static container");
     expect(startTool?.description).toContain("including static IC port 19001");
+    expect(startTool?.description).toContain("current image ID");
+    expect(startTool?.description).toContain("immediately before the dynamic container start");
+    expect(startTool?.description).toContain("destroy followed by bootstrap");
     expect(restartTool?.description).toContain("full check-only static compatibility preflight");
     expect(restartTool?.description).toContain("Before stopping any container");
     expect(restartTool?.description).toContain("configured binding changes require destroy followed by bootstrap");

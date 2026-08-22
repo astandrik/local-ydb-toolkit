@@ -1,8 +1,9 @@
-import { bash, shellQuote, type CommandResult } from "../api-client.js";
+import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
 import { nodesCheck, requireInventory } from "./checks.js";
-import { dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
+import { commandForStaticCompatibilityCheck, dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
 import {
   additionalDynamicNodePlans,
+  configuredDynamicNodePlans,
   startDynamicNodePlans
 } from "./dynamic-node-topology.js";
 import { inspectDynamicNodePorts } from "./dynamic-node-inspect.js";
@@ -25,7 +26,14 @@ import type {
 
 export async function addDynamicNodes(ctx: ToolkitContext, options: AddDynamicNodesOptions = {}): Promise<AddDynamicNodesResponse> {
   const plans = additionalDynamicNodePlans(ctx.profile, options);
-  const specs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan));
+  const configuredPlans = configuredDynamicNodePlans(ctx.profile);
+  const beforeRunSpecs = [
+    bash(commandForStaticCompatibilityCheck(ctx.profile, {
+      requireGraphShard: true,
+      publishedDynamicGrpcPorts: configuredPlans.map((plan) => plan.grpcPort)
+    }), { timeoutMs: 60_000, description: "Verify static local-ydb node compatibility before dynamic node start" })
+  ];
+  const specs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan, "ensure", beforeRunSpecs));
   const rollback = plans.map((plan) => `docker rm -f ${plan.container}`);
   const verification = [
     "each added container is Up, not Restarting",
@@ -45,13 +53,13 @@ export async function addDynamicNodes(ctx: ToolkitContext, options: AddDynamicNo
     };
   }
 
-  const { results, nodeChecks, completedNodes } = await startDynamicNodePlans(ctx, plans);
+  const { results, nodeChecks, completedNodes } = await startDynamicNodePlans(ctx, plans, "ensure", beforeRunSpecs);
   if (completedNodes < plans.length) {
-    return addDynamicNodesResponse(ctx, plans, nodeChecks, results, rollback, verification, completedNodes);
+    return addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes);
   }
 
   results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
-  return addDynamicNodesResponse(ctx, plans, nodeChecks, results, rollback, verification, completedNodes);
+  return addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes);
 }
 
 export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDynamicNodesOptions = {}): Promise<RemoveDynamicNodesResponse> {
@@ -267,6 +275,7 @@ async function waitForDynamicNodePortAbsence(ctx: ToolkitContext, target: Dynami
 function addDynamicNodesResponse(
   ctx: ToolkitContext,
   plans: DynamicNodePlan[],
+  specs: readonly CommandSpec[],
   nodeChecks: DynamicNodeCheck[],
   results: CommandResult[],
   rollback: string[],
@@ -277,7 +286,7 @@ function addDynamicNodesResponse(
     summary: `Add ${plans.length} dynamic node${plans.length === 1 ? "" : "s"} to ${ctx.profile.tenantPath}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands; verified ${completedNodes}/${plans.length} nodes.`,
     executed: true,
     risk: "high",
-    plannedCommands: plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan).map((spec) => ctx.client.display(spec))),
+    plannedCommands: specs.map((spec) => ctx.client.display(spec)),
     rollback,
     verification,
     results,

@@ -272,7 +272,8 @@ export function commandForDynamicEnsureRun(profile: ResolvedLocalYdbProfile, nod
 export function dynamicNodeStartSpecs(
   profile: ResolvedLocalYdbProfile,
   plan: DynamicNodePlan,
-  mode: "ensure" | "recreate" = "ensure"
+  mode: "ensure" | "recreate" = "ensure",
+  beforeRunSpecs: readonly CommandSpec[] = []
 ): CommandSpec[] {
   const startCommand = mode === "ensure"
     ? commandForDynamicEnsureRun(profile, plan)
@@ -282,6 +283,7 @@ export function dynamicNodeStartSpecs(
       ].join("\n");
   return [
     ensureImagePresentSpec(profile.image),
+    ...beforeRunSpecs,
     bash(startCommand, {
       timeoutMs: 60_000,
       description: `Start dynamic tenant node ${plan.container}`
