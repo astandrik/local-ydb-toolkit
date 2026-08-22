@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.18.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.18.0...mcp-server-v0.18.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **core:** bind dynamic starts to static image ID ([d0a1d2e](https://github.com/astandrik/local-ydb-toolkit/commit/d0a1d2e95af3fe1657faff04de3c4922f2a5df96))
+* **core:** guard partial node starts against image drift ([4281720](https://github.com/astandrik/local-ydb-toolkit/commit/4281720b8b48f16e614e7971fa7b597150ca328a))
+* **core:** preserve running-node idempotency ([35936dc](https://github.com/astandrik/local-ydb-toolkit/commit/35936dcefc2e326737c859ba78ff4cf67f2f53a2))
+* **core:** use named stable YDB image by default ([7a5e4ef](https://github.com/astandrik/local-ydb-toolkit/commit/7a5e4ef3b5736bd4bb318aee54ef0f90cc6fe20a))
+* **core:** use named stable YDB image by default ([08e5ab3](https://github.com/astandrik/local-ydb-toolkit/commit/08e5ab396e76c14f6d6a915fc3d69853ab346d1a))
+
 ## [0.18.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.17.0...mcp-server-v0.18.0) (2026-08-21)
 
 
