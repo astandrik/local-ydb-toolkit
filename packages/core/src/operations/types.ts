@@ -1,4 +1,5 @@
 import type { CommandResult, LocalYdbApiClient } from "../api-client.js";
+import type { PlanConfirmationRuntime } from "../confirmation.js";
 import type { LocalYdbConfig, ResolvedLocalYdbProfile } from "../validation.js";
 
 export interface ToolkitContext {
@@ -6,6 +7,18 @@ export interface ToolkitContext {
   configPath?: string;
   profile: ResolvedLocalYdbProfile;
   client: LocalYdbApiClient;
+  confirmation?: PlanConfirmationRuntime;
+}
+
+export type MutationConfirmationStatus =
+  | "not-required"
+  | "planned"
+  | "rejected"
+  | "accepted";
+
+export interface MutationConfirmation {
+  status: MutationConfirmationStatus;
+  token?: string;
 }
 
 export interface OperationPlan {
@@ -19,10 +32,12 @@ export interface OperationResponse extends OperationPlan {
   summary: string;
   executed: boolean;
   results?: CommandResult[];
+  confirmation?: MutationConfirmation;
 }
 
 export interface MutatingOptions {
   confirm?: boolean;
+  confirmationToken?: string;
 }
 
 export type ImagePullStatus = "planned" | "already-present" | "running" | "completed" | "failed" | "unknown";
@@ -202,6 +217,7 @@ export interface ApplySchemaResponse extends OperationPlan {
   execution?: SchemaOperationResult;
   /** Maximum bytes returned in validation/execution issue fields. */
   maxOutputBytes: number;
+  confirmation?: MutationConfirmation;
 }
 
 export type GeneratedSchemaStatementKind = "CREATE TABLE" | "ALTER TABLE" | "DROP TABLE";

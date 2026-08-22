@@ -1,5 +1,11 @@
 import { dirname } from "node:path";
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import {
+  attachConfirmation,
+  authorizeMutation,
+  commandPlanIntent,
+  confirmationSummarySuffix,
+} from "../confirmation.js";
 import { pathRedactions } from "../redactions.js";
 import { commandForStaticCompatibilityCheck, createTenantSpec, dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
 import { configuredDynamicNodePlans, startDynamicNodePlans } from "./dynamic-node-topology.js";
@@ -63,31 +69,46 @@ export async function applyAuthHardening(
   ];
   const summary = `Apply reviewed YDB auth config from ${configHostPath}.`;
 
-  if (!options.confirm) {
-    return {
-      summary: `${summary} Not executed because confirm=true was not provided.`,
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }), {
+    contentInputs: [{
+      kind: "file",
+      path: configHostPath,
+      role: "reviewed-auth-config",
+    }],
+  });
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands: specs.map((spec) => ctx.client.display(spec)),
       rollback,
       verification
-    };
+    }, decision.confirmation);
   }
+  const confirmed = (response: OperationResponse) =>
+    attachConfirmation(response, decision.confirmation);
 
   const results = await runCommandSpecs(ctx, preDynamicSpecs);
   if (!completedAll(preDynamicSpecs, results)) {
-    return authHardeningResponse(ctx, summary, specs, rollback, verification, results, 0, plans.length);
+    return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, 0, plans.length));
   }
 
   const topology = await startDynamicNodePlans(ctx, plans, "recreate");
   results.push(...topology.results);
   const completedNodes = topology.completedNodes;
   if (completedNodes < plans.length) {
-    return authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length);
+    return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length));
   }
 
   results.push(...await runCommandSpecs(ctx, finalSpecs));
-  return authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length);
+  return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length));
 }
 
 function completedAll(specs: CommandSpec[], results: CommandResult[]): boolean {
@@ -460,20 +481,34 @@ export async function setRootPassword(
     "authenticated tenant checks pass"
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Set the root password for ${ctx.profile.name}. Not executed because confirm=true was not provided.`,
+  const summary = `Set the root password for ${ctx.profile.name}.`;
+  const specs = [rotateSpec, syncHostSpec, verifyStatusSpec, verifyAnonymousSpec];
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }), {
+    contentInputs: [
+      { kind: "file", path: backupConfig, role: "backup-auth-config" },
+      { kind: "file", path: backupPassword, role: "backup-root-password" },
+    ],
+  });
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands,
       rollback,
       verification
-    };
+    }, decision.confirmation);
   }
 
   const rotateResult = await ctx.client.run(rotateSpec);
   if (!rotateResult.ok) {
-    return {
+    return attachConfirmation({
       summary: "Set the root password failed before host-side auth artifacts could be updated.",
       executed: true,
       risk: "high",
@@ -481,11 +516,11 @@ export async function setRootPassword(
       rollback,
       verification,
       results: [rotateResult]
-    };
+    }, decision.confirmation);
   }
   const syncHostResult = await ctx.client.run(syncHostSpec);
   if (!syncHostResult.ok) {
-    return {
+    return attachConfirmation({
       summary: "Set the root password changed runtime credentials but failed while updating host-side auth artifacts.",
       executed: true,
       risk: "high",
@@ -493,12 +528,12 @@ export async function setRootPassword(
       rollback,
       verification,
       results: [rotateResult, syncHostResult]
-    };
+    }, decision.confirmation);
   }
   const verifyStatusResult = await ctx.client.run(verifyStatusSpec);
   const verifyAnonymousResult = await ctx.client.run(verifyAnonymousSpec);
   const results = [rotateResult, syncHostResult, verifyStatusResult, verifyAnonymousResult];
-  return {
+  return attachConfirmation({
     summary: `Set the root password for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
     executed: true,
     risk: "high",
@@ -506,5 +541,5 @@ export async function setRootPassword(
     rollback,
     verification,
     results
-  };
+  }, decision.confirmation);
 }

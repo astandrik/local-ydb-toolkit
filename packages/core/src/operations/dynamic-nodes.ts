@@ -1,4 +1,10 @@
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import {
+  attachConfirmation,
+  authorizeMutation,
+  commandPlanIntent,
+  confirmationSummarySuffix,
+} from "../confirmation.js";
 import { nodesCheck, requireInventory } from "./checks.js";
 import { commandForStaticCompatibilityCheck, dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
 import {
@@ -41,25 +47,39 @@ export async function addDynamicNodes(ctx: ToolkitContext, options: AddDynamicNo
     `scheme ls ${ctx.profile.tenantPath}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Add ${plans.length} dynamic node${plans.length === 1 ? "" : "s"} to ${ctx.profile.tenantPath}. Not executed because confirm=true was not provided.`,
+  const summary = `Add ${plans.length} dynamic node${plans.length === 1 ? "" : "s"} to ${ctx.profile.tenantPath}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands: specs.map((spec) => ctx.client.display(spec)),
       rollback,
       verification,
       nodes: plans
-    };
+    }, decision.confirmation);
   }
 
   const { results, nodeChecks, completedNodes } = await startDynamicNodePlans(ctx, plans, "ensure", beforeRunSpecs);
   if (completedNodes < plans.length) {
-    return addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes);
+    return attachConfirmation(
+      addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes),
+      decision.confirmation,
+    );
   }
 
   results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
-  return addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes);
+  return attachConfirmation(
+    addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes),
+    decision.confirmation,
+  );
 }
 
 export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDynamicNodesOptions = {}): Promise<RemoveDynamicNodesResponse> {
@@ -81,16 +101,24 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
     `scheme ls ${ctx.profile.tenantPath}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Remove ${targets.length} dynamic node${targets.length === 1 ? "" : "s"} from ${ctx.profile.tenantPath}. Not executed because confirm=true was not provided.`,
+  const summary = `Remove ${targets.length} dynamic node${targets.length === 1 ? "" : "s"} from ${ctx.profile.tenantPath}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands: specs.map((spec) => ctx.client.display(spec)),
       rollback,
       verification,
       nodes: targets
-    };
+    }, decision.confirmation);
   }
 
   const results: CommandResult[] = [];
@@ -104,21 +132,30 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
     }));
     results.push(result);
     if (!result.ok) {
-      return removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes);
+      return attachConfirmation(
+        removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes),
+        decision.confirmation,
+      );
     }
     const icPort = target.icPort;
     if (typeof icPort === "number") {
       const check = await waitForDynamicNodePortAbsence(ctx, { ...target, icPort });
       nodeChecks.push(check);
       if (!check.ok) {
-        return removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes);
+        return attachConfirmation(
+          removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes),
+          decision.confirmation,
+        );
       }
     }
     completedNodes += 1;
   }
 
   results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
-  return removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes);
+  return attachConfirmation(
+    removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes),
+    decision.confirmation,
+  );
 }
 
 async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveDynamicNodesOptions): Promise<DynamicNodeTarget[]> {

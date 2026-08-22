@@ -1,4 +1,10 @@
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import {
+  attachConfirmation,
+  authorizeMutation,
+  commandPlanIntent,
+  confirmationSummarySuffix,
+} from "../confirmation.js";
 import { requireInventory } from "./checks.js";
 import {
   commandForDynamicEnsureRun,
@@ -63,28 +69,38 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
     `viewer/json/nodelist includes configured IC ports: ${plans.map((plan) => plan.icPort).join(", ")}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Bootstrap local-ydb topology for ${ctx.profile.tenantPath}. Not executed because confirm=true was not provided.`,
+  const summary = `Bootstrap local-ydb topology for ${ctx.profile.tenantPath}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands: specs.map((spec) => ctx.client.display(spec)),
       rollback,
       verification
-    };
+    }, decision.confirmation);
   }
+  const confirmed = <T extends object>(response: T) =>
+    attachConfirmation(response, decision.confirmation);
 
   const results = await runCommandSpecs(ctx, baseSpecs);
   if (!completedAll(baseSpecs, results)) {
-    return bootstrapResponse(ctx, specs, rollback, verification, results, 0, plans.length);
+    return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, 0, plans.length));
   }
   const topology = await startDynamicNodePlans(ctx, plans, "recreate");
   results.push(...topology.results);
   if (topology.completedNodes < plans.length) {
-    return bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length);
+    return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length));
   }
   results.push(...await runCommandSpecs(ctx, finalSpecs));
-  return bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length);
+  return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length));
 }
 
 export async function bootstrapRootDatabase(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<OperationResponse> {
@@ -197,9 +213,17 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
   ];
   const plannedCommands = specs.map((spec) => ctx.client.display(spec));
 
-  if (!options.confirm) {
-    return {
-      summary: `Destroy local-ydb stack for ${ctx.profile.name}. Not executed because confirm=true was not provided.`,
+  const summary = `Destroy local-ydb stack for ${ctx.profile.name}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands,
@@ -210,7 +234,7 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
       removesBindMountPath: Boolean(ctx.profile.bindMountPath && options.removeBindMountPath),
       removesAuthArtifacts: Boolean(options.removeAuthArtifacts),
       removesDumpHostPath: Boolean(options.removeDumpHostPath)
-    };
+    }, decision.confirmation);
   }
 
   const results: CommandResult[] = [];
@@ -227,7 +251,7 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
     }
   }
 
-  return {
+  return attachConfirmation({
     summary: tenantRemoveSkipped
       ? `Destroy local-ydb stack for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands after continuing past tenant removal failure during teardown.`
       : `Destroy local-ydb stack for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
@@ -242,7 +266,7 @@ export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOpt
     removesBindMountPath: Boolean(ctx.profile.bindMountPath && options.removeBindMountPath),
     removesAuthArtifacts: Boolean(options.removeAuthArtifacts),
     removesDumpHostPath: Boolean(options.removeDumpHostPath)
-  };
+  }, decision.confirmation);
 }
 
 function canContinueAfterTenantRemoveFailureDuringTeardown(
@@ -317,9 +341,17 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
     .map((container) => container.names)
     .filter((name): name is string => Boolean(name));
 
-  if (!options.confirm) {
-    return {
-      summary: `Restart local-ydb static and dynamic containers for ${ctx.profile.name}. Not executed because confirm=true was not provided.`,
+  const summary = `Restart local-ydb static and dynamic containers for ${ctx.profile.name}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands: specs.map((spec) => ctx.client.display(spec)),
@@ -327,32 +359,34 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
       verification,
       missingDynamicContainers,
       unexpectedDynamicContainers
-    };
+    }, decision.confirmation);
   }
+  const confirmed = (response: RestartStackResponse) =>
+    attachConfirmation(response, decision.confirmation);
 
   const results = await runCommandSpecs(ctx, preflightSpecs);
   if (!completedAll(preflightSpecs, results)) {
-    return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length);
+    return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length));
   }
   const mutationResults = await runCommandSpecs(ctx, mutationSpecs);
   results.push(...mutationResults);
   if (!completedAll(mutationSpecs, mutationResults)) {
     results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));
-    return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length);
+    return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length));
   }
   const topology = await startDynamicNodePlans(ctx, plans, "recreate");
   results.push(...topology.results);
   if (topology.completedNodes < plans.length) {
     results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));
-    return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length);
+    return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
   }
   const recoveryResults = await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs);
   results.push(...recoveryResults);
   if (!completedAll(unexpectedStartSpecs, recoveryResults)) {
-    return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length);
+    return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
   }
   results.push(await ctx.client.run(metadataSpec));
-  return restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length);
+  return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
 }
 
 async function restoreUnexpectedDynamicNodes(ctx: ToolkitContext, specs: CommandSpec[]): Promise<CommandResult[]> {

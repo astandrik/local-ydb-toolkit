@@ -93,11 +93,14 @@ On POSIX, create the FIFO without a writer and require the MCP call to return wi
 ## Global Rules
 
 - Run `local_ydb_check_prerequisites` first on a new host or profile.
-- If `local_ydb_check_prerequisites` reports installable packages, review its plan-only output and then use `confirm: true` to install supported host helpers before trying deeper checks.
+- If `local_ydb_check_prerequisites` reports installable packages, review its plan-only output and then repeat the exact request with `confirm: true` plus the returned `confirmationToken` before trying deeper checks.
 - Run read-only tools first.
 - Use `local_ydb_list_versions` before `local_ydb_upgrade_version` when you need to verify the exact registry tag to deploy.
-- If an image is not already present on the target host, use `local_ydb_pull_image(confirm=true)` and poll `local_ydb_pull_status` before bootstrap or upgrade.
-- For mutating tools, call plan-only once before `confirm: true` unless you are deliberately smoke-testing an idempotent path.
+- If an image is not already present on the target host, plan `local_ydb_pull_image`, repeat that exact request with its token and `confirm: true`, and poll `local_ydb_pull_status` before bootstrap or upgrade.
+- For every mutating tool, call the exact request without `confirm`, review `plannedCommands`, `risk`, `rollback`, and `verification` with the human, then repeat the same arguments with `confirm: true` and that response's `confirmation.token`. The `<token-from-plan>` placeholders below always mean the token from the immediately preceding identical plan call.
+- A missing, malformed, changed-plan, replayed, or pre-restart token must execute nothing and returns `confirmation.status="rejected"` with a fresh plan/token. No-op responses use `not-required`; successful consumption uses `accepted`.
+- Changing a configured auth/password file or a file inside the selected standalone restore dump between plan and confirm must reject the old token; file contents and private fingerprints must never appear in either response.
+- Treat the token as an ephemeral capability. Do not log it, paste it into reusable notes, persist it across sessions, or treat possession as proof of human approval; the MCP host/client remains responsible for that approval.
 - Do not test `cleanup_storage` against active volumes or paths.
 - Do not mix static and dynamic image tags inside one profile.
 - For stable GHCR tests, use the exact patch tag `ghcr.io/ydb-platform/local-ydb:26.1.1.6`.
@@ -156,7 +159,7 @@ Calls:
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT COUNT(*) AS count FROM `managed_sql_smoke`;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "SELECT id, value FROM `managed_sql_smoke`;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");" } }
-{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");", "confirm": true } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "THIS IS NOT VALID YQL;", "confirm": true } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "ALTER TABLE `managed_sql_smoke` ADD COLUMN note Utf8;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "CREATE TABLE `managed_sql_ctas_explain` (PRIMARY KEY (id)) WITH (STORE = COLUMN) AS SELECT id, value FROM `managed_sql_smoke`;" } }
@@ -172,8 +175,8 @@ Expected:
 
 - `query` uses SnapshotRO even when `confirm=true`; the attempted UPSERT fails and the following count remains zero.
 - `explain` returns a plan or AST without side effects.
-- `execute` always performs mandatory EXPLAIN first. Without `confirm=true` it returns `outcome=planned`; with confirmation it sends one NoTx execution and performs no retries.
-- Invalid confirmed YQL is blocked by failed preflight with `executed=false` and `confirmationConsumed=false`.
+- `execute` always performs mandatory EXPLAIN first. A successful plan call returns `outcome=planned` and a token; the exact repeat call with that token sends one NoTx execution and performs no retries.
+- Invalid YQL is blocked by failed preflight with `executed=false`, `confirmationConsumed=false`, and `confirmation.status=not-required` because no executable plan was produced.
 - Parameter names are bare names, declarations are generated deterministically, and response metadata contains canonical parameter types with configured credential paths redacted but does not echo supplied parameter values. Selected result rows can still contain those values.
 - `maxRows` truncates a result set only between complete rows; the first row-limit hit stops all further result capture (read-only execution cancels, confirmed `NoTx` drains). `maxOutputBytes` is shared across captured issues, plan/AST, metadata, and rows.
 - The byte-limit call's placeholder is documentation only; replace it with an actual value of at least 4096 characters, or an equivalent fixture that reliably exceeds the 256-byte capture budget.
@@ -199,7 +202,7 @@ Calls:
 Optional install path on supported apt-based hosts:
 
 ```json
-{ "tool": "local_ydb_check_prerequisites", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_check_prerequisites", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -270,9 +273,10 @@ Calls:
 { "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "createTable", "tableName": "schema_apply_smoke", "columns": [{ "name": "id", "type": "Uint64", "notNull": true }, { "name": "value", "type": "Utf8" }], "primaryKey": ["id"], "indexes": [{ "name": "schema_apply_smoke_by_value", "columns": ["value"], "global": true }], "with": { "AUTO_PARTITIONING_BY_SIZE": { "token": "ENABLED" } } }] } }
 { "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "validate", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);" } }
 { "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);", "confirm": false } }
-{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);", "confirm": true } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-auth", "action": "describe", "path": "/local/example/schema_apply_smoke" } }
-{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "DROP TABLE schema_apply_smoke;", "confirm": true } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "DROP TABLE schema_apply_smoke;" } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "DROP TABLE schema_apply_smoke;", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -386,7 +390,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_pull_image", "arguments": { "profile": "ghcr261-clean", "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6", "confirm": false } }
-{ "tool": "local_ydb_pull_image", "arguments": { "profile": "ghcr261-clean", "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6", "confirm": true } }
+{ "tool": "local_ydb_pull_image", "arguments": { "profile": "ghcr261-clean", "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_pull_status", "arguments": { "jobId": "<jobId-from-pull-image>" } }
 ```
 
@@ -415,7 +419,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "path": "/local" } }
 ```
 
@@ -441,7 +445,8 @@ bootstrap a disposable profile, then stop only that profile's static container.
 Calls:
 
 ```json
-{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "<disposable-profile>", "confirm": true } }
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "<disposable-profile>" } }
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "<disposable-profile>", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_healthcheck", "arguments": { "profile": "<disposable-profile>", "databasePath": "/local" } }
 ```
 
@@ -470,7 +475,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_bootstrap", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_bootstrap", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_bootstrap", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -506,10 +511,10 @@ Calls:
 
 ```json
 { "tool": "local_ydb_create_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_create_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_create_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_database_status", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_start_dynamic_node", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_start_dynamic_node", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_start_dynamic_node", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
@@ -570,7 +575,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_restart_stack", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_restart_stack", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_restart_stack", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_status_report", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
@@ -600,9 +605,11 @@ Profiles:
 Calls:
 
 ```json
-{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "confirmationToken": "<token-from-plan>", "dumpName": "pre-auth-mcp-20260425" } }
 { "tool": "local_ydb_list_dumps", "arguments": { "profile": "ghcr261-clean" } }
-{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>", "dumpName": "pre-auth-mcp-20260425" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_graphshard_check", "arguments": { "profile": "ghcr261-clean" } }
 ```
@@ -610,8 +617,10 @@ Calls:
 Path-level example:
 
 ```json
-{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "dumpName": "one-table-smoke", "path": "dir/table" } }
-{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "dumpName": "one-table-smoke", "path": ".", "describePaths": ["dir/table"], "countQueries": [{ "label": "dir/table rows", "query": "SELECT COUNT(*) FROM `dir/table`;" }] } }
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "dumpName": "one-table-smoke", "path": "dir/table" } }
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "confirmationToken": "<token-from-plan>", "dumpName": "one-table-smoke", "path": "dir/table" } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "dumpName": "one-table-smoke", "path": ".", "describePaths": ["dir/table"], "countQueries": [{ "label": "dir/table rows", "query": "SELECT COUNT(*) FROM `dir/table`;" }] } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>", "dumpName": "one-table-smoke", "path": ".", "describePaths": ["dir/table"], "countQueries": [{ "label": "dir/table rows", "query": "SELECT COUNT(*) FROM `dir/table`;" }] } }
 ```
 
 For dump, `path` is the source object or directory for `ydb tools dump -p`. For restore, `path` is the destination directory for `ydb tools restore -p`; restoring a single table dump back under the tenant root normally uses `path: "."`.
@@ -639,9 +648,9 @@ Calls:
 
 ```json
 { "tool": "local_ydb_prepare_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": false } }
-{ "tool": "local_ydb_prepare_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": true } }
+{ "tool": "local_ydb_prepare_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_write_dynamic_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": false } }
-{ "tool": "local_ydb_write_dynamic_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": true } }
+{ "tool": "local_ydb_write_dynamic_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -676,7 +685,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_apply_auth_hardening", "arguments": { "profile": "ghcr261-auth", "confirm": false } }
-{ "tool": "local_ydb_apply_auth_hardening", "arguments": { "profile": "ghcr261-auth", "confirm": true } }
+{ "tool": "local_ydb_apply_auth_hardening", "arguments": { "profile": "ghcr261-auth", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -738,11 +747,12 @@ Calls:
 
 ```json
 { "tool": "local_ydb_set_root_password", "arguments": { "profile": "ghcr261-auth", "password": "<new-password>", "confirm": false } }
+{ "tool": "local_ydb_set_root_password", "arguments": { "profile": "ghcr261-auth", "password": "<new-password>", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
 
-- plan-only output does not print the raw password
+- plan-only output does not print the raw password, and the confirmation token is bound to that password without exposing it
 - the tool rotates the runtime password with `ALTER USER`
 - the generated host auth config and `root.password` file are updated after the runtime password change
 - post-change anonymous `viewer/json/whoami` should still return `401`
@@ -767,7 +777,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "count": 2, "confirm": false } }
-{ "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "count": 2, "confirm": true } }
+{ "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "count": 2, "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "startIndex": 2, "confirm": false } }
 { "tool": "local_ydb_nodes_check", "arguments": { "profile": "ghcr261-auth" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-auth" } }
@@ -807,7 +817,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false } }
-{ "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": true } }
+{ "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_nodes_check", "arguments": { "profile": "ghcr261-auth" } }
 ```
 
@@ -847,7 +857,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_add_storage_groups", "arguments": { "profile": "ghcr261-auth", "count": 1, "confirm": false } }
-{ "tool": "local_ydb_add_storage_groups", "arguments": { "profile": "ghcr261-auth", "count": 1, "confirm": true } }
+{ "tool": "local_ydb_add_storage_groups", "arguments": { "profile": "ghcr261-auth", "count": 1, "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_storage_placement", "arguments": { "profile": "ghcr261-auth" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-auth" } }
 ```
@@ -942,7 +952,8 @@ Calls:
 Optional execution path on a disposable stack:
 
 ```json
-{ "tool": "local_ydb_upgrade_version", "arguments": { "profile": "ghcr261-auth", "version": "<target-tag>", "dumpName": "upgrade-smoke", "confirm": true } }
+{ "tool": "local_ydb_upgrade_version", "arguments": { "profile": "ghcr261-auth", "version": "<target-tag>", "dumpName": "upgrade-smoke" } }
+{ "tool": "local_ydb_upgrade_version", "arguments": { "profile": "ghcr261-auth", "version": "<target-tag>", "dumpName": "upgrade-smoke", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:

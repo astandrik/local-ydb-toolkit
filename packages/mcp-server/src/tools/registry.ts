@@ -291,6 +291,7 @@ export const toolDefinitions = [
           maxOutputBytes: parsed.maxOutputBytes,
           parameters: parsed.parameters,
           confirm: parsed.confirm,
+          confirmationToken: parsed.confirmationToken,
           signal: options.signal,
         },
         options.sqlExecutor,

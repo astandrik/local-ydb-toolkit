@@ -7,6 +7,7 @@ import type {
 } from "../src/query-service.js";
 import type { ToolkitContext } from "../src/operations/types.js";
 import type { SqlResponse } from "../src/operations/sql.js";
+import { ProcessConfirmationStore } from "../src/confirmation.js";
 import { createContext } from "../src/operations/context.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -45,6 +46,18 @@ function successfulResult(
 
 function testContext(): ToolkitContext {
   return createContext(undefined, undefined, ConfigSchema.parse({}));
+}
+
+function confirmationContext(): ToolkitContext {
+  const context = testContext();
+  return {
+    ...context,
+    confirmation: {
+      store: new ProcessConfirmationStore(),
+      toolName: "local_ydb_sql",
+      configSource: { kind: "provided", config: context.config },
+    },
+  };
 }
 
 describe("managed SQL operation", () => {
@@ -1575,5 +1588,49 @@ describe("managed SQL operation", () => {
       },
     });
     expect(JSON.stringify(response)).not.toContain("transport detail");
+  });
+
+  it("executes NoTx only with the token from the current EXPLAIN plan", async () => {
+    const sql = await loadSql();
+    const ctx = confirmationContext();
+    const calls: QueryServiceRequest[] = [];
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      return successfulResult({
+        diagnostics: request.mode === "explain" ? "exact-plan" : "",
+      });
+    };
+    const request = {
+      action: "execute",
+      script: "DELETE FROM items WHERE id = $id;",
+      parameters: {
+        id: {
+          type: { kind: "primitive", name: "Uint64" },
+          value: "1",
+        },
+      },
+    };
+
+    const planned = await sql(ctx, request, backend);
+    const accepted = await sql(ctx, {
+      ...request,
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    }, backend);
+
+    expect(planned).toMatchObject({
+      executed: false,
+      confirmation: { status: "planned", token: expect.any(String) },
+    });
+    expect(accepted).toMatchObject({
+      executed: true,
+      confirmationConsumed: true,
+      confirmation: { status: "accepted" },
+    });
+    expect(calls.map((call) => call.mode)).toEqual([
+      "explain",
+      "explain",
+      "noTx",
+    ]);
   });
 });

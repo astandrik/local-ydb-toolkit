@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { isAbsolute, resolve } from "node:path";
@@ -15,6 +16,19 @@ export type ConfigLoadErrorCode =
   | "CONFIG_READ_FAILED"
   | "CONFIG_INVALID_JSON"
   | "CONFIG_INVALID_SCHEMA";
+
+export type ConfigSource =
+  | { kind: "built-in" }
+  | {
+      kind: "argument" | "environment" | "implicit";
+      path: string;
+      contentSha256: string;
+    };
+
+export interface LoadedConfigDocument {
+  config: LocalYdbConfig;
+  source: ConfigSource;
+}
 
 const CONFIG_LOAD_ERROR_MESSAGES: Record<ConfigLoadErrorCode, string> = {
   CONFIG_PATH_NOT_ABSOLUTE: "Explicit local-ydb config paths must be absolute.",
@@ -138,9 +152,15 @@ export function resolveConfigPath(configPath = process.env.LOCAL_YDB_TOOLKIT_CON
 }
 
 export function loadConfig(configPath?: string): LocalYdbConfig {
+  return loadConfigDocument(configPath).config;
+}
+
+export function loadConfigDocument(configPath?: string): LoadedConfigDocument {
+  const argumentSource = configPath !== undefined;
+  const environmentPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG;
   const configuredPath = configPath !== undefined
     ? configPath
-    : process.env.LOCAL_YDB_TOOLKIT_CONFIG;
+    : environmentPath;
   const explicit = configuredPath !== undefined;
   if (explicit && !isAbsolute(configuredPath)) {
     throw new ConfigLoadError("CONFIG_PATH_NOT_ABSOLUTE");
@@ -155,7 +175,10 @@ export function loadConfig(configPath?: string): LocalYdbConfig {
       if (explicit) {
         throw new ConfigLoadError("CONFIG_NOT_FOUND");
       }
-      return ConfigSchema.parse({});
+      return {
+        config: ConfigSchema.parse({}),
+        source: { kind: "built-in" },
+      };
     }
     const darwinSocketError = process.platform === "darwin"
       && error instanceof Error
@@ -223,7 +246,19 @@ export function loadConfig(configPath?: string): LocalYdbConfig {
       throw new ConfigLoadError("CONFIG_TOO_LARGE");
     }
 
-    return parseConfigText(buffer.toString("utf8", 0, bytesRead));
+    const text = buffer.toString("utf8", 0, bytesRead);
+    return {
+      config: parseConfigText(text),
+      source: {
+        kind: argumentSource
+          ? "argument"
+          : environmentPath !== undefined
+            ? "environment"
+            : "implicit",
+        path,
+        contentSha256: createHash("sha256").update(text).digest("hex"),
+      },
+    };
   } finally {
     try {
       closeSync(descriptor);

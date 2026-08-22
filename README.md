@@ -29,7 +29,7 @@ The maintained listing hub, including third-party directory status and freshness
 
 Local YDB MCP is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` when an agent needs general YDB database-level tools such as ad hoc SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
 
-Use this toolkit when the agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, table DDL generation/validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Its `local_ydb_sql` tool is deliberately narrower than `ydb/ydb-mcp`: it runs managed YQL only against the selected configured local-ydb profile. Mutating MCP tools are plan-first and require `confirm: true` before they execute changes.
+Use this toolkit when the agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, table DDL generation/validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Its `local_ydb_sql` tool is deliberately narrower than `ydb/ydb-mcp`: it runs managed YQL only against the selected configured local-ydb profile. Mutating MCP tools are plan-first and require `confirm: true` plus the current exact plan's one-time `confirmationToken` before they execute changes.
 
 ## Agent Plugin Quick Start
 
@@ -55,7 +55,7 @@ claude plugin validate .
 claude --plugin-dir .
 ```
 
-The Claude Community submission is pending review and is not described as publicly installable until it appears in the community catalog. The same Node.js, absolute `configPath`, `LOCAL_YDB_TOOLKIT_CONFIG`, execution-boundary, and `confirm: true` requirements apply.
+The Claude Community submission is pending review and is not described as publicly installable until it appears in the community catalog. The same Node.js, absolute `configPath`, `LOCAL_YDB_TOOLKIT_CONFIG`, and exact-plan confirmation requirements apply.
 
 ## Gemini CLI / Antigravity Plugin
 
@@ -317,7 +317,7 @@ return workflow instructions that guide the MCP client toward the existing
 `local_ydb_*` tools. When supplied to a prompt, `configPath` must be an absolute
 path, matching the tool-call contract.
 
-Mutating tools remain plan-only unless called with `confirm: true`. Static MCP
+Mutating tools remain plan-only until the exact request is repeated with `confirm: true` and the current plan's `confirmationToken`. Static MCP
 resources are intentionally left for a separate follow-up so the server does not
 expose private target configuration as context.
 
@@ -345,19 +345,22 @@ On Linux Docker Engine, SDK-backed tools such as `local_ydb_sql` and `local_ydb_
 
 Read-only tools collect inventory, tenant state, YDB healthcheck/self-check output, schema objects, generated table DDL, schema permissions, node state, GraphShard state, auth posture, storage placement, leftover storage candidates, published `local-ydb` image tags, and background image-pull status.
 
-`local_ydb_check_prerequisites` is the expected first step on a new host or profile. It reports the Docker CLI separately from Docker daemon reachability, along with `curl`, `ruby`, and auth-file prerequisites. Missing CLI/files and unavailable services are separate lists, and `ready=true` means every check is usable. An unreachable SSH target returns `ready=false`, `missing=[]`, and `unavailable=["target"]` without a package-install plan. With `confirm: true`, the tool can auto-install supported host helpers such as `curl` and `ruby` through `apt-get`, then reruns every prerequisite probe and returns that post-install snapshot; Docker installation and daemon startup remain manual.
+`local_ydb_check_prerequisites` is the expected first step on a new host or profile. It reports the Docker CLI separately from Docker daemon reachability, along with `curl`, `ruby`, and auth-file prerequisites. Missing CLI/files and unavailable services are separate lists, and `ready=true` means every check is usable. An unreachable SSH target returns `ready=false`, `missing=[]`, and `unavailable=["target"]` without a package-install plan. With an accepted exact-plan confirmation, the tool can auto-install supported host helpers such as `curl` and `ruby` through `apt-get`, then reruns every prerequisite probe and returns that post-install snapshot; Docker installation and daemon startup remain manual.
 
 `local_ydb_healthcheck` runs YDB's built-in `monitoring healthcheck --format json` against the configured tenant path by default. It returns `selfCheckResult`, whether the database is healthy, issue counts by status, issue types, capped raw stdout/stderr, and truncated `issue_log` entries. Use it after `local_ydb_status_report` for database-level diagnostics, then route storage, compute, scheme, auth, or log checks from the reported issue types.
 
-Mutating tools include image pulls, root-database bootstrap, tenant topology bootstrap, tenant creation, dynamic-node startup, restart, table schema DDL application, schema permissions changes, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, version upgrade by dump/rebuild/restore, and explicit storage cleanup. They are plan-only unless called with:
+Mutating tools include image pulls, root-database bootstrap, tenant topology bootstrap, tenant creation, dynamic-node startup, restart, table schema DDL application, schema permissions changes, dump, restore, auth config application, root-password rotation, storage-pool reduction by rebuild, version upgrade by dump/rebuild/restore, and explicit storage cleanup. Call the exact request without `confirm`, review the returned plan with the human, then repeat the same request with:
 
 ```json
 {
-  "confirm": true
+  "confirm": true,
+  "confirmationToken": "<token-from-the-plan-response>"
 }
 ```
 
-Without `confirm: true`, mutating tools return planned commands, risk, rollback notes, and verification steps.
+Tokens are HMAC-bound to the MCP tool, resolved profile/target and config source, raw execution inputs, current inventory-derived plan, risk, rollback, and verification. Raw inputs include DDL, SQL parameters, secret-bearing command input, and private content fingerprints for configured auth files or the selected standalone restore dump; file contents and fingerprints are never returned. Tokens are one-time, valid only in the current MCP process, and consumed before the first side effect. Missing, malformed, changed-plan, replayed, or pre-restart tokens execute nothing and return a refreshed plan/token with `confirmation.status: "rejected"`; accepted execution returns `accepted`, while a no-op returns `not-required`.
+
+Treat `confirmationToken` as an ephemeral capability: do not log it or persist it in reusable notes. Possession is not evidence of human approval; the MCP host/client is responsible for obtaining that approval before sending the confirm call.
 
 ### Managed SQL/YQL
 
@@ -367,8 +370,8 @@ Without `confirm: true`, mutating tools return planned commands, risk, rollback 
 | --- | --- |
 | `query` (default) | Executes in `SnapshotRO`; `confirm` is ignored and never enables writes. |
 | `explain` | Uses Query Service `EXPLAIN` and returns a plan or AST without executing the YQL. |
-| `execute` without `confirm=true` | Runs the mandatory `EXPLAIN` preflight only and returns `outcome: "planned"`. |
-| `execute` with `confirm=true` | After a successful preflight, sends exactly one `NoTx` execution. There are no automatic retries. |
+| `execute` without an accepted token | Runs the mandatory `EXPLAIN` preflight and returns a plan plus one-time `confirmationToken`. |
+| `execute` with `confirm=true` and that token | Repeats `EXPLAIN`; if the exact plan still matches, consumes the token and sends exactly one `NoTx` execution. There are no automatic retries. |
 
 The script must be well-formed Unicode and is limited to 1,048,576 characters; lone UTF-16 surrogates are rejected before hashing or protobuf encoding. One deadline covers connection, session, preflight, and execution: `timeoutMs` defaults to 120,000 and is capped at 600,000. `maxRows` defaults to 100 and is capped at 10,000 per result set, but the first row-limit hit stops all further result capture: read-only execution is cancelled, while confirmed `NoTx` execution drains without capturing later output. `maxOutputBytes` defaults to 65,536 and is capped at 1 MiB across captured issues, plan/AST, column metadata, and complete rows; partial JSON values are never returned.
 
@@ -380,17 +383,17 @@ Response metadata includes the effective-script SHA-256, canonical parameter typ
 
 `local_ydb_list_dumps` is a read-only inventory of available dump names under `profile.dumpHostPath`. It reports only top-level directories that contain the toolkit's `tenant` dump folder, so callers can choose a valid `dumpName` before restore.
 
-`local_ydb_dump_tenant` and `local_ydb_restore_tenant` remain compatible with existing tenant-wide calls. Both now accept `path` for path-level operations. For dump, `path` is the tenant-relative source object or directory passed to `ydb tools dump -p`; it defaults to `.`. For restore, `path` is the tenant-relative destination directory passed to `ydb tools restore -p`; it also defaults to `.`. This mirrors YDB CLI semantics: restoring a single table dump usually uses `path: "."` to recreate that table under the tenant root. Restore can also append verification hooks with `describePaths` and bounded whole-table `countQueries` such as `SELECT COUNT(*) FROM \`dir/table\`;`; they run after the restore command when `confirm: true` is supplied.
+`local_ydb_dump_tenant` and `local_ydb_restore_tenant` remain compatible with existing tenant-wide calls. Both now accept `path` for path-level operations. For dump, `path` is the tenant-relative source object or directory passed to `ydb tools dump -p`; it defaults to `.`. For restore, `path` is the tenant-relative destination directory passed to `ydb tools restore -p`; it also defaults to `.`. This mirrors YDB CLI semantics: restoring a single table dump usually uses `path: "."` to recreate that table under the tenant root. Restore can also append verification hooks with `describePaths` and bounded whole-table `countQueries` such as `SELECT COUNT(*) FROM \`dir/table\`;`; they run after the restore command when the exact plan token is accepted.
 
 `local_ydb_scheme` lists or describes schema objects with the YDB CLI. It defaults to `scheme ls` at the configured tenant root, supports `recursive`, `long`, and `onePerLine` list options, and supports `stats` for `scheme describe`. Large stdout/stderr streams are capped per stream and returned with original uncapped byte counts and truncation flags so MCP responses stay usable.
 
 `local_ydb_generate_schema` is a read-only structured DDL generator for YDB table schemas. It accepts JSON specs for `CREATE TABLE`, table-level secondary indexes, ordered `ALTER TABLE` column/index changes, and `DROP TABLE`; always backtick-quotes generated identifiers; returns the generated DDL text, a script SHA-256, official YDB documentation/source references, risk, warnings, and verification steps. With `validate: true`, it runs the generated script through the same YDB JS SDK validation path used by `local_ydb_apply_schema`, but it never applies DDL. Generated scripts use the same 1 MiB size limit as `local_ydb_apply_schema`. In `with` settings, setting names must be YQL-style identifiers, string values render as quoted YQL literals, use `{ "token": "ENABLED" }` for bare-token settings such as `AUTO_PARTITIONING_BY_SIZE = ENABLED`, and use the top-level `store` field instead of `with.STORE`. Column names cannot use the reserved `__ydb_` prefix. `CREATE TABLE` `notNull` is supported only for columns that are part of the `primaryKey`; use application validation for non-key required business fields. `partitionByHash` is accepted only for `store: "column"` and primary key columns, column-oriented table primary keys must be `NOT NULL` and use the documented supported key types, secondary and vector indexes are kept to row-oriented tables, normal secondary indexes are global-only and do not accept `with` settings during creation, unique indexes must be synchronous, `ALTER TABLE ADD COLUMN` accepts only a name and type, duplicate add/drop column/index actions are rejected in one `alterTable` spec, indexes cannot target columns added or dropped in the same `alterTable` spec, `vector_kmeans_tree` requires a non-unique `global: true`, `sync: "sync"` index with the full documented settings, `CREATE TABLE` with a vector index returns a warning because adding the vector index after loading representative data is preferred, and column defaults are rendered as type-aware YQL defaults such as `Utf8('x')`, `Uint64('1')`, or `Date('2026-05-27')`.
 
-`local_ydb_apply_schema` validates or applies YDB table DDL through the official YDB JS SDK (`@ydbjs/*`). It accepts raw YQL DDL for `PRAGMA`, `CREATE TABLE`, `ALTER TABLE`, and `DROP TABLE`; the server delegates exact syntax validation to YDB instead of maintaining a partial SQL parser. `action: "validate"` never applies changes. `action: "apply"` validates first and applies only when `confirm: true` is supplied. Responses return a script SHA-256, statement kinds, validation/execution status, capped issue text, risk, rollback notes, and verification steps without echoing the raw script or configured credential paths.
+`local_ydb_apply_schema` validates or applies YDB table DDL through the official YDB JS SDK (`@ydbjs/*`). It accepts raw YQL DDL for `PRAGMA`, `CREATE TABLE`, `ALTER TABLE`, and `DROP TABLE`; the server delegates exact syntax validation to YDB instead of maintaining a partial SQL parser. `action: "validate"` never applies changes. `action: "apply"` validates first and applies only when the repeated request supplies `confirm: true` and the token from that exact validated plan. Responses return a script SHA-256, statement kinds, validation/execution status, capped issue text, risk, rollback notes, and verification steps without echoing the raw script or configured credential paths.
 
 For table creation, prefer a CMS tenant path such as `/local/example`. A root-only `/local` stack can validate DDL through the static endpoint, but YDB will reject storage-backed table creation there when the root database has no tenant storage pools.
 
-`local_ydb_permissions` manages YDB schema ACLs through `scheme permissions`. Its read-only `list` action defaults to the configured tenant root and runs without `confirm`. Mutating actions `grant`, `revoke`, `set`, `clear`, `chown`, `set-inheritance`, and `clear-inheritance` return a plan unless `confirm: true` is supplied. For `grant`, `revoke`, and `set`, pass permission names as a structured `permissions` array; each item is emitted as a separate `-p` CLI argument.
+`local_ydb_permissions` manages YDB schema ACLs through `scheme permissions`. Its read-only `list` action defaults to the configured tenant root and runs without confirmation. Mutating actions `grant`, `revoke`, `set`, `clear`, `chown`, `set-inheritance`, and `clear-inheritance` return a plan and require its token on the repeated confirm call. For `grant`, `revoke`, and `set`, pass permission names as a structured `permissions` array; each item is emitted as a separate `-p` CLI argument.
 
 `local_ydb_pull_image` starts a background `docker pull` for a profile image or explicit image and returns a `jobId` immediately. Poll `local_ydb_pull_status` with that `jobId` until it reaches `completed` before retrying bootstrap or upgrade. Known jobs include a monotonic `progressPercent`: an approximate completed-layer percentage from 0 to 99 while running, 100 after successful completion, and the last observed value after failure. This keeps slow registry downloads out of synchronous bootstrap/upgrade tool calls without claiming byte-level progress.
 

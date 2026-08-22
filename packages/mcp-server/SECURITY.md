@@ -21,7 +21,7 @@ The server inherits the authority of its process and configured targets:
 - YDB CLI operations use the endpoint, database, user, token, and password-file access available to the process;
 - local configuration, identity, password, dump, and restore files are readable or writable according to the process filesystem permissions.
 
-Mutating MCP tools are plan-first. `confirm: true` is an application-level approval gate that separates command planning from execution. It is not an operating-system sandbox, an authentication boundary, an authorization system, or a replacement for least-privilege credentials and host controls.
+Mutating MCP tools are plan-first. Execution requires `confirm: true` plus a process-bound, one-time HMAC token returned for the current exact plan. The token is consumed before the first side effect, expires on MCP restart, and is rejected when the tool, target, config source, execution inputs, or current plan change. It is an ephemeral capability, not proof of human approval; MCP hosts and clients remain responsible for obtaining that approval and must not log or persist tokens. This application-level gate is not an operating-system sandbox, an authentication boundary, an authorization system, or a replacement for least-privilege credentials and host controls.
 
 Keep configuration and credential files outside the repository, restrict their permissions, use dedicated development credentials, and review generated command plans before confirming them. Avoid granting the MCP process production credentials or access to unrelated hosts and files.
 

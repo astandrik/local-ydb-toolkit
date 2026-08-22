@@ -1,4 +1,5 @@
 import { bash, shellQuote } from "../api-client.js";
+import { confirmationScopedId } from "../confirmation.js";
 import { createTenantSpec, helperContainer, ydbAuthArgs, ydbCli } from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
 import type {
@@ -63,8 +64,20 @@ export async function listDumps(ctx: ToolkitContext): Promise<ListDumpsResponse>
 }
 
 export async function dumpTenant(ctx: ToolkitContext, options: DumpTenantOptions = {}): Promise<DumpTenantResponse> {
-  const dumpName = normalizeDumpName(options.dumpName ?? defaultDumpName(ctx));
   const path = normalizeYdbRelativePath(options.path ?? DEFAULT_YDB_DUMP_PATH);
+  // Keep an omitted name stable across plan/confirm, then rotate it as soon as
+  // that plan token is consumed so retries cannot target the previous dump.
+  const confirmationScope = !options.dumpName && ctx.confirmation
+    ? { kind: "auto-dump-name", path }
+    : undefined;
+  const scopedId = confirmationScope
+    ? confirmationScopedId(ctx, confirmationScope)
+    : undefined;
+  const dumpName = normalizeDumpName(options.dumpName ?? (
+    scopedId
+      ? confirmedDefaultDumpName(ctx, scopedId)
+      : defaultDumpName(ctx)
+  ));
   const sourcePath = resolveTenantRelativePath(ctx.profile.tenantPath, path);
   const dumpPath = `${ctx.profile.dumpHostPath}/${dumpName}`;
   const specs = [
@@ -76,7 +89,8 @@ export async function dumpTenant(ctx: ToolkitContext, options: DumpTenantOptions
     risk: "medium",
     specs,
     rollback: [`rm -rf ${shellQuote(dumpPath)}`],
-    verification: [`test -d ${shellQuote(`${dumpPath}/tenant`)}`]
+    verification: [`test -d ${shellQuote(`${dumpPath}/tenant`)}`],
+    confirmationScope,
   }, options);
   return {
     ...response,
@@ -110,7 +124,12 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
       `scheme ls ${ctx.profile.tenantPath}`,
       "small table reads succeed",
       ...verificationHooks.map((hook) => hook.description)
-    ]
+    ],
+    confirmationInputs: [{
+      kind: "directory",
+      path: `${ctx.profile.dumpHostPath}/${dumpName}/tenant`,
+      role: "restore-dump",
+    }],
   }, options);
   return {
     ...response,
@@ -128,6 +147,11 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
 
 function defaultDumpName(ctx: ToolkitContext): string {
   return `${ctx.profile.tenantPath.split("/").pop() ?? "tenant"}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+}
+
+function confirmedDefaultDumpName(ctx: ToolkitContext, scopedId: string): string {
+  const tenant = ctx.profile.tenantPath.split("/").pop() ?? "tenant";
+  return `${tenant}-auto-${scopedId}`;
 }
 
 function parseDumpNames(stdout: string): string[] {

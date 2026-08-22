@@ -7,6 +7,7 @@ import {
   createContext,
   listVersions,
   parseImageReference,
+  ProcessConfirmationStore,
   replaceImageTag,
   upgradeVersion,
   type CommandExecutor,
@@ -472,6 +473,59 @@ describe("version operations", () => {
       expect(commands.some((command) => command.includes("--name ydb-dyn-example-2") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("verify profile containers use image ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("executes the multi-phase upgrade only with its recalculated exact-plan token", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig();
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const context = createContext(
+        undefined,
+        executor,
+        ConfigSchema.parse(rawConfig),
+        configPath,
+      );
+      const ctx = {
+        ...context,
+        confirmation: {
+          store: new ProcessConfirmationStore(),
+          toolName: "local_ydb_upgrade_version",
+          configSource: {
+            kind: "argument",
+            path: configPath,
+            contentSha256: "test-config-content",
+          },
+        },
+      };
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      const request = {
+        version: "26.1.2.0",
+        dumpName: "upgrade-exact-token",
+      };
+
+      const planned = await upgradeVersion(ctx, request);
+      const accepted = await withRunTimers(() => upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      }));
+
+      expect(planned).toMatchObject({
+        executed: false,
+        confirmation: { status: "planned", token: expect.any(String) },
+      });
+      expect(accepted).toMatchObject({
+        executed: true,
+        confirmation: { status: "accepted" },
+        profileImageUpdate: { executed: true, ok: true },
+      });
+      expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
+        profiles: { default: { image: "ghcr.io/ydb-platform/local-ydb:26.1.2.0" } },
+      });
     } finally {
       cleanup();
     }

@@ -4,12 +4,20 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { decode } from "@toon-format/toon";
 import { StatusIds_StatusCode } from "@ydbjs/api/operation";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ConfigSchema } from "@local-ydb-toolkit/core";
+import {
+  ConfigSchema,
+  commandToShell,
+  type CommandExecutor,
+  type CommandResult,
+  type CommandSpec,
+  type ResolvedLocalYdbProfile,
+} from "@local-ydb-toolkit/core";
 import {
   createLocalYdbMcpApplication,
   createLocalYdbMcpServer,
@@ -23,6 +31,31 @@ type ProtocolServer = LocalYdbMcpApplication | Server;
 
 const openConnections: Array<{ client: Client; server: ProtocolServer }> = [];
 const posixIt = process.platform === "win32" ? it.skip : it;
+
+class ProtocolMutationExecutor implements CommandExecutor {
+  readonly commands: string[] = [];
+  fail = false;
+
+  display(_profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
+    return commandToShell(spec);
+  }
+
+  async run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+    const command = this.display(profile, spec);
+    this.commands.push(command);
+    if (this.fail) {
+      throw new Error("synthetic protocol execution failure");
+    }
+    return {
+      command,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      ok: true,
+      timedOut: false,
+    };
+  }
+}
 
 afterEach(async () => {
   for (const { client, server } of openConnections.splice(0)) {
@@ -319,6 +352,312 @@ describe("MCP protocol contract", () => {
     });
   });
 
+  it("requires a one-time token for an exact mutating MCP request", async () => {
+    const executor = new ProtocolMutationExecutor();
+    const { client } = await connect(createLocalYdbMcpApplication({
+      config: ConfigSchema.parse({}),
+      executor,
+    }));
+    const request = {
+      name: "local_ydb_cleanup_storage",
+      arguments: { paths: ["/tmp/local-ydb-confirmation-protocol"] },
+    };
+
+    const planned = await client.callTool(request);
+    const token = confirmationToken(planned.structuredContent);
+    expect(planned.structuredContent).toMatchObject({
+      executed: false,
+      confirmation: { status: "planned", token: expect.any(String) },
+    });
+    expect(executor.commands).toHaveLength(0);
+
+    const missing = await client.callTool({
+      ...request,
+      arguments: { ...request.arguments, confirm: true },
+    });
+    expect(missing.structuredContent).toMatchObject({
+      executed: false,
+      confirmation: { status: "rejected", token: expect.any(String) },
+    });
+    expect(executor.commands).toHaveLength(0);
+
+    const accepted = await client.callTool({
+      ...request,
+      arguments: {
+        ...request.arguments,
+        confirm: true,
+        confirmationToken: token,
+      },
+    });
+    expect(accepted.structuredContent).toMatchObject({
+      executed: true,
+      confirmation: { status: "accepted" },
+    });
+    expect(executor.commands).toHaveLength(1);
+
+    const replay = await client.callTool({
+      ...request,
+      arguments: {
+        ...request.arguments,
+        confirm: true,
+        confirmationToken: token,
+      },
+    });
+    expect(replay.structuredContent).toMatchObject({
+      executed: false,
+      confirmation: { status: "rejected", token: expect.any(String) },
+    });
+    expect(executor.commands).toHaveLength(1);
+  });
+
+  it("rejects changed, wrong-tool, wrong-profile, and pre-restart tokens", async () => {
+    const config = ConfigSchema.parse({
+      profiles: { default: {}, other: {} },
+    });
+    const executor = new ProtocolMutationExecutor();
+    const application = createLocalYdbMcpApplication({ config, executor });
+    const { client } = await connect(application);
+    const planned = await client.callTool({
+      name: "local_ydb_cleanup_storage",
+      arguments: { paths: ["/tmp/local-ydb-confirmation-a"] },
+    });
+    const token = confirmationToken(planned.structuredContent);
+
+    for (const request of [
+      {
+        name: "local_ydb_cleanup_storage",
+        arguments: {
+          paths: ["/tmp/local-ydb-confirmation-b"],
+          confirm: true,
+          confirmationToken: token,
+        },
+      },
+      {
+        name: "local_ydb_create_tenant",
+        arguments: { confirm: true, confirmationToken: token },
+      },
+      {
+        name: "local_ydb_cleanup_storage",
+        arguments: {
+          profile: "other",
+          paths: ["/tmp/local-ydb-confirmation-a"],
+          confirm: true,
+          confirmationToken: token,
+        },
+      },
+    ]) {
+      const response = await client.callTool(request);
+      expect(response.structuredContent).toMatchObject({
+        executed: false,
+        confirmation: { status: "rejected", token: expect.any(String) },
+      });
+    }
+    expect(executor.commands).toHaveLength(0);
+
+    const restartedExecutor = new ProtocolMutationExecutor();
+    const { client: restartedClient } = await connect(createLocalYdbMcpApplication({
+      config,
+      executor: restartedExecutor,
+    }));
+    const restarted = await restartedClient.callTool({
+      name: "local_ydb_cleanup_storage",
+      arguments: {
+        paths: ["/tmp/local-ydb-confirmation-a"],
+        confirm: true,
+        confirmationToken: token,
+      },
+    });
+    expect(restarted.structuredContent).toMatchObject({
+      executed: false,
+      confirmation: { status: "rejected", token: expect.any(String) },
+    });
+    expect(restartedExecutor.commands).toHaveLength(0);
+  });
+
+  it("rejects a token when the explicit config source changes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-confirmation-config-"));
+    const configPath = join(dir, "local-ydb.config.json");
+    const executor = new ProtocolMutationExecutor();
+    writeFileSync(configPath, JSON.stringify({ profiles: { default: {} } }), "utf8");
+    try {
+      const { client } = await connect(createLocalYdbMcpApplication({ executor }));
+      const request = {
+        name: "local_ydb_cleanup_storage",
+        arguments: {
+          configPath,
+          paths: ["/tmp/local-ydb-confirmation-config"],
+        },
+      };
+      const planned = await client.callTool(request);
+      const token = confirmationToken(planned.structuredContent);
+      writeFileSync(configPath, JSON.stringify({
+        profiles: { default: { volume: "changed-volume" } },
+      }), "utf8");
+
+      const rejected = await client.callTool({
+        ...request,
+        arguments: {
+          ...request.arguments,
+          confirm: true,
+          confirmationToken: token,
+        },
+      });
+      expect(rejected.structuredContent).toMatchObject({
+        executed: false,
+        confirmation: { status: "rejected", token: expect.any(String) },
+      });
+      expect(executor.commands).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects changed auth-file contents without returning content or fingerprints", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-confirmation-auth-content-"));
+    const authConfigPath = join(dir, "auth.yaml");
+    const marker = "BENIGN_PROTOCOL_AUTH_CONTENT_MARKER";
+    writeFileSync(authConfigPath, marker, "utf8");
+    try {
+      const executor = new ProtocolMutationExecutor();
+      const config = ConfigSchema.parse({
+        profiles: { default: { authConfigPath } },
+      });
+      const { client } = await connect(createLocalYdbMcpApplication({
+        config,
+        executor,
+      }));
+      const request = {
+        name: "local_ydb_apply_auth_hardening",
+        arguments: {},
+      };
+      const planned = await client.callTool(request);
+      const token = confirmationToken(planned.structuredContent);
+      const digest = createHash("sha256").update(marker).digest("hex");
+      expect(JSON.stringify(planned)).not.toContain(marker);
+      expect(JSON.stringify(planned)).not.toContain(digest);
+
+      writeFileSync(authConfigPath, `${marker}-changed`, "utf8");
+      const rejected = await client.callTool({
+        ...request,
+        arguments: { confirm: true, confirmationToken: token },
+      });
+      expect(rejected.structuredContent).toMatchObject({
+        executed: false,
+        confirmation: { status: "rejected", token: expect.any(String) },
+      });
+      expect(JSON.stringify(rejected)).not.toContain(marker);
+      expect(JSON.stringify(rejected)).not.toContain(digest);
+      expect(executor.commands).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("permits at most one concurrent execution and consumes tokens before failures", async () => {
+    const executor = new ProtocolMutationExecutor();
+    const { client } = await connect(createLocalYdbMcpApplication({
+      config: ConfigSchema.parse({}),
+      executor,
+    }));
+    const argumentsWithoutConfirmation = {
+      paths: ["/tmp/local-ydb-confirmation-concurrent"],
+    };
+    const planned = await client.callTool({
+      name: "local_ydb_cleanup_storage",
+      arguments: argumentsWithoutConfirmation,
+    });
+    const token = confirmationToken(planned.structuredContent);
+    const confirmedRequest = {
+      name: "local_ydb_cleanup_storage",
+      arguments: {
+        ...argumentsWithoutConfirmation,
+        confirm: true,
+        confirmationToken: token,
+      },
+    };
+
+    const concurrent = await Promise.all([
+      client.callTool(confirmedRequest),
+      client.callTool(confirmedRequest),
+    ]);
+    expect(concurrent.map((response) => (
+      response.structuredContent as { confirmation?: { status?: string } }
+    ).confirmation?.status).sort()).toEqual(["accepted", "rejected"]);
+    expect(executor.commands).toHaveLength(1);
+
+    const failingExecutor = new ProtocolMutationExecutor();
+    const { client: failingClient } = await connect(createLocalYdbMcpApplication({
+      config: ConfigSchema.parse({}),
+      executor: failingExecutor,
+    }));
+    const failingPlan = await failingClient.callTool({
+      name: "local_ydb_cleanup_storage",
+      arguments: { paths: ["/tmp/local-ydb-confirmation-failure"] },
+    });
+    const failingToken = confirmationToken(failingPlan.structuredContent);
+    failingExecutor.fail = true;
+    const failingRequest = {
+      name: "local_ydb_cleanup_storage",
+      arguments: {
+        paths: ["/tmp/local-ydb-confirmation-failure"],
+        confirm: true,
+        confirmationToken: failingToken,
+      },
+    };
+    expect(await failingClient.callTool(failingRequest)).toMatchObject({ isError: true });
+    failingExecutor.fail = false;
+    const retry = await failingClient.callTool(failingRequest);
+    expect(retry.structuredContent).toMatchObject({
+      executed: false,
+      confirmation: { status: "rejected" },
+    });
+    expect(failingExecutor.commands).toHaveLength(1);
+  });
+
+  it("rejects confirmationToken without confirm=true and never exposes secret intent", async () => {
+    const executor = new ProtocolMutationExecutor();
+    const config = ConfigSchema.parse({
+      profiles: {
+        default: {
+          authConfigPath: "/tmp/local-ydb-auth.yaml",
+          rootPasswordFile: "/tmp/local-ydb-root-password",
+        },
+      },
+    });
+    const { client } = await connect(createLocalYdbMcpApplication({ config, executor }));
+    const invalid = await client.callTool({
+      name: "local_ydb_cleanup_storage",
+      arguments: {
+        paths: ["/tmp/local-ydb-confirmation-invalid"],
+        confirmationToken: "v1.invalid.invalid",
+      },
+    });
+    expect(invalid).toMatchObject({ isError: true });
+    expect(executor.commands).toHaveLength(0);
+
+    const secret = "BENIGN_PROTOCOL_PASSWORD_SECRET";
+    const planned = await client.callTool({
+      name: "local_ydb_set_root_password",
+      arguments: { password: secret },
+    });
+    expect(planned.structuredContent).toMatchObject({
+      executed: false,
+      confirmation: { status: "planned", token: expect.any(String) },
+    });
+    expect(JSON.stringify(planned)).not.toContain(secret);
+
+    const noOp = await client.callTool({
+      name: "local_ydb_cleanup_storage",
+      arguments: {},
+    });
+    expect(noOp.structuredContent).toMatchObject({
+      executed: false,
+      confirmation: { status: "not-required" },
+    });
+    expect((noOp.structuredContent as { confirmation?: { token?: string } }).confirmation)
+      .not.toHaveProperty("token");
+  });
+
   it("propagates client cancellation to the tool handler abort signal", async () => {
     let startedResolve: (() => void) | undefined;
     let cancelledResolve: (() => void) | undefined;
@@ -429,4 +768,24 @@ function textContentAt(content: unknown, index: number): string {
     throw new Error(`Expected MCP tool content ${index} to be text`);
   }
   return item.text;
+}
+
+function confirmationToken(structuredContent: unknown): string {
+  if (
+    !structuredContent
+    || typeof structuredContent !== "object"
+    || !("confirmation" in structuredContent)
+  ) {
+    throw new Error("Expected confirmation metadata");
+  }
+  const confirmation = structuredContent.confirmation;
+  if (
+    !confirmation
+    || typeof confirmation !== "object"
+    || !("token" in confirmation)
+    || typeof confirmation.token !== "string"
+  ) {
+    throw new Error("Expected confirmation token");
+  }
+  return confirmation.token;
 }

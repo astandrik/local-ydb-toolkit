@@ -17,18 +17,30 @@ credentials that can complete the task.
 
 ## Plan-first mutations
 
-Mutating tools return planned commands, risk, rollback, and verification without
-executing when `confirm` is absent or false. Supply `confirm: true` only after
-reviewing the exact target and plan.
+Mutating tools return planned commands, risk, rollback, verification, and a
+one-time process-bound token without executing. After human review, repeat the
+same request with `confirm: true` and that plan's `confirmationToken`.
 
 ```json
 {
-  "confirm": true
+  "confirm": true,
+  "confirmationToken": "<token-from-the-plan-response>"
 }
 ```
 
-`confirm: true` does not replace operating-system sandboxing, authentication,
-authorization, branch protection, backups, or least-privilege credentials.
+The token is bound to the exact tool, target, config source, execution inputs,
+current plan, risk, rollback, and verification. Execution inputs include DDL,
+SQL parameters, secret-bearing command input, and private content fingerprints
+for configured auth files or the selected standalone restore dump; contents and
+fingerprints are never returned. The token is valid only until use or MCP
+restart and is consumed before the first side effect. A missing, changed,
+replayed, or pre-restart token executes nothing and returns a fresh plan/token.
+
+Treat the token as an ephemeral capability: do not log or persist it. It does
+not prove that a human approved the plan; the MCP host/client must enforce that
+approval. This gate does not replace operating-system sandboxing,
+authentication, authorization, branch protection, backups, or least-privilege
+credentials.
 
 ## Destructive workflows
 

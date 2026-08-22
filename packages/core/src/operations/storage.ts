@@ -8,6 +8,13 @@ import {
   type StoragePoolSummary
 } from "../api-client.js";
 import { sanitizeTenantName } from "../validation.js";
+import {
+  attachConfirmation,
+  authorizeMutation,
+  commandPlanIntent,
+  confirmationSummarySuffix,
+  withoutConfirmation,
+} from "../confirmation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
 import { inventory, requireInventory } from "./checks.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
@@ -96,9 +103,17 @@ export async function addStorageGroups(ctx: ToolkitContext, options: AddStorageG
     `scheme ls ${ctx.profile.tenantPath}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Add ${groupsToAdd} storage group${groupsToAdd === 1 ? "" : "s"} to ${pool.name}. Not executed because confirm=true was not provided.`,
+  const summary = `Add ${groupsToAdd} storage group${groupsToAdd === 1 ? "" : "s"} to ${pool.name}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs: [defineSpec],
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands,
@@ -112,14 +127,16 @@ export async function addStorageGroups(ctx: ToolkitContext, options: AddStorageG
         targetNumGroups,
         itemConfigGeneration: pool.itemConfigGeneration
       }
-    };
+    }, decision.confirmation);
   }
+  const confirmed = (response: AddStorageGroupsResponse) =>
+    attachConfirmation(response, decision.confirmation);
 
   const results: CommandResult[] = [];
   const invokeResult = await ctx.client.run(defineSpec);
   results.push(invokeResult);
   if (!invokeResult.ok) {
-    return addStorageGroupsResponse(ctx, pool, targetNumGroups, undefined, results, rollback, verification);
+    return confirmed(addStorageGroupsResponse(ctx, pool, targetNumGroups, undefined, results, rollback, verification));
   }
 
   const refreshedPool = await readTargetStoragePool(ctx, pool.name);
@@ -133,12 +150,12 @@ export async function addStorageGroups(ctx: ToolkitContext, options: AddStorageG
     timedOut: false
   });
   if (observedNumGroups !== targetNumGroups) {
-    return addStorageGroupsResponse(ctx, pool, targetNumGroups, observedNumGroups, results, rollback, verification);
+    return confirmed(addStorageGroupsResponse(ctx, pool, targetNumGroups, observedNumGroups, results, rollback, verification));
   }
   const tenantResult = await ctx.client.run(ydbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata"));
   results.push(tenantResult);
 
-  return addStorageGroupsResponse(ctx, pool, targetNumGroups, observedNumGroups, results, rollback, verification);
+  return confirmed(addStorageGroupsResponse(ctx, pool, targetNumGroups, observedNumGroups, results, rollback, verification));
 }
 
 export async function reduceStorageGroups(
@@ -165,17 +182,18 @@ export async function reduceStorageGroups(
     ctx,
     inventoryState.containers.map((container) => container.names)
   );
-  const finalCtx = authReapplyPlanned ? ctx : rebuildCtx;
+  const phaseCtx = withoutConfirmation(ctx);
+  const finalCtx = authReapplyPlanned ? phaseCtx : rebuildCtx;
 
-  const dumpPlan = await dumpTenant(ctx, { confirm: false, dumpName });
-  const destroyPlan = await destroyStack(ctx, { confirm: false });
+  const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
+  const destroyPlan = await destroyStack(phaseCtx, { confirm: false });
   const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
     ? [
-        await prepareAuthConfig(ctx, { confirm: false }),
-        await writeDynamicNodeAuthConfig(ctx, { confirm: false, sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin" }),
-        await applyAuthHardening(ctx, { confirm: false })
+        await prepareAuthConfig(phaseCtx, { confirm: false }),
+        await writeDynamicNodeAuthConfig(phaseCtx, { confirm: false, sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin" }),
+        await applyAuthHardening(phaseCtx, { confirm: false })
       ]
     : [];
   const extraDynamicPlans = [];
@@ -210,9 +228,25 @@ export async function reduceStorageGroups(
     `authenticated nodelist includes configured and restored one-off IC ports: ${expectedDynamicNodePorts(finalCtx, extraDynamicNodes).join(", ")}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Reduce storage groups for ${pool.name} from ${pool.numGroups} to ${targetNumGroups} via dump, rebuild, and restore. Not executed because confirm=true was not provided.`,
+  const summary = `Reduce storage groups for ${pool.name} from ${pool.numGroups} to ${targetNumGroups} via dump, rebuild, and restore.`;
+  const decision = await authorizeMutation(ctx, options, {
+    kind: "storage-rebuild",
+    request: {
+      count: groupsToRemove,
+      dumpName,
+      poolName: pool.name,
+    },
+    pool,
+    extraDynamicNodes,
+    authReapplyPlanned,
+    plannedCommands,
+    risk: "high",
+    rollback,
+    verification,
+  });
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands,
@@ -229,36 +263,38 @@ export async function reduceStorageGroups(
       dumpName,
       authReapplyPlanned,
       extraDynamicNodes: extraDynamicNodes.map((node) => node.container)
-    };
+    }, decision.confirmation);
   }
+  const confirmed = (response: ReduceStorageGroupsResponse) =>
+    attachConfirmation(response, decision.confirmation);
 
   const results: CommandResult[] = [];
 
-  if (!await runOperation(results, await dumpTenant(ctx, { confirm: true, dumpName }))) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+  if (!await runOperation(results, await dumpTenant(phaseCtx, { confirm: true, dumpName }))) {
+    return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
   }
-  if (!await runOperation(results, await destroyStack(ctx, { confirm: true }))) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+  if (!await runOperation(results, await destroyStack(phaseCtx, { confirm: true }))) {
+    return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
   }
   if (!await runOperation(results, await bootstrap(rebuildCtx, { confirm: true }))) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+    return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
   }
   if (!await runOperation(results, await restoreTenant(rebuildCtx, { confirm: true, dumpName }))) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+    return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
   }
 
   if (authReapplyPlanned) {
-    if (!await runOperation(results, await prepareAuthConfig(ctx, { confirm: true }))) {
-      return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+    if (!await runOperation(results, await prepareAuthConfig(phaseCtx, { confirm: true }))) {
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
     }
-    if (!await runOperation(results, await writeDynamicNodeAuthConfig(ctx, {
+    if (!await runOperation(results, await writeDynamicNodeAuthConfig(phaseCtx, {
       confirm: true,
       sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin"
     }))) {
-      return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
     }
-    if (!await runOperation(results, await applyAuthHardening(ctx, { confirm: true }))) {
-      return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+    if (!await runOperation(results, await applyAuthHardening(phaseCtx, { confirm: true }))) {
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
     }
   }
 
@@ -271,7 +307,7 @@ export async function reduceStorageGroups(
       monitoringPortStart: node.monitoringPort,
       icPortStart: node.icPort
     }))) {
-      return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
     }
   }
 
@@ -286,7 +322,7 @@ export async function reduceStorageGroups(
     timedOut: false
   });
   if (observedNumGroups !== targetNumGroups) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results);
+    return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results));
   }
 
   results.push(await finalCtx.client.run(waitForYdbCli(
@@ -299,7 +335,7 @@ export async function reduceStorageGroups(
     results.push(await verifyRebuiltProfileContainers(finalCtx, extraDynamicNodes));
   }
 
-  return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results);
+  return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results));
 }
 
 function expectedProfileContainerNames(

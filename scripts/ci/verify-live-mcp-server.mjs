@@ -1419,21 +1419,53 @@ async function runCommand(command, args, options = {}) {
 async function callTool(client, name, args) {
   console.log(`::group::tools/call ${name}`);
   try {
-    const result = await client.callTool(
-      { name, arguments: args },
-      undefined,
-      { timeout: 180_000 },
-    );
-    if (result.isError) {
-      throw new Error(`${name} returned MCP error: ${toolText(result)}`);
+    let effectiveArgs = args;
+    if (args.confirm === true && args.confirmationToken === undefined) {
+      const planArgs = { ...args };
+      delete planArgs.confirm;
+      const plan = await invokeTool(client, name, planArgs);
+      console.log(JSON.stringify(summarize(plan), null, 2));
+      if (
+        plan.confirmation?.status === "not-required"
+        || isReadOnlyMixedAction(name, planArgs)
+      ) {
+        return plan;
+      }
+      assert(
+        typeof plan.confirmation?.token === "string",
+        `${name} did not return a confirmation token for its exact plan.`,
+      );
+      effectiveArgs = {
+        ...args,
+        confirmationToken: plan.confirmation.token,
+      };
     }
-    const data = "structuredContent" in result ? result.structuredContent : result.toolResult;
-    assertPlainObject(data, `${name} did not return structured content.`);
+    const data = await invokeTool(client, name, effectiveArgs);
     console.log(JSON.stringify(summarize(data), null, 2));
     return data;
   } finally {
     console.log("::endgroup::");
   }
+}
+
+function isReadOnlyMixedAction(name, args) {
+  return (name === "local_ydb_sql" && (args.action ?? "query") !== "execute")
+    || (name === "local_ydb_apply_schema" && (args.action ?? "validate") === "validate")
+    || (name === "local_ydb_permissions" && (args.action ?? "list") === "list");
+}
+
+async function invokeTool(client, name, args) {
+  const result = await client.callTool(
+    { name, arguments: args },
+    undefined,
+    { timeout: 180_000 },
+  );
+  if (result.isError) {
+    throw new Error(`${name} returned MCP error: ${toolText(result)}`);
+  }
+  const data = "structuredContent" in result ? result.structuredContent : result.toolResult;
+  assertPlainObject(data, `${name} did not return structured content.`);
+  return data;
 }
 
 function nodePorts(value) {
@@ -1457,6 +1489,7 @@ function summarize(value) {
     outcome: value.outcome,
     confirmationRequired: value.confirmationRequired,
     confirmationConsumed: value.confirmationConsumed,
+    confirmationStatus: value.confirmation?.status,
     outputBytes: value.outputBytes,
     truncated: value.truncated,
     risk: value.risk,

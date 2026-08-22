@@ -950,7 +950,8 @@ describe("mcp tools", () => {
     expect(text).toContain("returned jobId");
     expect(text).toContain("local_ydb_upgrade_version");
     expect(text).toContain("Call mutating tools without confirm first");
-    expect(text).toContain("confirm=true only after the user explicitly approves");
+    expect(text).toContain("confirm=true and that response's confirmationToken");
+    expect(text).toContain("do not log or persist it");
     expect(text).toContain("\"profile\": \"demo\"");
   });
 
@@ -980,8 +981,8 @@ describe("mcp tools", () => {
       ? result.messages[0].content.text
       : "";
 
-    expect(text).toContain("local_ydb_prepare_auth_config with confirm=true");
-    expect(text).toContain("local_ydb_write_dynamic_auth_config with confirm=true");
+    expect(text).toContain("repeat each exact request with confirm=true");
+    expect(text).toContain("its own returned confirmationToken");
     expect(text).toContain("Then call local_ydb_apply_auth_hardening without confirm");
     expect(text).toContain("\"sid\": \"root@builtin\"");
     expect(text).toContain("\"tokenHostPath\": \"/tmp/dynamic-auth.txt\"");
@@ -1017,8 +1018,8 @@ describe("mcp tools", () => {
     expect(text).toContain("local_ydb_status_report");
     expect(text).toContain("local_ydb_generate_schema with validate=true");
     expect(text).toContain("local_ydb_apply_schema action=validate");
-    expect(text).toContain("action=apply with confirm=false");
-    expect(text).toContain("confirm=true only after");
+    expect(text).toContain("action=apply without confirm first");
+    expect(text).toContain("confirm=true and its returned confirmationToken");
     expect(text).toContain("with.STORE");
     expect(text).toContain("partitionByHash only with store: \"column\" and primaryKey columns");
     expect(text).toContain("vector_kmeans_tree");
@@ -1117,13 +1118,28 @@ describe("mcp tools", () => {
     expect(result.plannedCommands.length).toBeGreaterThan(0);
   });
 
+  it("exposes confirmationToken on all 23 mutating tools and no read-only tools", () => {
+    const mutating = localYdbTools.filter((tool) => tool.annotations?.readOnlyHint === false);
+    const readOnly = localYdbTools.filter((tool) => tool.annotations?.readOnlyHint === true);
+
+    expect(mutating).toHaveLength(23);
+    expect(readOnly).toHaveLength(16);
+    for (const tool of mutating) {
+      expect(tool.inputSchema.properties).toHaveProperty("confirmationToken");
+    }
+    for (const tool of readOnly) {
+      expect(tool.inputSchema.properties).not.toHaveProperty("confirmationToken");
+    }
+  });
+
   it("keeps topology tool input keys stable while documenting dynamic-node defaults", () => {
     const expectedSchemas: Record<string, string[]> = {
-      local_ydb_bootstrap: ["configPath", "confirm", "profile"],
-      local_ydb_restart_stack: ["configPath", "confirm", "profile"],
+      local_ydb_bootstrap: ["configPath", "confirm", "confirmationToken", "profile"],
+      local_ydb_restart_stack: ["configPath", "confirm", "confirmationToken", "profile"],
       local_ydb_add_dynamic_nodes: [
         "configPath",
         "confirm",
+        "confirmationToken",
         "count",
         "grpcPortStart",
         "icPortStart",
@@ -1134,6 +1150,7 @@ describe("mcp tools", () => {
       local_ydb_remove_dynamic_nodes: [
         "configPath",
         "confirm",
+        "confirmationToken",
         "containers",
         "count",
         "nodeIds",

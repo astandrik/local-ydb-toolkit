@@ -6,6 +6,24 @@ export const ProfileArgs = z.object({
   configPath: z.string().min(1).optional(),
 }).strict();
 
+const ConfirmationFields = {
+  confirm: z.boolean().optional(),
+  confirmationToken: z.string().min(1).max(256).optional(),
+};
+
+function requireConfirmForToken<T extends z.ZodTypeAny>(schema: T) {
+  return schema.superRefine((value, ctx) => {
+    const args = value as { confirm?: boolean; confirmationToken?: string };
+    if (args.confirmationToken !== undefined && args.confirm !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["confirmationToken"],
+        message: "confirmationToken is allowed only with confirm=true",
+      });
+    }
+  });
+}
+
 export const LogsArgs = ProfileArgs.extend({
   target: z.enum(["static", "dynamic"]),
   lines: z.number().int().positive().optional(),
@@ -30,14 +48,14 @@ export const SchemeArgs = ProfileArgs.extend({
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
 });
 
-export const ApplySchemaArgs = ProfileArgs.extend({
+export const ApplySchemaArgs = requireConfirmForToken(ProfileArgs.extend({
   action: z.enum(["validate", "apply"]).optional(),
   databasePath: z.string().min(1).optional(),
   script: z.string().min(1).max(1_048_576),
-  confirm: z.boolean().optional(),
+  ...ConfirmationFields,
   timeoutMs: z.number().int().positive().max(600_000).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
-});
+}));
 
 const SqlParameterArgs = z.object({
   type: z.custom<SqlParameter["type"]>(
@@ -72,7 +90,7 @@ const SqlParametersArgs = z.custom<Record<string, unknown>>(
   (entries) => Object.fromEntries(entries) as Record<string, SqlParameter>,
 );
 
-export const SqlArgs = ProfileArgs.extend({
+export const SqlArgs = requireConfirmForToken(ProfileArgs.extend({
   action: z.enum(["query", "explain", "execute"]).optional(),
   script: z.string().min(1).max(1_048_576),
   databasePath: z.string().min(1).optional(),
@@ -80,8 +98,8 @@ export const SqlArgs = ProfileArgs.extend({
   maxRows: z.number().int().positive().max(10_000).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
   parameters: SqlParametersArgs.optional(),
-  confirm: z.boolean().optional(),
-});
+  ...ConfirmationFields,
+}));
 
 const SchemaScalarValue = z.union([z.string(), z.number(), z.boolean()]);
 const SchemaSettingTokenValue = z.object({
@@ -523,7 +541,7 @@ export const GenerateSchemaArgs = ProfileArgs.extend({
   });
 });
 
-export const PermissionsArgs = ProfileArgs.extend({
+export const PermissionsArgs = requireConfirmForToken(ProfileArgs.extend({
   action: z.enum([
     "list",
     "grant",
@@ -539,49 +557,49 @@ export const PermissionsArgs = ProfileArgs.extend({
   permissions: z.array(z.string().min(1)).nonempty().optional(),
   owner: z.string().min(1).optional(),
   maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
-  confirm: z.boolean().optional(),
-});
+  ...ConfirmationFields,
+}));
 
-export const MutatingArgs = ProfileArgs.extend({
-  confirm: z.boolean().optional(),
-});
+const MutatingArgsBase = ProfileArgs.extend(ConfirmationFields);
 
-export const AddDynamicNodesArgs = MutatingArgs.extend({
+export const MutatingArgs = requireConfirmForToken(MutatingArgsBase);
+
+export const AddDynamicNodesArgs = requireConfirmForToken(MutatingArgsBase.extend({
   count: z.number().int().positive().max(10).optional(),
   startIndex: z.number().int().min(2).optional(),
   grpcPortStart: z.number().int().positive().max(65535).optional(),
   monitoringPortStart: z.number().int().positive().max(65535).optional(),
   icPortStart: z.number().int().positive().max(65535).optional(),
-});
+}));
 
-export const RemoveDynamicNodesArgs = MutatingArgs.extend({
+export const RemoveDynamicNodesArgs = requireConfirmForToken(MutatingArgsBase.extend({
   count: z.number().int().positive().max(10).optional(),
   startIndex: z.number().int().min(2).optional(),
   containers: z.array(z.string()).optional(),
   nodeIds: z.array(z.number().int().positive()).max(10).optional(),
-});
+}));
 
-export const AddStorageGroupsArgs = MutatingArgs.extend({
+export const AddStorageGroupsArgs = requireConfirmForToken(MutatingArgsBase.extend({
   count: z.number().int().positive().max(10).optional(),
   poolName: z.string().optional(),
-});
+}));
 
-export const ReduceStorageGroupsArgs = MutatingArgs.extend({
+export const ReduceStorageGroupsArgs = requireConfirmForToken(MutatingArgsBase.extend({
   count: z.number().int().positive().max(10).optional(),
   dumpName: z.string().optional(),
   poolName: z.string().optional(),
-});
+}));
 
-export const DestroyStackArgs = MutatingArgs.extend({
+export const DestroyStackArgs = requireConfirmForToken(MutatingArgsBase.extend({
   removeBindMountPath: z.boolean().optional(),
   removeAuthArtifacts: z.boolean().optional(),
   removeDumpHostPath: z.boolean().optional(),
-});
+}));
 
-export const DumpArgs = MutatingArgs.extend({
+export const DumpArgs = requireConfirmForToken(MutatingArgsBase.extend({
   dumpName: z.string().trim().min(1).optional(),
   path: z.string().trim().min(1).optional(),
-});
+}));
 
 const RestoreCountQueryArgs = z.object({
   label: z.string().trim().min(1).optional(),
@@ -591,35 +609,35 @@ const RestoreCountQueryArgs = z.object({
   ),
 }).strict();
 
-export const RestoreArgs = MutatingArgs.extend({
+export const RestoreArgs = requireConfirmForToken(MutatingArgsBase.extend({
   dumpName: z.string().trim().min(1),
   path: z.string().trim().min(1).optional(),
   describePaths: z.array(z.string().trim().min(1)).optional(),
   countQueries: z.array(RestoreCountQueryArgs).optional(),
-});
+}));
 
-export const AuthHardeningArgs = MutatingArgs.extend({
+export const AuthHardeningArgs = requireConfirmForToken(MutatingArgsBase.extend({
   configHostPath: z.string().optional(),
-});
+}));
 
-export const PrepareAuthConfigArgs = MutatingArgs.extend({
+export const PrepareAuthConfigArgs = requireConfirmForToken(MutatingArgsBase.extend({
   configHostPath: z.string().optional(),
   sid: z.string().optional(),
-});
+}));
 
-export const DynamicAuthConfigArgs = MutatingArgs.extend({
+export const DynamicAuthConfigArgs = requireConfirmForToken(MutatingArgsBase.extend({
   sid: z.string().optional(),
   tokenHostPath: z.string().optional(),
-});
+}));
 
-export const SetRootPasswordArgs = MutatingArgs.extend({
+export const SetRootPasswordArgs = requireConfirmForToken(MutatingArgsBase.extend({
   password: z.string().min(1).refine((value) => !/[\r\n]/.test(value), "password must not contain carriage returns or newlines"),
-});
+}));
 
-export const CleanupArgs = MutatingArgs.extend({
+export const CleanupArgs = requireConfirmForToken(MutatingArgsBase.extend({
   paths: z.array(z.string()).optional(),
   volumes: z.array(z.string()).optional(),
-});
+}));
 
 export const ListVersionsArgs = z.object({
   image: z.string().optional(),
@@ -627,15 +645,15 @@ export const ListVersionsArgs = z.object({
   maxPages: z.number().int().positive().max(100).optional(),
 }).strict();
 
-export const PullImageArgs = MutatingArgs.extend({
+export const PullImageArgs = requireConfirmForToken(MutatingArgsBase.extend({
   image: z.string().min(1).optional(),
-});
+}));
 
 export const PullStatusArgs = z.object({
   jobId: z.string().min(1),
 }).strict();
 
-export const UpgradeVersionArgs = MutatingArgs.extend({
+export const UpgradeVersionArgs = requireConfirmForToken(MutatingArgsBase.extend({
   version: z.string().min(1),
   dumpName: z.string().optional(),
-});
+}));

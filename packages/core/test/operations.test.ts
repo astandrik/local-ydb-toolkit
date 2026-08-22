@@ -22,6 +22,7 @@ import {
   prepareAuthConfig,
   pullImage,
   pullImageStatus,
+  ProcessConfirmationStore,
   redactCommand,
   reduceStorageGroups,
   removeDynamicNodes,
@@ -1177,7 +1178,40 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("docker pull ghcr.io/ydb-platform/local-ydb:25.4");
   });
 
-  it("uses the default stable image when a pull image is omitted", async () => {
+  it("starts a background pull only with its current exact-plan token", async () => {
+    const executor = new DeferredImagePullExecutor();
+    const context = createContext(undefined, executor, ConfigSchema.parse({}));
+    const ctx = {
+      ...context,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_pull_image",
+        configSource: { kind: "provided", config: context.config },
+      },
+    };
+    const request = { image: "ghcr.io/ydb-platform/local-ydb:exact-pull" };
+
+    const planned = await pullImage(ctx, request);
+    const accepted = await pullImage(ctx, {
+      ...request,
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(planned).toMatchObject({
+      executed: false,
+      status: "planned",
+      confirmation: { status: "planned", token: expect.any(String) },
+    });
+    expect(accepted).toMatchObject({
+      executed: true,
+      status: "running",
+      confirmation: { status: "accepted" },
+    });
+    executor.finish(true);
+  });
+
+  it("uses the default stable image without starting a pull job when it is already present", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
     const response = await pullImage(ctx, { confirm: true });
