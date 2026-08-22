@@ -376,7 +376,7 @@ async function verifyLiveTools(client) {
   assert(staticLogs.ok === true, staticLogs.stderr || "static container logs failed");
 
   await verifyBackupRestore(client, profile);
-  await verifyConfirmedDynamicNodeMutation(client, profile);
+  await verifyActionOwnedDynamicNodePreflight(client, profile);
 }
 
 async function verifySchemaApply(client, profile) {
@@ -599,9 +599,8 @@ async function cleanupBackupRestoreDump(client, profile, dumpName, dumpPath) {
   );
 }
 
-async function verifyConfirmedDynamicNodeMutation(client, profile) {
+async function verifyActionOwnedDynamicNodePreflight(client, profile) {
   const extraContainer = `${containerPrefix}-dynamic-2`;
-  const extraIcPort = 19003;
   const dynamicNodePlan = await callTool(client, "local_ydb_add_dynamic_nodes", {
     profile,
     count: 1,
@@ -614,60 +613,32 @@ async function verifyConfirmedDynamicNodeMutation(client, profile) {
     Array.isArray(dynamicNodePlan.plannedCommands) && dynamicNodePlan.plannedCommands.length > 0,
     "dynamic-node plan did not include commands.",
   );
+  const compatibilityIndex = dynamicNodePlan.plannedCommands.findIndex(
+    (command) => command.includes("expected_image_id=") && command.includes("HostConfig.RestartPolicy.Name"),
+  );
+  const runIndex = dynamicNodePlan.plannedCommands.findIndex(
+    (command) => command.includes("docker run") && command.includes(`--name ${extraContainer}`),
+  );
+  assert(compatibilityIndex >= 0, "action-owned add plan omitted static compatibility.");
+  assert(runIndex > compatibilityIndex, "action-owned add plan placed static compatibility after the dynamic run.");
 
-  let added = false;
-  try {
-    const addResult = await callTool(client, "local_ydb_add_dynamic_nodes", {
-      profile,
-      count: 1,
-      confirm: true,
-    });
-    added = true;
-    assert(addResult.executed === true, "confirmed dynamic-node add did not execute.");
-    assert(
-      addResult.results?.every((result) => result.ok === true) === true,
-      "confirmed dynamic-node add had failed command results.",
-    );
-    assert(
-      addResult.nodeChecks?.every((check) => check.ok === true) === true,
-      "confirmed dynamic-node add did not verify the extra node.",
-    );
-
-    const afterAdd = await callTool(client, "local_ydb_nodes_check", { profile });
-    assert(
-      nodePorts(afterAdd).includes(extraIcPort),
-      "extra dynamic node IC port was not visible after confirmed add.",
-    );
-  } finally {
-    if (added) {
-      const removeResult = await callTool(client, "local_ydb_remove_dynamic_nodes", {
-        profile,
-        containers: [extraContainer],
-        confirm: true,
-      });
-      assert(removeResult.executed === true, "confirmed dynamic-node removal did not execute.");
-      assert(
-        removeResult.results?.some((result) => result.ok === true) === true,
-        "confirmed dynamic-node removal had no successful command results.",
-      );
-      assert(
-        removeResult.nodeChecks?.every((check) => check.ok === true) === true,
-        "confirmed dynamic-node removal did not verify node disappearance.",
-      );
-
-      const afterRemove = await callTool(client, "local_ydb_nodes_check", { profile });
-      assert(
-        !nodePorts(afterRemove).includes(extraIcPort),
-        "extra dynamic node IC port was still visible after confirmed removal.",
-      );
-
-      const tenantAfterRemove = await callTool(client, "local_ydb_tenant_check", { profile });
-      assert(
-        tenantAfterRemove.ok === true,
-        tenantAfterRemove.stderr || "tenant check failed after confirmed dynamic-node removal",
-      );
-    }
-  }
+  const addResult = await callTool(client, "local_ydb_add_dynamic_nodes", {
+    profile,
+    count: 1,
+    confirm: true,
+  });
+  assert(addResult.executed === true, "confirmed action-owned dynamic-node add did not consume confirmation.");
+  const failedResult = addResult.results?.find((result) => result.ok === false);
+  assert(
+    failedResult?.stderr?.includes("does not match profile restart policy"),
+    failedResult?.stderr || "action-owned static incompatibility did not identify restart policy.",
+  );
+  assert(
+    !addResult.results?.some((result) => result.command.includes("docker run") && result.command.includes(`--name ${extraContainer}`)),
+    "action-owned add reached the dynamic container mutation after static compatibility failed.",
+  );
+  const afterRejectedAdd = await callTool(client, "local_ydb_inventory", { profile });
+  assert(!findContainer(afterRejectedAdd, extraContainer), "rejected action-owned add created an extra container.");
 }
 
 async function runYdbCli(args, description) {
