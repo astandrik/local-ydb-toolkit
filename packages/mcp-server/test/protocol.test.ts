@@ -4,7 +4,8 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { decode } from "@toon-format/toon";
 import { StatusIds_StatusCode } from "@ydbjs/api/operation";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,6 +22,7 @@ import {
 type ProtocolServer = LocalYdbMcpApplication | Server;
 
 const openConnections: Array<{ client: Client; server: ProtocolServer }> = [];
+const posixIt = process.platform === "win32" ? it.skip : it;
 
 afterEach(async () => {
   for (const { client, server } of openConnections.splice(0)) {
@@ -225,6 +227,55 @@ describe("MCP protocol contract", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  posixIt("returns a safe non-file error for a Unix socket config path", async () => {
+    const marker = "p5m-";
+    const dir = mkdtempSync(join(tmpdir(), marker));
+    const configPath = join(dir, "s");
+    const socketServer = createServer();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+
+    const result = await (async () => {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          socketServer.once("error", reject);
+          socketServer.listen(configPath, resolve);
+        });
+        const { client } = await connect(createLocalYdbMcpApplication());
+        return await Promise.race([
+          client.callTool({
+            name: "local_ydb_inventory",
+            arguments: { configPath },
+          }),
+          new Promise<never>((_resolve, reject) => {
+            deadline = setTimeout(
+              () => reject(new Error("Unix socket config call exceeded 2 seconds")),
+              2_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (deadline !== undefined) {
+          clearTimeout(deadline);
+        }
+        if (socketServer.listening) {
+          await new Promise<void>((resolve) => socketServer.close(() => resolve()));
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }
+    })();
+
+    expect(existsSync(dir)).toBe(false);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        code: "CONFIG_NOT_FILE",
+        error: expect.any(String),
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(marker);
+    expect(JSON.stringify(result)).not.toContain(configPath);
   });
 
   it("treats an empty config environment value as explicit", async () => {

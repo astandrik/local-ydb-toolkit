@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 
@@ -156,7 +157,16 @@ export function loadConfig(configPath?: string): LocalYdbConfig {
       }
       return ConfigSchema.parse({});
     }
-    if (isFileSystemError(error, "EISDIR")) {
+    const darwinSocketError = process.platform === "darwin"
+      && error instanceof Error
+      && "errno" in error
+      && error.errno === -osConstants.errno.EOPNOTSUPP;
+    // Linux reports sockets as ENXIO; Darwin uses EOPNOTSUPP, which Node exposes via errno.
+    if (
+      isFileSystemError(error, "EISDIR")
+      || isFileSystemError(error, "ENXIO")
+      || darwinSocketError
+    ) {
       throw new ConfigLoadError("CONFIG_NOT_FILE");
     }
     throw new ConfigLoadError("CONFIG_READ_FAILED");
