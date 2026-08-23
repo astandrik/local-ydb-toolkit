@@ -198,6 +198,35 @@ describe("MCP protocol contract", () => {
     }
   });
 
+  it("returns a safe schema error when defaultProfile is not configured", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-mcp-default-profile-"));
+    const configPath = join(dir, "config.json");
+    const marker = "BENIGN_MCP_MISSING_DEFAULT_PROFILE";
+    writeFileSync(configPath, JSON.stringify({
+      defaultProfile: marker,
+      profiles: { default: {} },
+    }), "utf8");
+    try {
+      const { client } = await connect(createLocalYdbMcpApplication());
+      const result = await client.callTool({
+        name: "local_ydb_inventory",
+        arguments: { configPath },
+      });
+
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: "CONFIG_INVALID_SCHEMA",
+          error: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(marker);
+      expect(JSON.stringify(result)).not.toContain(configPath);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("treats an empty config environment value as explicit", async () => {
     const previousConfigPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG;
     process.env.LOCAL_YDB_TOOLKIT_CONFIG = "";

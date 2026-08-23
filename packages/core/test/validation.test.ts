@@ -30,6 +30,21 @@ describe("config validation", () => {
     expect(profile.dynamicNodeCount).toBe(1);
   });
 
+  it("requires the default profile to be an own configured profile", () => {
+    expect(() => ConfigSchema.parse({
+      defaultProfile: "missing",
+      profiles: { default: {} },
+    })).toThrow("defaultProfile must reference a configured profile");
+
+    const prototypeNamedConfig = ConfigSchema.parse({
+      defaultProfile: "toString",
+      profiles: { "toString": {} },
+    });
+    expect(resolveProfile(prototypeNamedConfig).name).toBe("toString");
+    expect(() => resolveProfile(ConfigSchema.parse({}), "toString"))
+      .toThrow("Unknown local-ydb profile: toString");
+  });
+
   it.each([1, 11])("accepts dynamicNodeCount=%i", (dynamicNodeCount) => {
     const config = ConfigSchema.parse({
       profiles: { default: { dynamicNodeCount } }
@@ -187,6 +202,21 @@ describe("config validation", () => {
     const configPath = join(dir, "config.json");
     const marker = "BENIGN_UNKNOWN_PROFILE_FIELD";
     writeFileSync(configPath, JSON.stringify({ profiles: { default: { [marker]: true } } }), "utf8");
+    try {
+      expectConfigError(() => loadConfig(configPath), "CONFIG_INVALID_SCHEMA", marker, configPath);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a missing configured default without echoing its name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-config-default-profile-"));
+    const configPath = join(dir, "config.json");
+    const marker = "BENIGN_MISSING_DEFAULT_PROFILE";
+    writeFileSync(configPath, JSON.stringify({
+      defaultProfile: marker,
+      profiles: { default: {} },
+    }), "utf8");
     try {
       expectConfigError(() => loadConfig(configPath), "CONFIG_INVALID_SCHEMA", marker, configPath);
     } finally {

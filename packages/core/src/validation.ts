@@ -1,9 +1,10 @@
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 
 export const DEFAULT_IMAGE = "ghcr.io/ydb-platform/local-ydb:stable-26-1-1";
 export const MAX_CONFIG_FILE_BYTES = 1_048_576;
+const CONFIG_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 export type ConfigLoadErrorCode =
   | "CONFIG_PATH_NOT_ABSOLUTE"
@@ -89,7 +90,15 @@ export const ConfigSchema = z.object({
       mode: "local"
     }
   })
-}).strict();
+}).strict().superRefine((config, ctx) => {
+  if (!Object.hasOwn(config.profiles, config.defaultProfile)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["defaultProfile"],
+      message: "defaultProfile must reference a configured profile"
+    });
+  }
+});
 
 export type LocalYdbConfig = z.infer<typeof ConfigSchema>;
 export type LocalYdbProfile = z.infer<typeof ProfileSchema>;
@@ -139,7 +148,7 @@ export function loadConfig(configPath?: string): LocalYdbConfig {
 
   let descriptor: number;
   try {
-    descriptor = openSync(path, "r");
+    descriptor = openSync(path, CONFIG_OPEN_FLAGS);
   } catch (error) {
     if (isFileSystemError(error, "ENOENT")) {
       if (explicit) {
@@ -234,7 +243,7 @@ function isFileSystemError(error: unknown, code: string): boolean {
 
 export function resolveProfile(config: LocalYdbConfig, profileName?: string): ResolvedLocalYdbProfile {
   const name = profileName ?? config.defaultProfile;
-  const profile = config.profiles[name];
+  const profile = Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
   if (!profile) {
     throw new Error(`Unknown local-ydb profile: ${name}`);
   }

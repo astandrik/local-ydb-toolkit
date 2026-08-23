@@ -80,13 +80,15 @@ Negative controls:
 | empty tool `configPath` | rejected by the MCP input schema before config loading |
 | empty or relative `LOCAL_YDB_TOOLKIT_CONFIG`; relative tool `configPath` | `CONFIG_PATH_NOT_ABSOLUTE` |
 | missing absolute file | `CONFIG_NOT_FOUND` |
-| directory or other non-regular file | `CONFIG_NOT_FILE` |
+| directory, POSIX FIFO without a writer, or other non-regular file | bounded `CONFIG_NOT_FILE` without waiting for FIFO input |
 | file larger than 1 MiB | `CONFIG_TOO_LARGE` |
 | unreadable file | `CONFIG_READ_FAILED` |
 | malformed JSON containing the benign marker | `CONFIG_INVALID_JSON` |
-| valid JSON with an unknown config key containing the benign marker | `CONFIG_INVALID_SCHEMA` |
+| valid JSON with an unknown config key or a `defaultProfile` absent from `profiles`, containing the benign marker | `CONFIG_INVALID_SCHEMA` |
 
 For every config error, require `isError=true`, the exact stable `structuredContent.code`, and a fixed safe message. Neither `content` nor `structuredContent` may contain the absolute path, file contents, benign marker, JSON parser context, Zod input, stack, cause, or filesystem details. No negative control may fall back to the built-in profile or reach Docker/YDB operations.
+
+On POSIX, create the FIFO without a writer and require the MCP call to return within the client deadline, then remove it in `finally`. On platforms without POSIX FIFOs, rely on the deterministic special-file unit test for the same open/fstat contract.
 
 ## Global Rules
 

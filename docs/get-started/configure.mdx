@@ -44,7 +44,8 @@ Use one of these mechanisms:
 2. Pass an absolute `configPath` to a profile-based tool call that supports it.
 
 An explicit path must name a readable regular JSON file no larger than 1 MiB
-and must match the strict configuration schema. Missing or invalid explicit
+and must match the strict configuration schema. Its `defaultProfile` must name
+an existing entry in `profiles`. Missing or invalid explicit
 files fail closed; they never switch the call to the built-in default profile.
 Only an absent implicit `local-ydb.config.json` in the MCP process working
 directory uses that fallback. Configuration errors return stable codes without
