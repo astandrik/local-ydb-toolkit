@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { bash, ShellCommandExecutor, shellQuote } from "../src/index.js";
 import {
+  commandForDynamicNodeRun,
   commandForStaticCompatibilityCheck,
   commandForStaticEnsureRun,
   commandForStaticRun,
@@ -122,6 +123,63 @@ describe("waitForCommand", () => {
     } finally {
       tempDir.cleanup();
     }
+  });
+});
+
+describe("commandForDynamicNodeRun", () => {
+  async function runDynamicCreateCase(createdImageId: string) {
+    const tempDir = createTempDir();
+    try {
+      const dockerLog = join(tempDir.path, "docker.log");
+      const profile = resolveProfile(ConfigSchema.parse({}));
+      const dockerFunction = `docker() {
+printf '%s\\n' "$*" >> ${shellQuote(dockerLog)}
+if [ "$1" = "inspect" ] && [[ "$*" == *" ydb-local" ]]; then
+  printf '%s\\n' 'sha256:static-image'
+  return 0
+fi
+if [ "$1" = "inspect" ] && [[ "$*" == *" ydb-dyn-example" ]]; then
+  printf '%s\\n' ${shellQuote(createdImageId)}
+  return 0
+fi
+return 0
+}`;
+      const command = commandForDynamicNodeRun(profile, {
+        container: profile.dynamicContainer,
+        grpcPort: profile.ports.dynamicGrpc,
+        monitoringPort: profile.ports.dynamicMonitoring,
+        icPort: profile.ports.dynamicIc
+      });
+      const executor = new ShellCommandExecutor();
+      const result = await executor.run(profile, bash([dockerFunction, command].join("\n")));
+      return {
+        result,
+        invocations: readFileSync(dockerLog, "utf8").trim().split("\n").filter(Boolean)
+      };
+    } finally {
+      tempDir.cleanup();
+    }
+  }
+
+  it("starts a created dynamic container only after its image ID matches the static node", async () => {
+    const response = await runDynamicCreateCase("sha256:static-image");
+    const createIndex = response.invocations.findIndex((invocation) => invocation.startsWith("create "));
+    const imageCheckIndex = response.invocations.findIndex((invocation) => invocation.startsWith("inspect ") && invocation.endsWith(" ydb-dyn-example"));
+    const startIndex = response.invocations.findIndex((invocation) => invocation === "start ydb-dyn-example");
+
+    expect(response.result.ok).toBe(true);
+    expect(createIndex).toBeGreaterThanOrEqual(0);
+    expect(imageCheckIndex).toBeGreaterThan(createIndex);
+    expect(startIndex).toBeGreaterThan(imageCheckIndex);
+  });
+
+  it("removes a never-started dynamic container when its resolved image ID drifted", async () => {
+    const response = await runDynamicCreateCase("sha256:retagged-image");
+
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain("does not match static container image ID");
+    expect(response.invocations.some((invocation) => invocation === "rm -f ydb-dyn-example")).toBe(true);
+    expect(response.invocations.some((invocation) => invocation === "start ydb-dyn-example")).toBe(false);
   });
 });
 

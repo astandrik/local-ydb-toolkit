@@ -2,7 +2,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 
-export const DEFAULT_IMAGE = "ghcr.io/ydb-platform/local-ydb:26.1.1.6";
+export const DEFAULT_IMAGE = "ghcr.io/ydb-platform/local-ydb:stable-26-1-1";
 export const MAX_CONFIG_FILE_BYTES = 1_048_576;
 
 export type ConfigLoadErrorCode =

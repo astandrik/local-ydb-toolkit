@@ -903,7 +903,8 @@ describe("mcp tools", () => {
 
     expect(upgrade?.arguments).toContainEqual(expect.objectContaining({
       name: "version",
-      required: true
+      required: true,
+      description: "Target local-ydb image tag selected with local_ydb_list_versions."
     }));
     expect(auth?.arguments).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "configHostPath" }),
@@ -1151,6 +1152,10 @@ describe("mcp tools", () => {
     expect(startIndexSchema?.description).toContain("profile.dynamicNodeCount + 1");
     expect(startIndexSchema?.description).toContain("must be greater than profile.dynamicNodeCount");
     expect(addTool?.description).toContain("stable running exact Docker container");
+    expect(addTool?.description).toContain("current image ID");
+    expect(addTool?.description).toContain("immediately before each node start");
+    expect(addTool?.description).toContain("destroy followed by bootstrap");
+    expect(addTool?.description).toContain("created but not started until its resolved image ID matches");
 
     const bootstrapTool = localYdbTools.find((tool) => tool.name === "local_ydb_bootstrap");
     const restartTool = localYdbTools.find((tool) => tool.name === "local_ydb_restart_stack");
@@ -1162,6 +1167,10 @@ describe("mcp tools", () => {
     expect(bootstrapTool?.description).toContain("every configured dynamic gRPC port");
     expect(bootstrapTool?.description).toContain("configured container names must be distinct from the static container");
     expect(startTool?.description).toContain("including static IC port 19001");
+    expect(startTool?.description).toContain("current image ID");
+    expect(startTool?.description).toContain("immediately before the dynamic container start");
+    expect(startTool?.description).toContain("destroy followed by bootstrap");
+    expect(startTool?.description).toContain("created but not started until its resolved image ID matches");
     expect(restartTool?.description).toContain("full check-only static compatibility preflight");
     expect(restartTool?.description).toContain("Before stopping any container");
     expect(restartTool?.description).toContain("configured binding changes require destroy followed by bootstrap");
@@ -1730,7 +1739,9 @@ describe("mcp tools", () => {
 
   it("requires version for the upgrade tool schema", () => {
     const tool = localYdbTools.find((candidate) => candidate.name === "local_ydb_upgrade_version");
+    const versionSchema = tool?.inputSchema.properties?.version as { description?: string } | undefined;
     expect(tool?.inputSchema.required).toContain("version");
+    expect(versionSchema?.description).toBe("Target image tag returned by local_ydb_list_versions.");
   });
 
   it("requires jobId for the pull status tool schema", () => {

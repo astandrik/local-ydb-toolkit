@@ -1117,8 +1117,7 @@ export function upgradeVersionSchema(): Tool["inputSchema"] {
       confirm: confirmProperty("execute the version upgrade plan"),
       version: {
         type: "string",
-        description:
-          "Target image tag such as 26.1.1.6, 26.1, latest, or nightly.",
+        description: "Target image tag returned by local_ydb_list_versions.",
       },
       dumpName: {
         type: "string",

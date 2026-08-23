@@ -234,8 +234,8 @@ export function commandForDynamicNodeRun(profile: ResolvedLocalYdbProfile, node:
     "sed -e '/^  ca: \\/ydb_certs\\/ca\\.pem$/d' -e '/^  cert: \\/ydb_certs\\/cert\\.pem$/d' -e '/^  key: \\/ydb_certs\\/key\\.pem$/d' \"$source_config\" > \"$cfg\"",
     `exec /ydbd server --yaml-config "$cfg" ${dynamicArgs}`
   ].join("\n");
-  return [
-    "docker", "run", "-d",
+  const createCommand = [
+    "docker", "create",
     "--name", node.container,
     "--no-healthcheck",
     "--network", `container:${profile.staticContainer}`,
@@ -250,6 +250,26 @@ export function commandForDynamicNodeRun(profile: ResolvedLocalYdbProfile, node:
     profile.image,
     "-lc", innerCommand
   ].map(shellQuote).join(" ");
+  const container = shellQuote(node.container);
+  const staticContainer = shellQuote(profile.staticContainer);
+  const imageIdTemplate = shellQuote("{{.Image}}");
+  const mismatchMessage = shellQuote(`Dynamic container ${node.container} does not match static container image ID and was removed before start.`);
+  return [
+    "set -euo pipefail",
+    `verified_image_id=$(docker inspect --type container --format ${imageIdTemplate} ${staticContainer})`,
+    `${createCommand} >/dev/null`,
+    `if ! created_image_id=$(docker inspect --type container --format ${imageIdTemplate} ${container}); then`,
+    `  docker rm -f ${container} >/dev/null 2>&1 || true`,
+    `  printf '%s\\n' ${mismatchMessage} >&2`,
+    "  exit 1",
+    "fi",
+    "if [ \"$created_image_id\" != \"$verified_image_id\" ]; then",
+    `  docker rm -f ${container} >/dev/null 2>&1 || true`,
+    `  printf '%s\\n' ${mismatchMessage} >&2`,
+    "  exit 1",
+    "fi",
+    `docker start ${container} >/dev/null`
+  ].join("\n");
 }
 
 export function commandForDynamicEnsureRun(profile: ResolvedLocalYdbProfile, node?: Pick<DynamicNodePlan, "container" | "grpcPort" | "monitoringPort" | "icPort">): string {
@@ -272,7 +292,8 @@ export function commandForDynamicEnsureRun(profile: ResolvedLocalYdbProfile, nod
 export function dynamicNodeStartSpecs(
   profile: ResolvedLocalYdbProfile,
   plan: DynamicNodePlan,
-  mode: "ensure" | "recreate" = "ensure"
+  mode: "ensure" | "recreate" = "ensure",
+  beforeRunSpecs: readonly CommandSpec[] = []
 ): CommandSpec[] {
   const startCommand = mode === "ensure"
     ? commandForDynamicEnsureRun(profile, plan)
@@ -282,6 +303,7 @@ export function dynamicNodeStartSpecs(
       ].join("\n");
   return [
     ensureImagePresentSpec(profile.image),
+    ...beforeRunSpecs,
     bash(startCommand, {
       timeoutMs: 60_000,
       description: `Start dynamic tenant node ${plan.container}`

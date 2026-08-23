@@ -1177,14 +1177,14 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("docker pull ghcr.io/ydb-platform/local-ydb:25.4");
   });
 
-  it("does not start a pull job when the image is already present", async () => {
+  it("uses the default stable image when a pull image is omitted", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
     const response = await pullImage(ctx, { confirm: true });
     expect(response.executed).toBe(true);
     expect(response.status).toBe("already-present");
     expect(response.jobId).toBeUndefined();
-    expect(executor.commands).toEqual(["docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6"]);
+    expect(executor.commands).toEqual(["docker image inspect ghcr.io/ydb-platform/local-ydb:stable-26-1-1"]);
   });
 
   it("reports unknown image pull jobs without throwing", () => {
@@ -2222,15 +2222,16 @@ describe("mutating operations", () => {
     const response = await startDynamicNode(ctx, {});
     expect(response.executed).toBe(false);
     expect(response.plannedCommands[0]).toContain("docker image inspect");
-    expect(response.plannedCommands[1]).toContain("-e GRPC_TLS_PORT=");
-    expect(response.plannedCommands[1]).toContain("-e YDB_GRPC_ENABLE_TLS=0");
-    expect(response.plannedCommands[1]).toContain("local-ydb-dynamic-config.yaml");
-    expect(response.plannedCommands[1]).toContain("/ydb_data/cluster/kikimr_configs/config.yaml");
-    expect(response.plannedCommands[1]).toContain("/ydb_data/kikimr_configs/config.yaml");
-    expect(response.plannedCommands[1]).toContain("\"$source_config\"");
-    expect(response.plannedCommands[1]).not.toContain("sed -e '/^  ca: \\/ydb_certs\\/ca\\.pem$/d' -e '/^  cert: \\/ydb_certs\\/cert\\.pem$/d' -e '/^  key: \\/ydb_certs\\/key\\.pem$/d' /ydb_data/cluster/kikimr_configs/config.yaml");
-    expect(response.plannedCommands[1]).toContain("/tmp/local-ydb-auth.pb:/run/local-ydb/dynamic-node-auth.pb:ro");
-    expect(response.plannedCommands[1]).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
+    expect(response.plannedCommands[1]).toContain("expected_image_id=");
+    expect(response.plannedCommands[2]).toContain("-e GRPC_TLS_PORT=");
+    expect(response.plannedCommands[2]).toContain("-e YDB_GRPC_ENABLE_TLS=0");
+    expect(response.plannedCommands[2]).toContain("local-ydb-dynamic-config.yaml");
+    expect(response.plannedCommands[2]).toContain("/ydb_data/cluster/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[2]).toContain("/ydb_data/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[2]).toContain("\"$source_config\"");
+    expect(response.plannedCommands[2]).not.toContain("sed -e '/^  ca: \\/ydb_certs\\/ca\\.pem$/d' -e '/^  cert: \\/ydb_certs\\/cert\\.pem$/d' -e '/^  key: \\/ydb_certs\\/key\\.pem$/d' /ydb_data/cluster/kikimr_configs/config.yaml");
+    expect(response.plannedCommands[2]).toContain("/tmp/local-ydb-auth.pb:/run/local-ydb/dynamic-node-auth.pb:ro");
+    expect(response.plannedCommands[2]).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
   });
 
   it("redacts custom dynamic auth token file and parent directory in planned commands", async () => {
@@ -2276,6 +2277,104 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-3");
+  });
+
+  it("checks static image compatibility immediately before every partial dynamic-node start", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+
+    const primary = await startDynamicNode(ctx, {});
+    const additional = await addDynamicNodes(ctx, { count: 2 });
+    const compatibilityCommand = (command: string) => command.includes("expected_image_id=")
+      && command.includes("docker inspect --type container")
+      && command.includes("does not match profile image ID");
+    const dynamicRunCommand = (command: string) => command.includes("docker create")
+      && command.includes("docker start")
+      && command.includes("--network container:ydb-local");
+
+    const primaryCompatibilityIndex = primary.plannedCommands.findIndex(compatibilityCommand);
+    const primaryRunIndex = primary.plannedCommands.findIndex(dynamicRunCommand);
+    expect(primary.plannedCommands[0]).toContain("docker image inspect");
+    expect(primaryCompatibilityIndex).toBe(1);
+    expect(primaryRunIndex).toBe(2);
+
+    expect(additional.plannedCommands.filter(compatibilityCommand)).toHaveLength(2);
+    for (const container of ["ydb-dyn-example-2", "ydb-dyn-example-3"]) {
+      const runIndex = additional.plannedCommands.findIndex((command) => dynamicRunCommand(command) && command.includes(`--name ${container}`));
+      expect(runIndex).toBeGreaterThan(1);
+      expect(additional.plannedCommands[runIndex - 2]).toContain("docker image inspect");
+      expect(compatibilityCommand(additional.plannedCommands[runIndex - 1])).toBe(true);
+    }
+  });
+
+  it("fails standalone primary start before container mutation when the static image ID differs", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("expected_image_id=")) {
+        return commandResult(command, { exitCode: 1, ok: false, stderr: "static image ID mismatch" });
+      }
+      return commandResult(command);
+    };
+
+    const response = await startDynamicNode(ctx, { confirm: true });
+
+    expect(response.executed).toBe(true);
+    expect(response.results?.at(-1)).toMatchObject({ ok: false, stderr: "static image ID mismatch" });
+    expect(executor.commands.some((command) => command.includes("docker create") && command.includes("--name ydb-dyn-example"))).toBe(false);
+  });
+
+  it("fails an additional-node batch before the first node when the static image ID differs", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const plan = await addDynamicNodes(ctx, { count: 2 });
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("expected_image_id=")) {
+        return commandResult(command, { exitCode: 1, ok: false, stderr: "static image ID mismatch" });
+      }
+      return commandResult(command);
+    };
+
+    const response = await addDynamicNodes(ctx, { count: 2, confirm: true });
+
+    expect(response.plannedCommands).toEqual(plan.plannedCommands);
+    expect(response.nodeChecks).toEqual([]);
+    expect(response.summary).toContain("verified 0/2 nodes");
+    expect(executor.commands.some((command) => command.includes("docker create") && command.includes("--name ydb-dyn-example-"))).toBe(false);
+  });
+
+  it("stops an additional-node batch when the compatibility check fails before the next node", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    confirmDynamicPorts(ctx, [19003]);
+    const plan = await addDynamicNodes(ctx, { count: 2 });
+    let compatibilityChecks = 0;
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("expected_image_id=")) {
+        compatibilityChecks += 1;
+        if (compatibilityChecks === 2) {
+          return commandResult(command, { exitCode: 1, ok: false, stderr: "static image ID changed" });
+        }
+      }
+      return commandResult(command, {
+        stdout: command.includes("{{.RestartCount}}") ? STABLE_DYNAMIC_CONTAINER_STATE : ""
+      });
+    };
+
+    const response = await withRunTimers(() => addDynamicNodes(ctx, { count: 2, confirm: true }));
+
+    expect(compatibilityChecks).toBe(2);
+    expect(response.plannedCommands).toEqual(plan.plannedCommands);
+    expect(response.nodeChecks).toHaveLength(1);
+    expect(response.summary).toContain("verified 1/2 nodes");
+    expect(executor.commands.some((command) => command.includes("docker create") && command.includes("--name ydb-dyn-example-2"))).toBe(true);
+    expect(executor.commands.some((command) => command.includes("docker create") && command.includes("--name ydb-dyn-example-3"))).toBe(false);
   });
 
   it("defaults one-off scaling to the node after the configured topology", async () => {
@@ -3568,7 +3667,7 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.plannedCommands.join("\n")).not.toContain("/tmp/local-ydb/root.password");
     expect(response.plannedCommands.some((command) => command.includes("<redacted> | docker exec -i"))).toBe(true);
-    const dynamicRecreateIndex = response.plannedCommands.findIndex((command) => command.includes("docker run -d --name ydb-dyn-example"));
+    const dynamicRecreateIndex = response.plannedCommands.findIndex((command) => command.includes("docker create --name ydb-dyn-example"));
     const waitIndex = response.plannedCommands.findIndex((command) => command.includes("scheme ls /local/example"));
     expect(dynamicRecreateIndex).toBeGreaterThanOrEqual(0);
     expect(waitIndex).toBeGreaterThan(dynamicRecreateIndex);
