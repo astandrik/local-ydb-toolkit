@@ -305,7 +305,7 @@ Example MCP client config for a local checkout:
 
 Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH keys, password files, and backup paths outside committed config.
 
-Explicit configuration through `configPath` or `LOCAL_YDB_TOOLKIT_CONFIG` supports arbitrary absolute files. The file must exist, be a readable regular file no larger than 1 MiB, and match the strict configuration schema. Only an absent implicit `local-ydb.config.json` in the server's current working directory falls back to the built-in default profile; explicit configuration errors never do. Configuration errors expose a stable code without echoing file contents, parser snippets, or the absolute path.
+Explicit configuration through `configPath` or `LOCAL_YDB_TOOLKIT_CONFIG` supports arbitrary absolute files. A present but empty environment value is still explicit and is rejected. The file must exist, be a readable regular file no larger than 1 MiB, and match the strict configuration schema. Only an absent implicit `local-ydb.config.json` in the server's current working directory falls back to the built-in default profile; explicit configuration errors never do. Configuration errors expose a stable code without echoing file contents, parser snippets, or the absolute path.
 
 ### MCP Features
 
@@ -314,7 +314,8 @@ workflows. Prompt templates cover stack diagnosis, root database bootstrap,
 database diagnostics, tenant topology bootstrap, schema generation/apply,
 version upgrades, auth hardening, and storage group reduction. Prompts do not execute commands; they
 return workflow instructions that guide the MCP client toward the existing
-`local_ydb_*` tools.
+`local_ydb_*` tools. When supplied to a prompt, `configPath` must be an absolute
+path, matching the tool-call contract.
 
 Mutating tools remain plan-only unless called with `confirm: true`. Static MCP
 resources are intentionally left for a separate follow-up so the server does not

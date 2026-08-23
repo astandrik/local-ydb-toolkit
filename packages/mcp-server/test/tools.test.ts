@@ -896,6 +896,7 @@ describe("mcp tools", () => {
   });
 
   it("marks required prompt arguments in metadata", () => {
+    const diagnose = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_diagnose_stack");
     const upgrade = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_upgrade_version_workflow");
     const auth = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_auth_hardening_workflow");
     const reduceStorage = localYdbPrompts.find((prompt) => prompt.name === "local_ydb_reduce_storage_groups_workflow");
@@ -917,6 +918,11 @@ describe("mcp tools", () => {
     expect(reduceStorage?.arguments).toContainEqual(expect.objectContaining({
       name: "count",
       description: expect.stringContaining("1-10")
+    }));
+    expect(diagnose?.arguments).toContainEqual(expect.objectContaining({
+      name: "configPath",
+      required: false,
+      description: expect.stringContaining("absolute path")
     }));
   });
 
@@ -1076,6 +1082,24 @@ describe("mcp tools", () => {
       "Unknown argument confirm",
     );
   });
+
+  it.each(["", "relative.json"])(
+    "rejects non-absolute prompt configPath=%j without echoing it",
+    (configPath) => {
+      let error: unknown;
+      try {
+        getLocalYdbPrompt("local_ydb_diagnose_stack", { configPath });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({ code: ErrorCode.InvalidParams });
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("must be an absolute path");
+      if (configPath) {
+        expect((error as Error).message).not.toContain(configPath);
+      }
+    },
+  );
 
   it("rejects unknown prompt names", () => {
     expectInvalidPromptRequest(

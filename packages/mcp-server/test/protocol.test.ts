@@ -86,6 +86,14 @@ describe("MCP protocol contract", () => {
       name: "local_ydb_diagnose_stack",
       arguments: { prototype: "untrusted" },
     })).rejects.toThrow("Unknown argument prototype");
+    await expect(client.getPrompt({
+      name: "local_ydb_diagnose_stack",
+      arguments: { configPath: "relative.json" },
+    })).rejects.toThrow("must be an absolute path");
+    await expect(client.getPrompt({
+      name: "local_ydb_diagnose_stack",
+      arguments: { configPath: "" },
+    })).rejects.toThrow("must be an absolute path");
     expect(() => getLocalYdbPrompt(
       "local_ydb_diagnose_stack",
       JSON.parse('{"__proto__":"untrusted"}') as Record<string, string>,
@@ -187,6 +195,32 @@ describe("MCP protocol contract", () => {
       expect(JSON.stringify(result)).not.toContain(configPath);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an empty config environment value as explicit", async () => {
+    const previousConfigPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG;
+    process.env.LOCAL_YDB_TOOLKIT_CONFIG = "";
+    try {
+      const { client } = await connect(createLocalYdbMcpApplication());
+      const result = await client.callTool({
+        name: "local_ydb_inventory",
+        arguments: {},
+      });
+
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: "CONFIG_PATH_NOT_ABSOLUTE",
+          error: expect.any(String),
+        },
+      });
+    } finally {
+      if (previousConfigPath === undefined) {
+        delete process.env.LOCAL_YDB_TOOLKIT_CONFIG;
+      } else {
+        process.env.LOCAL_YDB_TOOLKIT_CONFIG = previousConfigPath;
+      }
     }
   });
 

@@ -32,7 +32,7 @@ Use `npx` so clients can run the server without a manual checkout:
 
 This form checks the npm registry when the MCP server starts, so clients pick up newly published versions after restarting the MCP client.
 
-The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. Only when that implicit file is absent does the server use a default local profile. `LOCAL_YDB_TOOLKIT_CONFIG` and per-call `configPath` values must be absolute and must name a readable regular JSON file no larger than 1 MiB. Missing, unreadable, oversized, malformed, or schema-invalid explicit files fail closed and return a stable error code without exposing file contents, parser snippets, or the absolute path.
+The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. A present but empty environment value is explicit and returns `CONFIG_PATH_NOT_ABSOLUTE`. Only when the implicit file is absent does the server use a default local profile. `LOCAL_YDB_TOOLKIT_CONFIG` and per-call `configPath` values must be absolute and must name a readable regular JSON file no larger than 1 MiB. Missing, unreadable, oversized, malformed, or schema-invalid explicit files fail closed and return a stable error code without exposing file contents, parser snippets, or the absolute path.
 
 Official MCP Registry metadata uses the name `io.github.astandrik/local-ydb-mcp` and is published from the repository root `server.json` after the matching npm version is available.
 
@@ -42,7 +42,8 @@ The server exposes local-ydb operation tools and static MCP prompts. Prompt
 templates guide stack diagnosis, root database bootstrap, tenant topology
 bootstrap, database diagnostics, schema generation/apply, version upgrades,
 auth hardening, and storage group reduction. Prompts return workflow instructions only; they do not
-execute commands.
+execute commands. A prompt `configPath`, when supplied, must be an absolute path
+just like the corresponding tool argument.
 
 Mutating tools remain plan-only unless called with `confirm: true`.
 

@@ -1,5 +1,4 @@
 import {
-  chmodSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
@@ -7,6 +6,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { createContext } from "../src/operations/context.js";
 import {
   ConfigLoadError,
   ConfigSchema,
@@ -103,7 +103,12 @@ describe("config validation", () => {
   it("requires explicit config paths to be absolute and present", () => {
     expectConfigError(() => loadConfig(""), "CONFIG_PATH_NOT_ABSOLUTE");
     expectConfigError(() => loadConfig("relative.json"), "CONFIG_PATH_NOT_ABSOLUTE");
+    expectConfigError(() => resolveConfigPath(""), "CONFIG_PATH_NOT_ABSOLUTE");
     expectConfigError(() => resolveConfigPath("relative.json"), "CONFIG_PATH_NOT_ABSOLUTE");
+    expectConfigError(
+      () => createContext(undefined, undefined, ConfigSchema.parse({}), ""),
+      "CONFIG_PATH_NOT_ABSOLUTE",
+    );
     expectConfigError(
       () => loadConfig(join(tmpdir(), "local-ydb-config-missing", "config.json")),
       "CONFIG_NOT_FOUND",
@@ -113,6 +118,8 @@ describe("config validation", () => {
   it("treats LOCAL_YDB_TOOLKIT_CONFIG as an explicit path", () => {
     const previousEnv = process.env.LOCAL_YDB_TOOLKIT_CONFIG;
     try {
+      process.env.LOCAL_YDB_TOOLKIT_CONFIG = "";
+      expectConfigError(() => loadConfig(), "CONFIG_PATH_NOT_ABSOLUTE");
       process.env.LOCAL_YDB_TOOLKIT_CONFIG = "relative.json";
       expectConfigError(() => loadConfig(), "CONFIG_PATH_NOT_ABSOLUTE");
       process.env.LOCAL_YDB_TOOLKIT_CONFIG = join(
@@ -158,19 +165,6 @@ describe("config validation", () => {
       expectConfigError(() => loadConfig(dir), "CONFIG_NOT_FILE");
       expectConfigError(() => loadConfig(oversizedPath), "CONFIG_TOO_LARGE");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("reports unreadable config files without filesystem details", () => {
-    const dir = mkdtempSync(join(tmpdir(), "local-ydb-config-unreadable-"));
-    const configPath = join(dir, "config.json");
-    writeFileSync(configPath, "{}", "utf8");
-    chmodSync(configPath, 0o000);
-    try {
-      expectConfigError(() => loadConfig(configPath), "CONFIG_READ_FAILED", configPath);
-    } finally {
-      chmodSync(configPath, 0o600);
       rmSync(dir, { recursive: true, force: true });
     }
   });

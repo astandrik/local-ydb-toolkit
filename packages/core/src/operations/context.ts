@@ -9,7 +9,12 @@ export function createContext(
   configPath?: string
 ): ToolkitContext {
   const effectiveConfig = config ?? loadConfig(configPath);
-  const effectiveConfigPath = configPath ? resolveConfigPath(configPath) : config ? undefined : resolveConfigPath();
+  let effectiveConfigPath: string | undefined;
+  if (configPath !== undefined) {
+    effectiveConfigPath = resolveConfigPath(configPath);
+  } else if (config === undefined) {
+    effectiveConfigPath = resolveConfigPath();
+  }
   const profile = resolveProfile(effectiveConfig, profileName);
   return {
     config: effectiveConfig,

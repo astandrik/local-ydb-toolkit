@@ -118,16 +118,19 @@ export function normalizeProfile(name: string, profile: LocalYdbProfile): Resolv
 }
 
 export function resolveConfigPath(configPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG): string {
-  if (configPath && !isAbsolute(configPath)) {
-    throw new ConfigLoadError("CONFIG_PATH_NOT_ABSOLUTE");
+  if (configPath !== undefined) {
+    if (!isAbsolute(configPath)) {
+      throw new ConfigLoadError("CONFIG_PATH_NOT_ABSOLUTE");
+    }
+    return resolve(configPath);
   }
-  return configPath ? resolve(configPath) : resolve(process.cwd(), "local-ydb.config.json");
+  return resolve(process.cwd(), "local-ydb.config.json");
 }
 
 export function loadConfig(configPath?: string): LocalYdbConfig {
   const configuredPath = configPath !== undefined
     ? configPath
-    : process.env.LOCAL_YDB_TOOLKIT_CONFIG || undefined;
+    : process.env.LOCAL_YDB_TOOLKIT_CONFIG;
   const explicit = configuredPath !== undefined;
   if (explicit && !isAbsolute(configuredPath)) {
     throw new ConfigLoadError("CONFIG_PATH_NOT_ABSOLUTE");
