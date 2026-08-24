@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  constants,
   fstatSync,
   openSync,
   readSync,
-  statSync,
 } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { bash, shellQuote } from "./api-client.js";
 import type { ToolkitContext } from "./operations/types.js";
 import { pathRedactions } from "./redactions.js";
@@ -22,6 +23,7 @@ type ConfirmationContentFingerprint = ConfirmationContentInput & {
 };
 
 const READ_BUFFER_BYTES = 64 * 1024;
+const CONTENT_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 export async function confirmationContentIntent(
   ctx: ToolkitContext,
@@ -75,23 +77,37 @@ async function fingerprintTargetInput(
 function fingerprintLocalFileInput(
   input: ConfirmationContentInput,
 ): ConfirmationContentFingerprint {
-  let stats: ReturnType<typeof statSync>;
+  let descriptor: number;
   try {
-    stats = statSync(input.path);
+    descriptor = openSync(input.path, CONTENT_OPEN_FLAGS);
   } catch (error) {
     if (isFileSystemError(error, "ENOENT")) {
       return { ...input, state: "missing" };
+    }
+    if (isNonRegularOpenError(error)) {
+      return { ...input, state: "not-file" };
     }
     throw new Error("Unable to fingerprint a confirmation content input");
   }
 
   try {
-    if (input.kind !== "file" || !stats.isFile()) {
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile()) {
       return { ...input, state: "not-file" };
     }
-    return { ...input, state: "file", sha256: hashLocalFile(input.path) };
+    return {
+      ...input,
+      state: "file",
+      sha256: hashLocalFileDescriptor(descriptor, stats.size),
+    };
   } catch {
     throw new Error("Unable to fingerprint a confirmation content input");
+  } finally {
+    try {
+      closeSync(descriptor);
+    } catch {
+      // The fingerprint result or safe error remains authoritative.
+    }
   }
 }
 
@@ -171,48 +187,37 @@ async function fingerprintShellInput(
   };
 }
 
-function hashLocalFile(path: string): string {
+function hashLocalFileDescriptor(descriptor: number, expectedSize: number): string {
   const hash = createHash("sha256");
-  hashFileInto(hash, path);
-  return hash.digest("hex");
-}
-
-function hashFileInto(hash: ReturnType<typeof createHash>, path: string): void {
-  let descriptor: number | undefined;
-  try {
-    descriptor = openSync(path, "r");
-    const stats = fstatSync(descriptor);
-    if (!stats.isFile()) {
-      throw new Error("Confirmation content input changed while it was fingerprinted");
+  const buffer = Buffer.allocUnsafe(READ_BUFFER_BYTES);
+  let bytesRead = 0;
+  while (true) {
+    const count = readSync(descriptor, buffer, 0, buffer.length, null);
+    if (count === 0) {
+      break;
     }
-    const buffer = Buffer.allocUnsafe(READ_BUFFER_BYTES);
-    let bytesRead = 0;
-    while (true) {
-      const count = readSync(descriptor, buffer, 0, buffer.length, null);
-      if (count === 0) {
-        break;
-      }
-      hash.update(buffer.subarray(0, count));
-      bytesRead += count;
-    }
-    if (bytesRead !== stats.size) {
-      throw new Error("Confirmation content input changed while it was fingerprinted");
-    }
-  } catch {
-    throw new Error("Unable to fingerprint a confirmation content input");
-  } finally {
-    if (descriptor !== undefined) {
-      try {
-        closeSync(descriptor);
-      } catch {
-        // The fingerprint result or safe error remains authoritative.
-      }
-    }
+    hash.update(buffer.subarray(0, count));
+    bytesRead += count;
   }
+  if (bytesRead !== expectedSize) {
+    throw new Error("Confirmation content input changed while it was fingerprinted");
+  }
+  return hash.digest("hex");
 }
 
 function isFileSystemError(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
+}
+
+function isNonRegularOpenError(error: unknown): boolean {
+  const darwinSocketError = process.platform === "darwin"
+    && error instanceof Error
+    && "errno" in error
+    && error.errno === -osConstants.errno.EOPNOTSUPP;
+  // Linux reports sockets as ENXIO; Darwin uses EOPNOTSUPP, which Node exposes via errno.
+  return isFileSystemError(error, "EISDIR")
+    || isFileSystemError(error, "ENXIO")
+    || darwinSocketError;
 }
 
 function compareStrings(left: string, right: string): number {
