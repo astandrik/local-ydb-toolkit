@@ -1,6 +1,13 @@
 import { bash, shellQuote } from "../api-client.js";
+import type { ConfirmationContentInput } from "../confirmation-inputs.js";
 import { confirmationScopedId } from "../confirmation.js";
-import { createTenantSpec, helperContainer, ydbAuthArgs, ydbCli } from "./commands.js";
+import {
+  createTenantSpec,
+  helperContainer,
+  restoreContainerFromConfirmedSnapshot,
+  ydbAuthArgs,
+  ydbCli,
+} from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
 import type {
   DumpTenantOptions,
@@ -112,11 +119,20 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
   const path = normalizeYdbRelativePath(options.path ?? DEFAULT_YDB_DUMP_PATH);
   const targetPath = resolveTenantRelativePath(ctx.profile.tenantPath, path);
   const verificationHooks = restoreVerificationHooks(ctx, options);
+  const restoreInput: ConfirmationContentInput = {
+    kind: "directory",
+    path: `${ctx.profile.dumpHostPath}/${dumpName}/tenant`,
+    role: "restore-dump",
+  };
   const response = await runMutating(ctx, {
     summary: `Restore ${targetPath} from ${ctx.profile.dumpHostPath}/${dumpName}.`,
     risk: "high",
     specs: [
-      helperContainer(ctx.profile, `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools restore -p ${shellQuote(path)} -i ${shellQuote(`/dump/${dumpName}/tenant`)}`),
+      restoreContainerFromConfirmedSnapshot(
+        ctx.profile,
+        restoreInput,
+        `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools restore -p ${shellQuote(path)} -i /dump/confirmed`,
+      ),
       ...verificationHooks.map((hook) => hook.spec)
     ],
     rollback: ["Restore from a previous dump or restart the previous volume/container set."],
@@ -125,11 +141,7 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
       "small table reads succeed",
       ...verificationHooks.map((hook) => hook.description)
     ],
-    confirmationInputs: [{
-      kind: "directory",
-      path: `${ctx.profile.dumpHostPath}/${dumpName}/tenant`,
-      role: "restore-dump",
-    }],
+    confirmationInputs: [restoreInput],
   }, options);
   return {
     ...response,

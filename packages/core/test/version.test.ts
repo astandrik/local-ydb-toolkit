@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -80,11 +80,33 @@ function upgradeConfig(profileOverrides: Record<string, unknown> = {}) {
 function writeTempConfig(rawConfig: unknown): { configPath: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "local-ydb-upgrade-"));
   const configPath = join(dir, "local-ydb.config.json");
+  materializeProfileFiles(rawConfig, dir);
   writeFileSync(configPath, `${JSON.stringify(rawConfig, null, 2)}\n`, "utf8");
   return {
     configPath,
     cleanup: () => rmSync(dir, { recursive: true, force: true })
   };
+}
+
+function materializeProfileFiles(rawConfig: unknown, dir: string): void {
+  const profiles = (rawConfig as { profiles?: Record<string, Record<string, unknown>> }).profiles;
+  for (const [name, profile] of Object.entries(profiles ?? {})) {
+    const profileDir = join(dir, name);
+    mkdirSync(profileDir, { recursive: true });
+    profile.dumpHostPath = join(profileDir, "dumps");
+    mkdirSync(profile.dumpHostPath as string, { recursive: true });
+    for (const [field, basename, content] of [
+      ["authConfigPath", "config.auth.yaml", "domains_config: {}\n"],
+      ["dynamicNodeAuthTokenFile", "dynamic-node-auth.pb", "StaffApiUserToken: \"root@builtin\"\n"],
+      ["rootPasswordFile", "root.password", "test-password\n"],
+    ] as const) {
+      if (typeof profile[field] === "string") {
+        const path = join(profileDir, basename);
+        profile[field] = path;
+        writeFileSync(path, content, { mode: 0o600 });
+      }
+    }
+  }
 }
 
 function stubUpgradeExecutor(
@@ -94,8 +116,40 @@ function stubUpgradeExecutor(
 ): void {
   let dockerPsCalls = 0;
   executor.run = async (_profile, spec) => {
+    if (spec.description?.startsWith("Fingerprint ")) {
+      return {
+        command: executor.display(_profile, spec),
+        exitCode: 0,
+        stdout: `directory:${"a".repeat(64)}\n`,
+        stderr: "",
+        ok: true,
+        timedOut: false,
+      };
+    }
+    if (
+      spec.description === "Prepare confirmed content snapshots"
+      || spec.description === "Remove confirmed content snapshots"
+    ) {
+      return {
+        command: executor.display(_profile, spec),
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        ok: true,
+        timedOut: false,
+      };
+    }
     const command = executor.display(_profile, spec);
     executor.commands.push(command);
+
+    if (command.includes(" tools dump ")) {
+      const dumpName = /-o \/dump\/([^/]+)\/tenant/.exec(command)?.[1];
+      if (dumpName) {
+        const tenantDump = join(_profile.dumpHostPath, dumpName, "tenant");
+        mkdirSync(tenantDump, { recursive: true });
+        writeFileSync(join(tenantDump, "data.csv"), "1,test\n", "utf8");
+      }
+    }
 
     if (spec.command === "docker" && spec.args?.[0] === "ps") {
       dockerPsCalls += 1;
@@ -596,7 +650,9 @@ describe("version operations", () => {
   it("reports a failed config image update after successful image verification", async () => {
     const executor = new RecordingExecutor();
     const rawConfig = upgradeConfig();
-    const configPath = join(tmpdir(), `local-ydb-missing-${Date.now()}`, "local-ydb.config.json");
+    const fixtureDir = mkdtempSync(join(tmpdir(), "local-ydb-missing-config-test-"));
+    materializeProfileFiles(rawConfig, fixtureDir);
+    const configPath = join(fixtureDir, "missing", "local-ydb.config.json");
     const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
     stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0");
 
@@ -625,6 +681,7 @@ describe("version operations", () => {
       ok: false,
       exitCode: 1
     });
+    rmSync(fixtureDir, { recursive: true, force: true });
   });
 
   it("does not update the profile when final image verification finds a mismatch", async () => {

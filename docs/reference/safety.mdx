@@ -38,6 +38,18 @@ fingerprints are never returned. The token is valid only until use or MCP
 restart and is consumed before the first side effect. A missing, changed,
 replayed, or pre-restart token executes nothing and returns a fresh plan/token.
 
+For accepted auth config, password-rotation backup inputs, dynamic-node token,
+and standalone restore operations, the server first creates a private snapshot
+and verifies it against the authorized fingerprint. Docker and YDB consume only
+that snapshot; the canonical payload path is not reopened. Credential files
+used only to authenticate remain freshness guards. Dynamic tokens are copied
+into stopped containers before start, and restore mounts its snapshot read-only.
+Restore rejects symlinks and special filesystem entries before mutation.
+Snapshot contents, digests, and temporary paths are omitted from responses and
+cleaned after success, failure, or abort. Restore tries copy-on-write or reflink
+cloning first, but its portable fallback can temporarily require free space
+equal to the full dump size.
+
 Treat the token as an ephemeral capability: do not log or persist it. It does
 not prove that a human approved the plan; the MCP host/client must enforce that
 approval. This gate does not replace operating-system sandboxing,

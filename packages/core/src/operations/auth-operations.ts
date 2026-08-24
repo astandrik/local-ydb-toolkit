@@ -1,5 +1,12 @@
 import { dirname } from "node:path";
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import { withAuthorizedContentExecution } from "../confirmed-content.js";
+import {
+  confirmationContentDigestPlaceholder,
+  confirmationContentSnapshotPlaceholder,
+  confirmationHashShellFunctions,
+  type ConfirmationContentInput,
+} from "../confirmation-inputs.js";
 import {
   attachConfirmation,
   authorizeMutation,
@@ -22,6 +29,20 @@ export async function applyAuthHardening(
   if (!configHostPath) {
     return planOnly(ctx, "Auth hardening requires configHostPath for the prepared YDB config.", "high", [], ["No changes."], ["Provide a reviewed configHostPath."]);
   }
+  const configInput: ConfirmationContentInput = {
+    kind: "file",
+    path: configHostPath,
+    role: "reviewed-auth-config",
+  };
+  const dynamicAuthInput: ConfirmationContentInput[] = ctx.profile.dynamicNodeAuthTokenFile
+    ? [{
+        kind: "file",
+        path: ctx.profile.dynamicNodeAuthTokenFile,
+        role: "dynamic-node-auth",
+      }]
+    : [];
+  const configSnapshot = confirmationContentSnapshotPlaceholder(configInput);
+  const configDigest = confirmationContentDigestPlaceholder(configInput);
   const targetCommand = commandForStaticGeneratedConfigPath(ctx.profile.staticContainer);
   const plans = configuredDynamicNodePlans(ctx.profile);
   const preDynamicSpecs: CommandSpec[] = [
@@ -29,8 +50,23 @@ export async function applyAuthHardening(
       requireGraphShard: true,
       publishedDynamicGrpcPorts: plans.map((plan) => plan.grpcPort)
     }), { timeoutMs: 60_000, description: "Verify static local-ydb node compatibility before auth hardening" }),
-    bash(`docker cp ${shellQuote(configHostPath)} ${shellQuote(`${ctx.profile.staticContainer}:/tmp/local-ydb-toolkit-config.yaml`)}`, {
-      redactions: pathRedactions(configHostPath)
+    bash([
+      "set -euo pipefail",
+      ...confirmationHashShellFunctions(),
+      `confirmed_config_snapshot=${shellQuote(configSnapshot)}`,
+      `confirmed_config_digest=${shellQuote(configDigest)}`,
+      "if [ ! -f \"$confirmed_config_snapshot\" ] || ! actual_config_digest=$(hash_file \"$confirmed_config_snapshot\") || [ \"$actual_config_digest\" != \"$confirmed_config_digest\" ]; then",
+      "  printf '%s\\n' 'Confirmed content snapshot could not be created or verified.' >&2",
+      "  exit 1",
+      "fi",
+      `docker cp \"$confirmed_config_snapshot\" ${shellQuote(`${ctx.profile.staticContainer}:/tmp/local-ydb-toolkit-config.yaml`)}`,
+    ].join("\n"), {
+      redactions: [
+        ...pathRedactions(configHostPath),
+        configSnapshot,
+        configDigest,
+      ],
+      description: "Copy confirmed auth config snapshot into the static container",
     }),
     bash([
       "set -euo pipefail",
@@ -76,11 +112,7 @@ export async function applyAuthHardening(
     rollback,
     verification,
   }), {
-    contentInputs: [{
-      kind: "file",
-      path: configHostPath,
-      role: "reviewed-auth-config",
-    }],
+    contentInputs: [configInput, ...dynamicAuthInput],
   });
   if (!decision.execute) {
     return attachConfirmation({
@@ -92,23 +124,30 @@ export async function applyAuthHardening(
       verification
     }, decision.confirmation);
   }
-  const confirmed = (response: OperationResponse) =>
-    attachConfirmation(response, decision.confirmation);
+  return withAuthorizedContentExecution(
+    ctx,
+    decision.receipt,
+    specs,
+    async (executionContext) => {
+      const confirmed = (response: OperationResponse) =>
+        attachConfirmation(response, decision.confirmation);
 
-  const results = await runCommandSpecs(ctx, preDynamicSpecs);
-  if (!completedAll(preDynamicSpecs, results)) {
-    return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, 0, plans.length));
-  }
+      const results = await runCommandSpecs(executionContext, preDynamicSpecs);
+      if (!completedAll(preDynamicSpecs, results)) {
+        return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, 0, plans.length));
+      }
 
-  const topology = await startDynamicNodePlans(ctx, plans, "recreate");
-  results.push(...topology.results);
-  const completedNodes = topology.completedNodes;
-  if (completedNodes < plans.length) {
-    return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length));
-  }
+      const topology = await startDynamicNodePlans(executionContext, plans, "recreate");
+      results.push(...topology.results);
+      const completedNodes = topology.completedNodes;
+      if (completedNodes < plans.length) {
+        return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length));
+      }
 
-  results.push(...await runCommandSpecs(ctx, finalSpecs));
-  return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length));
+      results.push(...await runCommandSpecs(executionContext, finalSpecs));
+      return confirmed(authHardeningResponse(ctx, summary, specs, rollback, verification, results, completedNodes, plans.length));
+    },
+  );
 }
 
 function completedAll(specs: CommandSpec[], results: CommandResult[]): boolean {
@@ -342,6 +381,21 @@ export async function setRootPassword(
     );
   }
 
+  const configInput: ConfirmationContentInput = {
+    kind: "file",
+    path: configHostPath,
+    role: "auth-config",
+  };
+  const passwordInput: ConfirmationContentInput = {
+    kind: "file",
+    path: rootPasswordFile,
+    role: "root-password",
+  };
+  const configSnapshot = confirmationContentSnapshotPlaceholder(configInput);
+  const configDigest = confirmationContentDigestPlaceholder(configInput);
+  const passwordSnapshot = confirmationContentSnapshotPlaceholder(passwordInput);
+  const passwordDigest = confirmationContentDigestPlaceholder(passwordInput);
+
   const backupConfig = `${configHostPath}.before-local-ydb-toolkit-password-rotate`;
   const backupPassword = `${rootPasswordFile}.before-local-ydb-toolkit-password-rotate`;
   const escapedPassword = password.replace(/\\/g, "\\\\").replace(/'/g, "''");
@@ -413,13 +467,28 @@ export async function setRootPassword(
 
   const syncHostSpec = bash([
     "set -euo pipefail",
+    ...confirmationHashShellFunctions(),
+    `confirmed_config_snapshot=${shellQuote(configSnapshot)}`,
+    `confirmed_config_digest=${shellQuote(configDigest)}`,
+    `confirmed_password_snapshot=${shellQuote(passwordSnapshot)}`,
+    `confirmed_password_digest=${shellQuote(passwordDigest)}`,
+    "backup_confirmed_file() {",
+    "  local source=$1 expected=$2 destination=$3 actual",
+    "  [ -f \"$source\" ] || return 0",
+    "  actual=$(hash_file \"$source\")",
+    "  if [ \"$actual\" != \"$expected\" ]; then",
+    "    printf '%s\\n' 'Confirmed content snapshot could not be created or verified.' >&2",
+    "    return 1",
+    "  fi",
+    "  cp \"$source\" \"$destination\"",
+    "}",
     "password_host=$(mktemp)",
     "trap 'rc=$?; rm -f \"$password_host\"; trap - EXIT HUP INT TERM; exit \"$rc\"' EXIT HUP INT TERM",
     "cat > \"$password_host\"",
     `install -d -m 0700 ${shellQuote(dirname(configHostPath))}`,
     `install -d -m 0700 ${shellQuote(dirname(rootPasswordFile))}`,
-    `if [ -f ${shellQuote(configHostPath)} ]; then cp ${shellQuote(configHostPath)} ${shellQuote(backupConfig)}; fi`,
-    `if [ -f ${shellQuote(rootPasswordFile)} ]; then cp ${shellQuote(rootPasswordFile)} ${shellQuote(backupPassword)}; fi`,
+    `backup_confirmed_file "$confirmed_config_snapshot" "$confirmed_config_digest" ${shellQuote(backupConfig)}`,
+    `backup_confirmed_file "$confirmed_password_snapshot" "$confirmed_password_digest" ${shellQuote(backupPassword)}`,
     "cfg_tmp=$(mktemp)",
     "trap 'rc=$?; rm -f \"$cfg_tmp\" \"$password_host\"; trap - EXIT HUP INT TERM; exit \"$rc\"' EXIT HUP INT TERM",
     `target=$(${targetCommand})`,
@@ -454,7 +523,16 @@ export async function setRootPassword(
     ].join(" ")
   ].join("\n"), {
     stdin: password,
-    redactions: [password, escapedPassword, backupPassword, backupConfig],
+    redactions: [
+      password,
+      escapedPassword,
+      backupPassword,
+      backupConfig,
+      configSnapshot,
+      configDigest,
+      passwordSnapshot,
+      passwordDigest,
+    ],
     description: "Sync host auth config and root password file with the new root password"
   });
   const verifyStatusSpec = waitForAuthenticatedTenantStatusSpec(ctx);
@@ -491,6 +569,8 @@ export async function setRootPassword(
     verification,
   }), {
     contentInputs: [
+      configInput,
+      passwordInput,
       { kind: "file", path: backupConfig, role: "backup-auth-config" },
       { kind: "file", path: backupPassword, role: "backup-root-password" },
     ],
@@ -506,40 +586,47 @@ export async function setRootPassword(
     }, decision.confirmation);
   }
 
-  const rotateResult = await ctx.client.run(rotateSpec);
-  if (!rotateResult.ok) {
-    return attachConfirmation({
-      summary: "Set the root password failed before host-side auth artifacts could be updated.",
-      executed: true,
-      risk: "high",
-      plannedCommands,
-      rollback,
-      verification,
-      results: [rotateResult]
-    }, decision.confirmation);
-  }
-  const syncHostResult = await ctx.client.run(syncHostSpec);
-  if (!syncHostResult.ok) {
-    return attachConfirmation({
-      summary: "Set the root password changed runtime credentials but failed while updating host-side auth artifacts.",
-      executed: true,
-      risk: "high",
-      plannedCommands,
-      rollback,
-      verification,
-      results: [rotateResult, syncHostResult]
-    }, decision.confirmation);
-  }
-  const verifyStatusResult = await ctx.client.run(verifyStatusSpec);
-  const verifyAnonymousResult = await ctx.client.run(verifyAnonymousSpec);
-  const results = [rotateResult, syncHostResult, verifyStatusResult, verifyAnonymousResult];
-  return attachConfirmation({
-    summary: `Set the root password for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
-    executed: true,
-    risk: "high",
-    plannedCommands,
-    rollback,
-    verification,
-    results
-  }, decision.confirmation);
+  return withAuthorizedContentExecution(
+    ctx,
+    decision.receipt,
+    specs,
+    async (executionContext) => {
+      const rotateResult = await executionContext.client.run(rotateSpec);
+      if (!rotateResult.ok) {
+        return attachConfirmation({
+          summary: "Set the root password failed before host-side auth artifacts could be updated.",
+          executed: true,
+          risk: "high",
+          plannedCommands,
+          rollback,
+          verification,
+          results: [rotateResult]
+        }, decision.confirmation);
+      }
+      const syncHostResult = await executionContext.client.run(syncHostSpec);
+      if (!syncHostResult.ok) {
+        return attachConfirmation({
+          summary: "Set the root password changed runtime credentials but failed while updating host-side auth artifacts.",
+          executed: true,
+          risk: "high",
+          plannedCommands,
+          rollback,
+          verification,
+          results: [rotateResult, syncHostResult]
+        }, decision.confirmation);
+      }
+      const verifyStatusResult = await executionContext.client.run(verifyStatusSpec);
+      const verifyAnonymousResult = await executionContext.client.run(verifyAnonymousSpec);
+      const results = [rotateResult, syncHostResult, verifyStatusResult, verifyAnonymousResult];
+      return attachConfirmation({
+        summary: `Set the root password for ${ctx.profile.name}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
+        executed: true,
+        risk: "high",
+        plannedCommands,
+        rollback,
+        verification,
+        results
+      }, decision.confirmation);
+    },
+  );
 }

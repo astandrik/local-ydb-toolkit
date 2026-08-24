@@ -10,6 +10,7 @@ import {
   authorizeMutation,
   commandPlanIntent,
   confirmationSummarySuffix,
+  retireSubmittedConfirmation,
 } from "../confirmation.js";
 import type {
   ImagePullOptions,
@@ -110,6 +111,7 @@ export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions =
 
   const inspectResult = await ctx.client.run(inspectSpec);
   if (inspectResult.ok) {
+    retireSubmittedConfirmation(ctx, options);
     return attachNotRequiredConfirmation(ctx, {
       summary: `Docker image ${image} is already present on ${ctx.profile.name}.`,
       executed: true,

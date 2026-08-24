@@ -1,4 +1,5 @@
 import type { CommandResult, CommandSpec } from "../api-client.js";
+import { withAuthorizedContentExecution } from "../confirmed-content.js";
 import type { ConfirmationContentInput } from "../confirmation-inputs.js";
 import {
   attachConfirmation,
@@ -52,16 +53,23 @@ export async function runMutating(
       verification: plan.verification
     }, decision.confirmation);
   }
-  const results = await runCommandSpecs(ctx, plan.specs);
-  return attachConfirmation({
-    summary: `${plan.summary} Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
-    executed: true,
-    risk: plan.risk,
-    plannedCommands,
-    rollback: plan.rollback,
-    verification: plan.verification,
-    results
-  }, decision.confirmation);
+  return withAuthorizedContentExecution(
+    ctx,
+    decision.receipt,
+    plan.specs,
+    async (executionContext) => {
+      const results = await runCommandSpecs(executionContext, plan.specs);
+      return attachConfirmation({
+        summary: `${plan.summary} Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
+        executed: true,
+        risk: plan.risk,
+        plannedCommands,
+        rollback: plan.rollback,
+        verification: plan.verification,
+        results
+      }, decision.confirmation);
+    },
+  );
 }
 
 export async function runCommandSpecs(ctx: ToolkitContext, specs: CommandSpec[]): Promise<CommandResult[]> {

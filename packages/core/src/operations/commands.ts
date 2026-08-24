@@ -1,4 +1,10 @@
 import { bash, shellQuote, type CommandSpec } from "../api-client.js";
+import {
+  confirmationContentDigestPlaceholder,
+  confirmationContentSnapshotPlaceholder,
+  confirmationHashShellFunctions,
+  type ConfirmationContentInput,
+} from "../confirmation-inputs.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { generatedConfigDiscoveryLines } from "./generated-config.js";
 import { statusCommandFailureLines } from "./helpers.js";
@@ -210,10 +216,21 @@ export function commandForDynamicRun(profile: ResolvedLocalYdbProfile): string {
   });
 }
 
-export function commandForDynamicNodeRun(profile: ResolvedLocalYdbProfile, node: Pick<DynamicNodePlan, "container" | "grpcPort" | "monitoringPort" | "icPort">): string {
+export function commandForDynamicNodeRun(
+  profile: ResolvedLocalYdbProfile,
+  node: Pick<DynamicNodePlan, "container" | "grpcPort" | "monitoringPort" | "icPort">,
+  removeExisting = false,
+): string {
   const mount = profile.bindMountPath ? `${profile.bindMountPath}:/ydb_data:ro` : `${profile.volume}:/ydb_data:ro`;
-  const authMount = profile.dynamicNodeAuthTokenFile ? [`${profile.dynamicNodeAuthTokenFile}:/run/local-ydb/dynamic-node-auth.pb:ro`] : [];
-  const authArgs = profile.dynamicNodeAuthTokenFile ? ["--auth-token-file", "/run/local-ydb/dynamic-node-auth.pb"] : [];
+  const authInput = dynamicNodeAuthInput(profile);
+  const authSnapshot = authInput
+    ? confirmationContentSnapshotPlaceholder(authInput)
+    : undefined;
+  const authDigest = authInput
+    ? confirmationContentDigestPlaceholder(authInput)
+    : undefined;
+  const authContainerPath = "/tmp/local-ydb-toolkit-dynamic-node-auth.pb";
+  const authArgs = authInput ? ["--auth-token-file", authContainerPath] : [];
   const dynamicArgs = [
     "--tcp",
     ...authArgs,
@@ -245,7 +262,6 @@ export function commandForDynamicNodeRun(profile: ResolvedLocalYdbProfile, node:
     "-e", `MON_PORT=${node.monitoringPort}`,
     "-e", "GRPC_TLS_PORT=",
     "-e", "YDB_GRPC_ENABLE_TLS=0",
-    ...authMount.flatMap((value) => ["-v", value]),
     "--entrypoint", "/bin/bash",
     profile.image,
     "-lc", innerCommand
@@ -256,7 +272,19 @@ export function commandForDynamicNodeRun(profile: ResolvedLocalYdbProfile, node:
   const mismatchMessage = shellQuote(`Dynamic container ${node.container} does not match static container image ID and was removed before start.`);
   return [
     "set -euo pipefail",
+    ...(authInput && authSnapshot && authDigest ? [
+      ...confirmationHashShellFunctions(),
+      `confirmed_auth_snapshot=${shellQuote(authSnapshot)}`,
+      `confirmed_auth_digest=${shellQuote(authDigest)}`,
+      "if [ ! -f \"$confirmed_auth_snapshot\" ] || ! actual_auth_digest=$(hash_file \"$confirmed_auth_snapshot\") || [ \"$actual_auth_digest\" != \"$confirmed_auth_digest\" ]; then",
+      "  printf '%s\\n' 'Confirmed content snapshot could not be created or verified.' >&2",
+      "  exit 1",
+      "fi",
+    ] : []),
     `verified_image_id=$(docker inspect --type container --format ${imageIdTemplate} ${staticContainer})`,
+    ...(removeExisting
+      ? [`docker rm -f ${container} 2>/dev/null || true`]
+      : []),
     `${createCommand} >/dev/null`,
     `if ! created_image_id=$(docker inspect --type container --format ${imageIdTemplate} ${container}); then`,
     `  docker rm -f ${container} >/dev/null 2>&1 || true`,
@@ -268,6 +296,13 @@ export function commandForDynamicNodeRun(profile: ResolvedLocalYdbProfile, node:
     `  printf '%s\\n' ${mismatchMessage} >&2`,
     "  exit 1",
     "fi",
+    ...(authSnapshot ? [
+      `if ! docker cp ${shellQuote(authSnapshot)} ${shellQuote(`${node.container}:${authContainerPath}`)} >/dev/null 2>&1; then`,
+      `  docker rm -f ${container} >/dev/null 2>&1 || true`,
+      "  printf '%s\\n' 'Confirmed content snapshot could not be created or verified.' >&2",
+      "  exit 1",
+      "fi",
+    ] : []),
     `docker start ${container} >/dev/null`
   ].join("\n");
 }
@@ -284,8 +319,7 @@ export function commandForDynamicEnsureRun(profile: ResolvedLocalYdbProfile, nod
     `if docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null | grep -qx true; then`,
     "  exit 0",
     "fi",
-    `docker rm -f ${container} 2>/dev/null || true`,
-    commandForDynamicNodeRun(profile, target)
+    commandForDynamicNodeRun(profile, target, true)
   ].join("\n");
 }
 
@@ -297,19 +331,39 @@ export function dynamicNodeStartSpecs(
 ): CommandSpec[] {
   const startCommand = mode === "ensure"
     ? commandForDynamicEnsureRun(profile, plan)
-    : [
-        `docker rm -f ${shellQuote(plan.container)} 2>/dev/null || true`,
-        commandForDynamicNodeRun(profile, plan)
-      ].join("\n");
+    : commandForDynamicNodeRun(profile, plan, true);
   return [
     ensureImagePresentSpec(profile.image),
     ...beforeRunSpecs,
     bash(startCommand, {
       timeoutMs: 60_000,
-      description: `Start dynamic tenant node ${plan.container}`
+      description: `Start dynamic tenant node ${plan.container}`,
+      redactions: dynamicNodeAuthRedactions(profile),
     }),
     bash("sleep 5", { description: `Wait briefly for ${plan.container} startup` })
   ];
+}
+
+export function dynamicNodeAuthRedactions(profile: ResolvedLocalYdbProfile): string[] {
+  const input = dynamicNodeAuthInput(profile);
+  return input
+    ? [
+        confirmationContentDigestPlaceholder(input),
+        confirmationContentSnapshotPlaceholder(input),
+      ]
+    : [];
+}
+
+function dynamicNodeAuthInput(
+  profile: ResolvedLocalYdbProfile,
+): ConfirmationContentInput | undefined {
+  return profile.dynamicNodeAuthTokenFile
+    ? {
+        kind: "file",
+        path: profile.dynamicNodeAuthTokenFile,
+        role: "dynamic-node-auth",
+      }
+    : undefined;
 }
 
 export function removeTenantIfPresentSpec(profile: ResolvedLocalYdbProfile): CommandSpec {
@@ -532,6 +586,47 @@ export function helperContainer(profile: ResolvedLocalYdbProfile, innerCommand: 
   ].join("\n"), {
     timeoutMs: 300_000,
     redactions: [profile.rootPasswordFile ?? ""]
+  });
+}
+
+export function restoreContainerFromConfirmedSnapshot(
+  profile: ResolvedLocalYdbProfile,
+  input: ConfirmationContentInput,
+  innerCommand: string,
+): CommandSpec {
+  const snapshot = confirmationContentSnapshotPlaceholder(input);
+  const digest = confirmationContentDigestPlaceholder(input);
+  const passwordMount = profile.rootPasswordFile
+    ? ["-v", `${profile.rootPasswordFile}:/tmp/root.password:ro`]
+    : [];
+  const runCommand = [
+    "docker", "run", "--rm",
+    "--network", `container:${profile.staticContainer}`,
+    "-v", `${snapshot}:/dump/confirmed:ro`,
+    ...passwordMount,
+    "--entrypoint", "/bin/bash",
+    profile.image,
+    "-lc",
+    innerCommand,
+  ].map(shellQuote).join(" ");
+  return bash([
+    "set -euo pipefail",
+    ...confirmationHashShellFunctions(),
+    `confirmed_restore_snapshot=${shellQuote(snapshot)}`,
+    `confirmed_restore_digest=${shellQuote(digest)}`,
+    "if [ ! -d \"$confirmed_restore_snapshot\" ] || ! actual_restore_digest=$(hash_directory \"$confirmed_restore_snapshot\") || [ \"$actual_restore_digest\" != \"$confirmed_restore_digest\" ]; then",
+    "  printf '%s\\n' 'Confirmed content snapshot could not be created or verified.' >&2",
+    "  exit 1",
+    "fi",
+    runCommand,
+  ].join("\n"), {
+    timeoutMs: 300_000,
+    description: "Restore from a confirmed dump snapshot",
+    redactions: [
+      profile.rootPasswordFile ?? "",
+      snapshot,
+      digest,
+    ],
   });
 }
 

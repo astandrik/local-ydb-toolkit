@@ -115,9 +115,9 @@ describe("process confirmation store", () => {
     if (!token) {
       throw new Error("Expected plan token");
     }
-    const [version, nonce, mac] = token.split(".");
+    const [version, nonce, intentMac, capabilityMac] = token.split(".");
     const aliasedNonce = replaceLastBase64UrlCharacter(nonce!);
-    const alias = `${version}.${aliasedNonce}.${mac}`;
+    const alias = `${version}.${aliasedNonce}.${intentMac}.${capabilityMac}`;
     expect(Buffer.from(aliasedNonce, "base64url")).toEqual(Buffer.from(nonce!, "base64url"));
 
     expect(await runMutating(ctx, plan, {
@@ -256,6 +256,37 @@ describe("process confirmation store", () => {
       confirmation: { status: "rejected" },
     });
     expect(executor.calls).toBe(1);
+  });
+
+  it("retires only canonical capabilities issued by the current process", async () => {
+    const store = new ProcessConfirmationStore();
+    const token = store.issue(plan);
+    const wrongIntentToken = store.issue({ kind: "different-tool-intent" });
+    const foreignToken = new ProcessConfirmationStore().issue(plan);
+
+    expect(store.retire("malformed")).toBe(false);
+    expect(store.retire(foreignToken)).toBe(false);
+    expect(store.retire(token)).toBe(true);
+    expect(store.retire(token)).toBe(false);
+    expect(store.consume(token, plan)).toBe(false);
+    expect(store.retire(wrongIntentToken)).toBe(true);
+    expect(store.consume(wrongIntentToken, { kind: "different-tool-intent" })).toBe(false);
+  });
+
+  it("does not retire a token whose intent MAC was tampered", () => {
+    const store = new ProcessConfirmationStore();
+    const token = store.issue(plan);
+    const [version, nonce, intentMac, capabilityMac] = token.split(".");
+    const tamperedIntentMac = `${intentMac?.startsWith("A") ? "B" : "A"}${intentMac?.slice(1)}`;
+    const tampered = [
+      version,
+      nonce,
+      tamperedIntentMac,
+      capabilityMac,
+    ].join(".");
+
+    expect(store.retire(tampered)).toBe(false);
+    expect(store.consume(token, plan)).toBe(true);
   });
 
   it("keeps an omitted dumpName stable for the exact confirm request", async () => {

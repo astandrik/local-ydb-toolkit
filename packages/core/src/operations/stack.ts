@@ -1,4 +1,5 @@
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import { withAuthorizedContentExecution } from "../confirmed-content.js";
 import {
   attachConfirmation,
   authorizeMutation,
@@ -11,6 +12,7 @@ import {
   commandForStaticCompatibilityCheck,
   commandForStaticEnsureRun,
   createTenantSpec,
+  dynamicNodeAuthRedactions,
   dynamicNodeStartSpecs,
   removeTenantIfPresentSpec,
   waitForYdbRootCli,
@@ -87,20 +89,27 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
       verification
     }, decision.confirmation);
   }
-  const confirmed = <T extends object>(response: T) =>
-    attachConfirmation(response, decision.confirmation);
+  return withAuthorizedContentExecution(
+    ctx,
+    decision.receipt,
+    specs,
+    async (executionContext) => {
+      const confirmed = <T extends object>(response: T) =>
+        attachConfirmation(response, decision.confirmation);
 
-  const results = await runCommandSpecs(ctx, baseSpecs);
-  if (!completedAll(baseSpecs, results)) {
-    return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, 0, plans.length));
-  }
-  const topology = await startDynamicNodePlans(ctx, plans, "recreate");
-  results.push(...topology.results);
-  if (topology.completedNodes < plans.length) {
-    return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length));
-  }
-  results.push(...await runCommandSpecs(ctx, finalSpecs));
-  return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length));
+      const results = await runCommandSpecs(executionContext, baseSpecs);
+      if (!completedAll(baseSpecs, results)) {
+        return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, 0, plans.length));
+      }
+      const topology = await startDynamicNodePlans(executionContext, plans, "recreate");
+      results.push(...topology.results);
+      if (topology.completedNodes < plans.length) {
+        return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length));
+      }
+      results.push(...await runCommandSpecs(executionContext, finalSpecs));
+      return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length));
+    },
+  );
 }
 
 export async function bootstrapRootDatabase(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<OperationResponse> {
@@ -144,7 +153,10 @@ export async function startDynamicNode(ctx: ToolkitContext, options: MutatingOpt
         requireGraphShard: true,
         publishedDynamicGrpcPorts: configuredPlans.map((configuredPlan) => configuredPlan.grpcPort)
       }), { timeoutMs: 60_000, description: "Verify static local-ydb node compatibility before dynamic node start" }),
-      bash(commandForDynamicEnsureRun(ctx.profile, plan), { timeoutMs: 60_000 })
+      bash(commandForDynamicEnsureRun(ctx.profile, plan), {
+        timeoutMs: 60_000,
+        redactions: dynamicNodeAuthRedactions(ctx.profile),
+      })
     ],
     rollback: [`docker rm -f ${ctx.profile.dynamicContainer}`],
     verification: ["container is Up", "viewer/json/nodelist includes the dynamic node", `scheme ls ${ctx.profile.tenantPath}`]
@@ -361,32 +373,39 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
       unexpectedDynamicContainers
     }, decision.confirmation);
   }
-  const confirmed = (response: RestartStackResponse) =>
-    attachConfirmation(response, decision.confirmation);
+  return withAuthorizedContentExecution(
+    ctx,
+    decision.receipt,
+    specs,
+    async (executionContext) => {
+      const confirmed = (response: RestartStackResponse) =>
+        attachConfirmation(response, decision.confirmation);
 
-  const results = await runCommandSpecs(ctx, preflightSpecs);
-  if (!completedAll(preflightSpecs, results)) {
-    return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length));
-  }
-  const mutationResults = await runCommandSpecs(ctx, mutationSpecs);
-  results.push(...mutationResults);
-  if (!completedAll(mutationSpecs, mutationResults)) {
-    results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));
-    return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length));
-  }
-  const topology = await startDynamicNodePlans(ctx, plans, "recreate");
-  results.push(...topology.results);
-  if (topology.completedNodes < plans.length) {
-    results.push(...await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs));
-    return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
-  }
-  const recoveryResults = await restoreUnexpectedDynamicNodes(ctx, unexpectedStartSpecs);
-  results.push(...recoveryResults);
-  if (!completedAll(unexpectedStartSpecs, recoveryResults)) {
-    return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
-  }
-  results.push(await ctx.client.run(metadataSpec));
-  return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
+      const results = await runCommandSpecs(executionContext, preflightSpecs);
+      if (!completedAll(preflightSpecs, results)) {
+        return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length));
+      }
+      const mutationResults = await runCommandSpecs(executionContext, mutationSpecs);
+      results.push(...mutationResults);
+      if (!completedAll(mutationSpecs, mutationResults)) {
+        results.push(...await restoreUnexpectedDynamicNodes(executionContext, unexpectedStartSpecs));
+        return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length));
+      }
+      const topology = await startDynamicNodePlans(executionContext, plans, "recreate");
+      results.push(...topology.results);
+      if (topology.completedNodes < plans.length) {
+        results.push(...await restoreUnexpectedDynamicNodes(executionContext, unexpectedStartSpecs));
+        return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
+      }
+      const recoveryResults = await restoreUnexpectedDynamicNodes(executionContext, unexpectedStartSpecs);
+      results.push(...recoveryResults);
+      if (!completedAll(unexpectedStartSpecs, recoveryResults)) {
+        return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
+      }
+      results.push(await executionContext.client.run(metadataSpec));
+      return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, topology.completedNodes, plans.length));
+    },
+  );
 }
 
 async function restoreUnexpectedDynamicNodes(ctx: ToolkitContext, specs: CommandSpec[]): Promise<CommandResult[]> {

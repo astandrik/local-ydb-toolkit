@@ -507,8 +507,12 @@ async function verifyBackupRestore(client, profile) {
     const restorePlan = await callTool(client, "local_ydb_restore_tenant", restoreArgs);
     assert(restorePlan.executed === false, "plan-only restore should not execute without confirm=true.");
     assert(
-      plannedCommandsText(restorePlan).includes(`tools restore -p ${restorePath} -i /dump/${dumpName}/tenant`),
+      plannedCommandsText(restorePlan).includes(`tools restore -p ${restorePath} -i /dump/confirmed`),
       "path-level restore plan did not target the destination path and dump input.",
+    );
+    assert(
+      plannedCommandsText(restorePlan).includes(":/dump/confirmed:ro"),
+      "path-level restore plan did not use a read-only confirmed snapshot mount.",
     );
 
     const restoreResult = await callTool(client, "local_ydb_restore_tenant", {

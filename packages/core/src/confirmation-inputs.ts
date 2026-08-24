@@ -17,13 +17,69 @@ export interface ConfirmationContentInput {
   role: string;
 }
 
-type ConfirmationContentFingerprint = ConfirmationContentInput & {
+export type ConfirmationContentFingerprint = ConfirmationContentInput & {
   state: "missing" | "file" | "directory" | "not-file" | "not-directory";
   sha256?: string;
 };
 
 const READ_BUFFER_BYTES = 64 * 1024;
 const CONTENT_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+const CONTENT_DIGEST_PLACEHOLDER_PREFIX = "__LOCAL_YDB_CONFIRMATION_DIGEST_";
+const CONTENT_SNAPSHOT_PLACEHOLDER_PREFIX = "__LOCAL_YDB_CONFIRMATION_SNAPSHOT_";
+
+export function confirmationContentDigestPlaceholder(
+  input: Pick<ConfirmationContentInput, "kind" | "path">,
+): string {
+  return `${CONTENT_DIGEST_PLACEHOLDER_PREFIX}${contentInputId(input)}__`;
+}
+
+export function confirmationContentSnapshotPlaceholder(
+  input: Pick<ConfirmationContentInput, "kind" | "path">,
+): string {
+  return `${CONTENT_SNAPSHOT_PLACEHOLDER_PREFIX}${contentInputId(input)}__`;
+}
+
+export function confirmationContentKey(
+  input: Pick<ConfirmationContentInput, "kind" | "path">,
+): string {
+  return `${input.kind}\0${input.path}`;
+}
+
+export function confirmationHashShellFunctions(): string[] {
+  return [
+    "hash_file() {",
+    "  if command -v sha256sum >/dev/null 2>&1; then sha256sum -- \"$1\" | awk '{print $1}'; return; fi",
+    "  if command -v shasum >/dev/null 2>&1; then shasum -a 256 -- \"$1\" | awk '{print $1}'; return; fi",
+    "  if command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 -r < \"$1\" | awk '{print $1}'; return; fi",
+    "  return 127",
+    "}",
+    "hash_stream() {",
+    "  if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; return; fi",
+    "  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'; return; fi",
+    "  if command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 -r | awk '{print $1}'; return; fi",
+    "  return 127",
+    "}",
+    "hash_directory() {",
+    "  command -v find >/dev/null 2>&1 || return 127",
+    "  command -v sort >/dev/null 2>&1 || return 127",
+    "  (",
+    "    cd \"$1\"",
+    "    find . ! -path . -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' entry; do",
+    "      if [ -L \"$entry\" ]; then",
+    "        printf 'symlink\\0%s\\0%s\\0' \"$entry\" \"$(readlink \"$entry\")\"",
+    "      elif [ -d \"$entry\" ]; then",
+    "        printf 'directory\\0%s\\0' \"$entry\"",
+    "      elif [ -f \"$entry\" ]; then",
+    "        printf 'file\\0%s\\0' \"$entry\"",
+    "        hash_file \"$entry\"",
+    "      else",
+    "        printf 'other\\0%s\\0' \"$entry\"",
+    "      fi",
+    "    done",
+    "  ) | hash_stream",
+    "}",
+  ];
+}
 
 export async function confirmationContentIntent(
   ctx: ToolkitContext,
@@ -31,7 +87,7 @@ export async function confirmationContentIntent(
 ): Promise<ConfirmationContentFingerprint[]> {
   const inputs = new Map<string, ConfirmationContentInput>();
   for (const input of explicitInputs) {
-    inputs.set(contentInputKey(input), input);
+    inputs.set(confirmationContentKey(input), input);
   }
 
   const profileInputs: ConfirmationContentInput[] = [
@@ -40,7 +96,7 @@ export async function confirmationContentIntent(
     ...optionalFileInput("dynamic-node-auth", ctx.profile.dynamicNodeAuthTokenFile),
   ];
   for (const input of profileInputs) {
-    const key = contentInputKey(input);
+    const key = confirmationContentKey(input);
     if (!inputs.has(key)) {
       inputs.set(key, input);
     }
@@ -59,10 +115,6 @@ function optionalFileInput(
   path: string | undefined,
 ): ConfirmationContentInput[] {
   return path ? [{ kind: "file", path, role }] : [];
-}
-
-function contentInputKey(input: ConfirmationContentInput): string {
-  return `${input.kind}\0${input.path}`;
 }
 
 async function fingerprintTargetInput(
@@ -123,37 +175,7 @@ async function fingerprintShellInput(
     : `hash_directory ${quotedPath}`;
   const script = [
     "set -euo pipefail",
-    "hash_file() {",
-    "  if command -v sha256sum >/dev/null 2>&1; then sha256sum -- \"$1\" | awk '{print $1}'; return; fi",
-    "  if command -v shasum >/dev/null 2>&1; then shasum -a 256 -- \"$1\" | awk '{print $1}'; return; fi",
-    "  if command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 -r < \"$1\" | awk '{print $1}'; return; fi",
-    "  return 127",
-    "}",
-    "hash_stream() {",
-    "  if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; return; fi",
-    "  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'; return; fi",
-    "  if command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 -r | awk '{print $1}'; return; fi",
-    "  return 127",
-    "}",
-    "hash_directory() {",
-    "  command -v find >/dev/null 2>&1 || return 127",
-    "  command -v sort >/dev/null 2>&1 || return 127",
-    "  (",
-    "    cd \"$1\"",
-    "    find . ! -path . -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' entry; do",
-    "      if [ -L \"$entry\" ]; then",
-    "        printf 'symlink\\0%s\\0%s\\0' \"$entry\" \"$(readlink \"$entry\")\"",
-    "      elif [ -d \"$entry\" ]; then",
-    "        printf 'directory\\0%s\\0' \"$entry\"",
-    "      elif [ -f \"$entry\" ]; then",
-    "        printf 'file\\0%s\\0' \"$entry\"",
-    "        hash_file \"$entry\"",
-    "      else",
-    "        printf 'other\\0%s\\0' \"$entry\"",
-    "      fi",
-    "    done",
-    "  ) | hash_stream",
-    "}",
+    ...confirmationHashShellFunctions(),
     `if [ ! -e ${quotedPath} ]; then printf 'missing\\n'; exit 0; fi`,
     `if [ ! ${typeCheck} ${quotedPath} ]; then printf '${wrongType}\\n'; exit 0; fi`,
     `digest=$(${digestCommand})`,
@@ -222,4 +244,13 @@ function isNonRegularOpenError(error: unknown): boolean {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function contentInputId(
+  input: Pick<ConfirmationContentInput, "kind" | "path">,
+): string {
+  return createHash("sha256")
+    .update(confirmationContentKey(input), "utf8")
+    .digest("hex")
+    .slice(0, 32);
 }

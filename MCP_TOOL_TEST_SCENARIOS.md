@@ -100,6 +100,7 @@ On POSIX, create the FIFO without a writer and require the MCP call to return wi
 - For every mutating tool, call the exact request without `confirm`, review `plannedCommands`, `risk`, `rollback`, and `verification` with the human, then repeat the same arguments with `confirm: true`, copying that response's `confirmation.token` into the `confirmationToken` request argument. The `<token-from-plan>` placeholders below always mean the token from the immediately preceding identical plan call.
 - A missing, malformed, changed-plan, replayed, or pre-restart token must execute nothing and returns `confirmation.status="rejected"` with a fresh plan/token. No-op responses use `not-required`; successful consumption uses `accepted`.
 - Changing a configured auth/password file or a file inside the selected standalone restore dump between plan and confirm must reject the old token; file contents and private fingerprints must never appear in either response.
+- After acceptance, replace the canonical auth config, root-password backup input, dynamic-node token, or restore file before its mutation consumer runs. The consumer must observe the reviewed snapshot bytes or fail closed; credential-only reads may change authentication success/failure but not mutation payloads. Responses must omit contents, digests, and actual snapshot paths, and cleanup must remove every snapshot after success, failure, or abort.
 - Treat the token as an ephemeral capability. Do not log it, paste it into reusable notes, persist it across sessions, or treat possession as proof of human approval; the MCP host/client remains responsible for that approval.
 - Do not test `cleanup_storage` against active volumes or paths.
 - Do not mix static and dynamic image tags inside one profile.
@@ -630,6 +631,9 @@ Expected:
 - dump helper container runs with `--entrypoint /bin/bash`
 - list-dumps reports dump directories that contain a `tenant` folder
 - restore helper container runs with `--entrypoint /bin/bash`
+- restore mounts a verified private snapshot at `/dump/confirmed:ro`; allow temporary space up to the full dump size when copy-on-write/reflink is unavailable
+- replace a source dump file after token consumption and require the restore consumer to see the reviewed snapshot bytes; confirm the temporary snapshot is removed afterward
+- a dump containing a symlink, FIFO, socket, device, or other non-regular entry fails closed before Docker/YDB mutation and leaves no snapshot behind
 - restored tenant returns `.metadata  .sys`
 - GraphShard exists after restore
 
@@ -695,8 +699,8 @@ Expected:
 - dynamic node is stopped
 - static node is restarted
 - tenant status remains readable via password
-- dynamic node is recreated with:
-  `--auth-token-file /run/local-ydb/dynamic-node-auth.pb`
+- dynamic node is recreated by copying the confirmed token snapshot into the stopped container before start, with:
+  `--auth-token-file /tmp/local-ydb-toolkit-dynamic-node-auth.pb`
   sanitized dynamic config
   TLS disabled for local mode
 - rollback restores the static config and uses `local_ydb_restart_stack` or `local_ydb_bootstrap` to recreate configured nodes, never `docker start` for removed definitions
@@ -789,7 +793,7 @@ Expected:
 - plan-only output creates one-off containers `ydb-dyn-example-ghcr261-4` and `ydb-dyn-example-ghcr261-5`
 - default ports are derived from the profile:
   `2260/9069/19305` and `2261/9070/19306`
-- dynamic containers mount `/tmp/local-ydb-auth/dynamic-node-auth.pb` when auth is enabled
+- dynamic containers receive the confirmed token snapshot through `docker cp` before start and do not bind-mount the canonical host token path
 - `confirm=true` starts one node, verifies its exact container is stably running and its IC port appears in `nodelist`, then starts the next
 - explicit `startIndex: 2` is rejected before a mutating plan because configured indexes `1..3` cannot be used for one-off add; configured container IDs remain unchanged
 - `nodes_check` reports five dynamic nodes total: three configured nodes plus the two one-off nodes

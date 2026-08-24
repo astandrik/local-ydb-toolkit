@@ -1,4 +1,5 @@
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import { withAuthorizedContentExecution } from "../confirmed-content.js";
 import {
   attachConfirmation,
   authorizeMutation,
@@ -67,18 +68,30 @@ export async function addDynamicNodes(ctx: ToolkitContext, options: AddDynamicNo
     }, decision.confirmation);
   }
 
-  const { results, nodeChecks, completedNodes } = await startDynamicNodePlans(ctx, plans, "ensure", beforeRunSpecs);
-  if (completedNodes < plans.length) {
-    return attachConfirmation(
-      addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes),
-      decision.confirmation,
-    );
-  }
+  return withAuthorizedContentExecution(
+    ctx,
+    decision.receipt,
+    specs,
+    async (executionContext) => {
+      const { results, nodeChecks, completedNodes } = await startDynamicNodePlans(
+        executionContext,
+        plans,
+        "ensure",
+        beforeRunSpecs,
+      );
+      if (completedNodes < plans.length) {
+        return attachConfirmation(
+          addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes),
+          decision.confirmation,
+        );
+      }
 
-  results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
-  return attachConfirmation(
-    addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes),
-    decision.confirmation,
+      results.push(await executionContext.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
+      return attachConfirmation(
+        addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes),
+        decision.confirmation,
+      );
+    },
   );
 }
 

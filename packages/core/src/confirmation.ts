@@ -6,6 +6,7 @@ import {
 import type { CommandSpec } from "./api-client.js";
 import {
   confirmationContentIntent,
+  type ConfirmationContentFingerprint,
   type ConfirmationContentInput,
 } from "./confirmation-inputs.js";
 import type {
@@ -28,6 +29,11 @@ export interface PlanConfirmationRuntime {
 export interface ConfirmationDecision {
   execute: boolean;
   confirmation?: MutationConfirmation;
+  receipt?: ConfirmationReceipt;
+}
+
+export interface ConfirmationReceipt {
+  contentInputs: readonly ConfirmationContentFingerprint[];
 }
 
 export interface ConfirmationAuthorizationOptions {
@@ -42,11 +48,13 @@ export class ProcessConfirmationStore {
 
   issue(intent: unknown): string {
     const nonce = randomBytes(NONCE_BYTES);
-    const mac = this.#sign(nonce, intent);
+    const intentMac = this.#sign(nonce, intent);
+    const capabilityMac = this.#signCapability(nonce, intentMac);
     return [
       TOKEN_VERSION,
       nonce.toString("base64url"),
-      mac.toString("base64url"),
+      intentMac.toString("base64url"),
+      capabilityMac.toString("base64url"),
     ].join(".");
   }
 
@@ -58,8 +66,12 @@ export class ProcessConfirmationStore {
     if (!parsed) {
       return false;
     }
+    const expectedCapability = this.#signCapability(parsed.nonce, parsed.intentMac);
+    if (!timingSafeEqual(parsed.capabilityMac, expectedCapability)) {
+      return false;
+    }
     const expected = this.#sign(parsed.nonce, intent);
-    if (!timingSafeEqual(parsed.mac, expected)) {
+    if (!timingSafeEqual(parsed.intentMac, expected)) {
       return false;
     }
     this.#consumedTokens.add(token);
@@ -72,6 +84,22 @@ export class ProcessConfirmationStore {
         (this.#scopeGenerations.get(scopeKey) ?? 0) + 1,
       );
     }
+    return true;
+  }
+
+  retire(token: string): boolean {
+    if (this.#consumedTokens.has(token)) {
+      return false;
+    }
+    const parsed = parseToken(token);
+    if (!parsed) {
+      return false;
+    }
+    const expectedCapability = this.#signCapability(parsed.nonce, parsed.intentMac);
+    if (!timingSafeEqual(parsed.capabilityMac, expectedCapability)) {
+      return false;
+    }
+    this.#consumedTokens.add(token);
     return true;
   }
 
@@ -96,6 +124,14 @@ export class ProcessConfirmationStore {
       .digest();
   }
 
+  #signCapability(nonce: Buffer, intentMac: Buffer): Buffer {
+    return createHmac("sha256", this.#key)
+      .update("confirmation-capability\0", "utf8")
+      .update(nonce)
+      .update(intentMac)
+      .digest();
+  }
+
   #scopeKey(scope: unknown): string {
     return createHmac("sha256", this.#key)
       .update("confirmation-scope-key\0", "utf8")
@@ -112,15 +148,27 @@ export async function authorizeMutation(
 ): Promise<ConfirmationDecision> {
   const runtime = ctx.confirmation;
   if (!runtime) {
-    return { execute: options.confirm === true };
+    if (options.confirm !== true) {
+      return { execute: false };
+    }
+    return {
+      execute: true,
+      receipt: {
+        contentInputs: await confirmationContentIntent(
+          ctx,
+          authorization.contentInputs,
+        ),
+      },
+    };
   }
 
+  const contentInputs = await confirmationContentIntent(
+    ctx,
+    authorization.contentInputs,
+  );
   const intent = {
     ...confirmationEnvelope(ctx, executionIntent),
-    contentInputs: await confirmationContentIntent(
-      ctx,
-      authorization.contentInputs,
-    ),
+    contentInputs,
   };
   const contextualScope = authorization.rotatingScope === undefined
     ? undefined
@@ -146,6 +194,7 @@ export async function authorizeMutation(
     return {
       execute: true,
       confirmation: { status: "accepted" },
+      receipt: { contentInputs },
     };
   }
 
@@ -163,6 +212,15 @@ export function confirmationScopedId(ctx: ToolkitContext, scope: unknown): strin
   return runtime?.store.scopedId(
     confirmationEnvelope(ctx, { kind: "rotating-scope", scope }),
   );
+}
+
+export function retireSubmittedConfirmation(
+  ctx: ToolkitContext,
+  options: MutatingOptions,
+): boolean {
+  return options.confirm === true
+    && typeof options.confirmationToken === "string"
+    && ctx.confirmation?.store.retire(options.confirmationToken) === true;
 }
 
 export function commandPlanIntent(plan: {
@@ -230,27 +288,35 @@ export function withoutConfirmation(ctx: ToolkitContext): ToolkitContext {
   return rest;
 }
 
-function parseToken(token: string): { nonce: Buffer; mac: Buffer } | undefined {
+function parseToken(token: string): {
+  nonce: Buffer;
+  intentMac: Buffer;
+  capabilityMac: Buffer;
+} | undefined {
   const parts = token.split(".");
   if (
-    parts.length !== 3
+    parts.length !== 4
     || parts[0] !== TOKEN_VERSION
     || !/^[A-Za-z0-9_-]{22}$/.test(parts[1] ?? "")
     || !/^[A-Za-z0-9_-]{43}$/.test(parts[2] ?? "")
+    || !/^[A-Za-z0-9_-]{43}$/.test(parts[3] ?? "")
   ) {
     return undefined;
   }
   const nonce = Buffer.from(parts[1]!, "base64url");
-  const mac = Buffer.from(parts[2]!, "base64url");
+  const intentMac = Buffer.from(parts[2]!, "base64url");
+  const capabilityMac = Buffer.from(parts[3]!, "base64url");
   if (
     nonce.length !== NONCE_BYTES
-    || mac.length !== MAC_BYTES
+    || intentMac.length !== MAC_BYTES
+    || capabilityMac.length !== MAC_BYTES
     || nonce.toString("base64url") !== parts[1]
-    || mac.toString("base64url") !== parts[2]
+    || intentMac.toString("base64url") !== parts[2]
+    || capabilityMac.toString("base64url") !== parts[3]
   ) {
     return undefined;
   }
-  return { nonce, mac };
+  return { nonce, intentMac, capabilityMac };
 }
 
 function canonicalJson(value: unknown): string {
