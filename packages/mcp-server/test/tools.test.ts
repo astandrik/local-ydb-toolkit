@@ -689,6 +689,9 @@ describe("mcp tools", () => {
     expect(localYdbInstructions).toContain("SnapshotRO");
     expect(localYdbInstructions).toContain("EXPLAIN");
     expect(localYdbInstructions).toContain("confirm=true");
+    expect(localYdbInstructions).toContain("response's confirmation.token");
+    expect(localYdbInstructions).toContain("confirmationToken request argument");
+    expect(localYdbInstructions).not.toMatch(/returned confirmationToken|its confirmationToken/);
     expect(localYdbInstructions).toContain("no retries");
     expect(localYdbInstructions).toContain("maxRows");
     expect(localYdbInstructions).toContain("maxOutputBytes");
@@ -950,7 +953,8 @@ describe("mcp tools", () => {
     expect(text).toContain("returned jobId");
     expect(text).toContain("local_ydb_upgrade_version");
     expect(text).toContain("Call mutating tools without confirm first");
-    expect(text).toContain("confirm=true and that response's confirmationToken");
+    expect(text).toContain("read its one-time token from confirmation.token");
+    expect(text).toContain("confirmationToken request argument");
     expect(text).toContain("do not log or persist it");
     expect(text).toContain("\"profile\": \"demo\"");
   });
@@ -982,7 +986,8 @@ describe("mcp tools", () => {
       : "";
 
     expect(text).toContain("repeat each exact request with confirm=true");
-    expect(text).toContain("its own returned confirmationToken");
+    expect(text).toContain("copying each plan response's confirmation.token");
+    expect(text).toContain("confirmationToken request argument");
     expect(text).toContain("Then call local_ydb_apply_auth_hardening without confirm");
     expect(text).toContain("\"sid\": \"root@builtin\"");
     expect(text).toContain("\"tokenHostPath\": \"/tmp/dynamic-auth.txt\"");
@@ -1019,7 +1024,8 @@ describe("mcp tools", () => {
     expect(text).toContain("local_ydb_generate_schema with validate=true");
     expect(text).toContain("local_ydb_apply_schema action=validate");
     expect(text).toContain("action=apply without confirm first");
-    expect(text).toContain("confirm=true and its returned confirmationToken");
+    expect(text).toContain("plan response's confirmation.token");
+    expect(text).toContain("confirmationToken request argument");
     expect(text).toContain("with.STORE");
     expect(text).toContain("partitionByHash only with store: \"column\" and primaryKey columns");
     expect(text).toContain("vector_kmeans_tree");

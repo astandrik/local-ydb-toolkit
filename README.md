@@ -29,7 +29,7 @@ The maintained listing hub, including third-party directory status and freshness
 
 Local YDB MCP is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` when an agent needs general YDB database-level tools such as ad hoc SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
 
-Use this toolkit when the agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, table DDL generation/validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Its `local_ydb_sql` tool is deliberately narrower than `ydb/ydb-mcp`: it runs managed YQL only against the selected configured local-ydb profile. Mutating MCP tools are plan-first and require `confirm: true` plus the current exact plan's one-time `confirmationToken` before they execute changes.
+Use this toolkit when the agent needs to operate Docker-based `local-ydb` environments themselves: host prerequisite checks, root or tenant bootstrap, dynamic-node lifecycle, GraphShard checks, table DDL generation/validation/application for local deployments, auth hardening, storage workflows, dump/restore, and version upgrades. Its `local_ydb_sql` tool is deliberately narrower than `ydb/ydb-mcp`: it runs managed YQL only against the selected configured local-ydb profile. Mutating MCP tools are plan-first: read the one-time token from the plan response's `confirmation.token`, then repeat the exact request with `confirm: true` and that value in the `confirmationToken` request argument.
 
 ## Agent Plugin Quick Start
 
@@ -317,7 +317,7 @@ return workflow instructions that guide the MCP client toward the existing
 `local_ydb_*` tools. When supplied to a prompt, `configPath` must be an absolute
 path, matching the tool-call contract.
 
-Mutating tools remain plan-only until the exact request is repeated with `confirm: true` and the current plan's `confirmationToken`. Static MCP
+Mutating tools remain plan-only until the plan response's `confirmation.token` is copied into the `confirmationToken` request argument and the exact request is repeated with `confirm: true`. Static MCP
 resources are intentionally left for a separate follow-up so the server does not
 expose private target configuration as context.
 
@@ -354,7 +354,7 @@ Mutating tools include image pulls, root-database bootstrap, tenant topology boo
 ```json
 {
   "confirm": true,
-  "confirmationToken": "<token-from-the-plan-response>"
+  "confirmationToken": "<value from confirmation.token>"
 }
 ```
 
@@ -370,8 +370,8 @@ Treat `confirmationToken` as an ephemeral capability: do not log it or persist i
 | --- | --- |
 | `query` (default) | Executes in `SnapshotRO`; `confirm` is ignored and never enables writes. |
 | `explain` | Uses Query Service `EXPLAIN` and returns a plan or AST without executing the YQL. |
-| `execute` without an accepted token | Runs the mandatory `EXPLAIN` preflight and returns a plan plus one-time `confirmationToken`. |
-| `execute` with `confirm=true` and that token | Repeats `EXPLAIN`; if the exact plan still matches, consumes the token and sends exactly one `NoTx` execution. There are no automatic retries. |
+| `execute` without an accepted token | Runs the mandatory `EXPLAIN` preflight and returns a plan with a one-time token at `confirmation.token`. |
+| `execute` with `confirm=true` and `confirmationToken` set to that value | Repeats `EXPLAIN`; if the exact plan still matches, consumes the token and sends exactly one `NoTx` execution. There are no automatic retries. |
 
 The script must be well-formed Unicode and is limited to 1,048,576 characters; lone UTF-16 surrogates are rejected before hashing or protobuf encoding. One deadline covers connection, session, preflight, and execution: `timeoutMs` defaults to 120,000 and is capped at 600,000. `maxRows` defaults to 100 and is capped at 10,000 per result set, but the first row-limit hit stops all further result capture: read-only execution is cancelled, while confirmed `NoTx` execution drains without capturing later output. `maxOutputBytes` defaults to 65,536 and is capped at 1 MiB across captured issues, plan/AST, column metadata, and complete rows; partial JSON values are never returned.
 

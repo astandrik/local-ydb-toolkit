@@ -60,11 +60,11 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 ## Global Rules
 
 - Run `local_ydb_check_prerequisites` first on a new host or profile.
-- If `local_ydb_check_prerequisites` reports installable packages, review its plan-only output and then repeat the exact request with `confirm: true` plus the returned `confirmationToken` before trying deeper checks.
+- If `local_ydb_check_prerequisites` reports installable packages, review its plan-only output and then repeat the exact request with `confirm: true`, copying the plan response's `confirmation.token` into the `confirmationToken` request argument before trying deeper checks.
 - Run read-only tools first.
 - Use `local_ydb_list_versions` before `local_ydb_upgrade_version` when you need to verify the exact registry tag to deploy.
 - If an image is not already present on the target host, plan `local_ydb_pull_image`, repeat that exact request with its token and `confirm: true`, and poll `local_ydb_pull_status` before bootstrap or upgrade.
-- For every mutating tool, call the exact request without `confirm`, review `plannedCommands`, `risk`, `rollback`, and `verification` with the human, then repeat the same arguments with `confirm: true` and that response's `confirmation.token`. The `<token-from-plan>` placeholders below always mean the token from the immediately preceding identical plan call.
+- For every mutating tool, call the exact request without `confirm`, review `plannedCommands`, `risk`, `rollback`, and `verification` with the human, then repeat the same arguments with `confirm: true`, copying that response's `confirmation.token` into the `confirmationToken` request argument. The `<token-from-plan>` placeholders below always mean the token from the immediately preceding identical plan call.
 - A missing, malformed, changed-plan, replayed, or pre-restart token must execute nothing and returns `confirmation.status="rejected"` with a fresh plan/token. No-op responses use `not-required`; successful consumption uses `accepted`.
 - Changing a configured auth/password file or a file inside the selected standalone restore dump between plan and confirm must reject the old token; file contents and private fingerprints must never appear in either response.
 - Treat the token as an ephemeral capability. Do not log it, paste it into reusable notes, persist it across sessions, or treat possession as proof of human approval; the MCP host/client remains responsible for that approval.

@@ -18,13 +18,15 @@ credentials that can complete the task.
 ## Plan-first mutations
 
 Mutating tools return planned commands, risk, rollback, verification, and a
-one-time process-bound token without executing. After human review, repeat the
-same request with `confirm: true` and that plan's `confirmationToken`.
+one-time process-bound token without executing. After human review, read the
+token from the plan response's `confirmation.token`, then repeat the same
+request with `confirm: true` and that value in the `confirmationToken` request
+argument.
 
 ```json
 {
   "confirm": true,
-  "confirmationToken": "<token-from-the-plan-response>"
+  "confirmationToken": "<value from confirmation.token>"
 }
 ```
 
