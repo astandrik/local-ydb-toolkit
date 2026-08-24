@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError, type GetPromptResult, type Prompt } from "@modelcontextprotocol/sdk/types.js";
+import { isAbsolute } from "node:path";
 import { z, type ZodRawShape } from "zod";
 
 type PromptArguments = Record<string, string | undefined>;
@@ -16,8 +17,8 @@ const commonOptionalArguments = {
   profile: optionalStringArgument(
     "Named local-ydb-toolkit profile to use. Omit to use the configured default profile.",
   ),
-  configPath: optionalStringArgument(
-    "Optional local-ydb-toolkit config JSON path to pass through to tools.",
+  configPath: optionalAbsolutePathArgument(
+    "Optional absolute path to an explicit local-ydb-toolkit config JSON file to pass through to tools.",
   ),
 } satisfies ZodRawShape;
 
@@ -282,6 +283,13 @@ function validatePromptArguments(
         `Argument ${name} for prompt ${promptName} must be a string`,
       );
     }
+    if (value !== undefined && !definition.argsSchema[name]?.safeParse(value).success) {
+      const requirement = name === "configPath" ? "must be an absolute path" : "is invalid";
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Argument ${name} for prompt ${promptName} ${requirement}`,
+      );
+    }
     validated[name] = value;
   }
   return validated;
@@ -335,6 +343,14 @@ function quoteValue(value: string): string {
 
 function optionalStringArgument(description: string): z.ZodOptional<z.ZodString> {
   return z.string().optional().describe(description);
+}
+
+function optionalAbsolutePathArgument(description: string) {
+  return z.string()
+    .min(1, "must be an absolute path")
+    .refine(isAbsolute, "must be an absolute path")
+    .optional()
+    .describe(description);
 }
 
 function requiredStringArgument(description: string): z.ZodString {

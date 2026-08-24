@@ -14,10 +14,13 @@ export function successResult(
   };
 }
 
-export function errorResult(message: string) {
+export function errorResult(message: string, code?: string) {
   return {
     isError: true,
     content: [{ type: "text", text: message }],
-    structuredContent: { error: message },
+    structuredContent: {
+      error: message,
+      ...(code === undefined ? {} : { code }),
+    },
   };
 }

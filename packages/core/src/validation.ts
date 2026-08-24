@@ -1,8 +1,40 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { constants as osConstants } from "node:os";
+import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 
 export const DEFAULT_IMAGE = "ghcr.io/ydb-platform/local-ydb:stable-26-1-1";
+export const MAX_CONFIG_FILE_BYTES = 1_048_576;
+const CONFIG_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+
+export type ConfigLoadErrorCode =
+  | "CONFIG_PATH_NOT_ABSOLUTE"
+  | "CONFIG_NOT_FOUND"
+  | "CONFIG_NOT_FILE"
+  | "CONFIG_TOO_LARGE"
+  | "CONFIG_READ_FAILED"
+  | "CONFIG_INVALID_JSON"
+  | "CONFIG_INVALID_SCHEMA";
+
+const CONFIG_LOAD_ERROR_MESSAGES: Record<ConfigLoadErrorCode, string> = {
+  CONFIG_PATH_NOT_ABSOLUTE: "Explicit local-ydb config paths must be absolute.",
+  CONFIG_NOT_FOUND: "Explicit local-ydb config file was not found.",
+  CONFIG_NOT_FILE: "Local-ydb config path must reference a regular file.",
+  CONFIG_TOO_LARGE: `Local-ydb config file exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit.`,
+  CONFIG_READ_FAILED: "Local-ydb config file could not be read.",
+  CONFIG_INVALID_JSON: "Local-ydb config file is not valid JSON.",
+  CONFIG_INVALID_SCHEMA: "Local-ydb config file does not match the supported schema.",
+};
+
+export class ConfigLoadError extends Error {
+  readonly code: ConfigLoadErrorCode;
+
+  constructor(code: ConfigLoadErrorCode) {
+    super(CONFIG_LOAD_ERROR_MESSAGES[code]);
+    this.name = "ConfigLoadError";
+    this.code = code;
+  }
+}
 
 export const PortsSchema = z.object({
   staticGrpc: z.number().int().positive().default(2136),
@@ -10,14 +42,14 @@ export const PortsSchema = z.object({
   dynamicGrpc: z.number().int().positive().default(2137),
   dynamicMonitoring: z.number().int().positive().default(8766),
   dynamicIc: z.number().int().positive().default(19002)
-}).default({});
+}).strict().default({});
 
 export const SshProfileSchema = z.object({
   host: z.string().min(1),
   user: z.string().min(1).optional(),
   port: z.number().int().positive().optional(),
   identityFile: z.string().min(1).optional()
-});
+}).strict();
 
 export const ProfileSchema = z.object({
   mode: z.enum(["local", "ssh"]).default("local"),
@@ -42,7 +74,7 @@ export const ProfileSchema = z.object({
   rootPasswordFile: z.string().min(1).optional(),
   dumpHostPath: z.string().min(1).default("/tmp/local-ydb-dump"),
   storageSearchPaths: z.array(z.string().min(1)).default(["/var/lib/docker/volumes", "/tmp"])
-}).superRefine((profile, ctx) => {
+}).strict().superRefine((profile, ctx) => {
   if (profile.mode === "ssh" && !profile.ssh) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -59,6 +91,14 @@ export const ConfigSchema = z.object({
       mode: "local"
     }
   })
+}).strict().superRefine((config, ctx) => {
+  if (!Object.hasOwn(config.profiles, config.defaultProfile)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["defaultProfile"],
+      message: "defaultProfile must reference a configured profile"
+    });
+  }
 });
 
 export type LocalYdbConfig = z.infer<typeof ConfigSchema>;
@@ -88,20 +128,132 @@ export function normalizeProfile(name: string, profile: LocalYdbProfile): Resolv
 }
 
 export function resolveConfigPath(configPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG): string {
-  return configPath ? resolve(configPath) : resolve(process.cwd(), "local-ydb.config.json");
+  if (configPath !== undefined) {
+    if (!isAbsolute(configPath)) {
+      throw new ConfigLoadError("CONFIG_PATH_NOT_ABSOLUTE");
+    }
+    return resolve(configPath);
+  }
+  return resolve(process.cwd(), "local-ydb.config.json");
 }
 
-export function loadConfig(configPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG): LocalYdbConfig {
-  const path = resolveConfigPath(configPath);
-  if (!existsSync(path)) {
-    return ConfigSchema.parse({});
+export function loadConfig(configPath?: string): LocalYdbConfig {
+  const configuredPath = configPath !== undefined
+    ? configPath
+    : process.env.LOCAL_YDB_TOOLKIT_CONFIG;
+  const explicit = configuredPath !== undefined;
+  if (explicit && !isAbsolute(configuredPath)) {
+    throw new ConfigLoadError("CONFIG_PATH_NOT_ABSOLUTE");
   }
-  return ConfigSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  const path = configuredPath ?? resolve(process.cwd(), "local-ydb.config.json");
+
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, CONFIG_OPEN_FLAGS);
+  } catch (error) {
+    if (isFileSystemError(error, "ENOENT")) {
+      if (explicit) {
+        throw new ConfigLoadError("CONFIG_NOT_FOUND");
+      }
+      return ConfigSchema.parse({});
+    }
+    const darwinSocketError = process.platform === "darwin"
+      && error instanceof Error
+      && "errno" in error
+      && error.errno === -osConstants.errno.EOPNOTSUPP;
+    // Linux reports sockets as ENXIO; Darwin uses EOPNOTSUPP, which Node exposes via errno.
+    if (
+      isFileSystemError(error, "EISDIR")
+      || isFileSystemError(error, "ENXIO")
+      || darwinSocketError
+    ) {
+      throw new ConfigLoadError("CONFIG_NOT_FILE");
+    }
+    throw new ConfigLoadError("CONFIG_READ_FAILED");
+  }
+
+  try {
+    let stats: ReturnType<typeof fstatSync>;
+    try {
+      stats = fstatSync(descriptor);
+    } catch {
+      throw new ConfigLoadError("CONFIG_READ_FAILED");
+    }
+    if (!stats.isFile()) {
+      throw new ConfigLoadError("CONFIG_NOT_FILE");
+    }
+    if (stats.size > MAX_CONFIG_FILE_BYTES) {
+      throw new ConfigLoadError("CONFIG_TOO_LARGE");
+    }
+
+    let buffer = Buffer.alloc(Math.min(
+      MAX_CONFIG_FILE_BYTES + 1,
+      Math.max(4_096, stats.size + 1),
+    ));
+    let bytesRead = 0;
+    try {
+      while (true) {
+        if (bytesRead === buffer.length) {
+          if (buffer.length === MAX_CONFIG_FILE_BYTES + 1) {
+            break;
+          }
+          const expanded = Buffer.alloc(Math.min(
+            MAX_CONFIG_FILE_BYTES + 1,
+            buffer.length * 2,
+          ));
+          buffer.copy(expanded);
+          buffer = expanded;
+        }
+        const count = readSync(
+          descriptor,
+          buffer,
+          bytesRead,
+          buffer.length - bytesRead,
+          null,
+        );
+        if (count === 0) {
+          break;
+        }
+        bytesRead += count;
+      }
+    } catch {
+      throw new ConfigLoadError("CONFIG_READ_FAILED");
+    }
+    if (bytesRead > MAX_CONFIG_FILE_BYTES) {
+      throw new ConfigLoadError("CONFIG_TOO_LARGE");
+    }
+
+    return parseConfigText(buffer.toString("utf8", 0, bytesRead));
+  } finally {
+    try {
+      closeSync(descriptor);
+    } catch {
+      // The read result or safe ConfigLoadError remains authoritative.
+    }
+  }
+}
+
+function parseConfigText(text: string): LocalYdbConfig {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new ConfigLoadError("CONFIG_INVALID_JSON");
+  }
+  const result = ConfigSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new ConfigLoadError("CONFIG_INVALID_SCHEMA");
+  }
+  return result.data;
+}
+
+function isFileSystemError(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 export function resolveProfile(config: LocalYdbConfig, profileName?: string): ResolvedLocalYdbProfile {
   const name = profileName ?? config.defaultProfile;
-  const profile = config.profiles[name];
+  const profile = Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
   if (!profile) {
     throw new Error(`Unknown local-ydb profile: ${name}`);
   }

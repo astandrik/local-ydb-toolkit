@@ -4,6 +4,10 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { decode } from "@toon-format/toon";
 import { StatusIds_StatusCode } from "@ydbjs/api/operation";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "@local-ydb-toolkit/core";
 import {
@@ -18,6 +22,7 @@ import {
 type ProtocolServer = LocalYdbMcpApplication | Server;
 
 const openConnections: Array<{ client: Client; server: ProtocolServer }> = [];
+const posixIt = process.platform === "win32" ? it.skip : it;
 
 afterEach(async () => {
   for (const { client, server } of openConnections.splice(0)) {
@@ -83,6 +88,14 @@ describe("MCP protocol contract", () => {
       name: "local_ydb_diagnose_stack",
       arguments: { prototype: "untrusted" },
     })).rejects.toThrow("Unknown argument prototype");
+    await expect(client.getPrompt({
+      name: "local_ydb_diagnose_stack",
+      arguments: { configPath: "relative.json" },
+    })).rejects.toThrow("must be an absolute path");
+    await expect(client.getPrompt({
+      name: "local_ydb_diagnose_stack",
+      arguments: { configPath: "" },
+    })).rejects.toThrow("must be an absolute path");
     expect(() => getLocalYdbPrompt(
       "local_ydb_diagnose_stack",
       JSON.parse('{"__proto__":"untrusted"}') as Record<string, string>,
@@ -159,6 +172,151 @@ describe("MCP protocol contract", () => {
       });
       expect(responseContentFormat === "json" ? JSON.parse(text) : decode(text)).toEqual(jsonModel);
     }
+  });
+
+  it("returns safe structured config errors without parser snippets or paths", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-mcp-config-error-"));
+    const configPath = join(dir, "config.json");
+    const marker = "BENIGN_MCP_CONFIG_MARKER";
+    writeFileSync(configPath, `${marker}\n`, "utf8");
+    try {
+      const { client } = await connect(createLocalYdbMcpApplication());
+      const result = await client.callTool({
+        name: "local_ydb_inventory",
+        arguments: { configPath },
+      });
+
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: "CONFIG_INVALID_JSON",
+          error: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(marker);
+      expect(JSON.stringify(result)).not.toContain(configPath);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a safe schema error when defaultProfile is not configured", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-mcp-default-profile-"));
+    const configPath = join(dir, "config.json");
+    const marker = "BENIGN_MCP_MISSING_DEFAULT_PROFILE";
+    writeFileSync(configPath, JSON.stringify({
+      defaultProfile: marker,
+      profiles: { default: {} },
+    }), "utf8");
+    try {
+      const { client } = await connect(createLocalYdbMcpApplication());
+      const result = await client.callTool({
+        name: "local_ydb_inventory",
+        arguments: { configPath },
+      });
+
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: "CONFIG_INVALID_SCHEMA",
+          error: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(marker);
+      expect(JSON.stringify(result)).not.toContain(configPath);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  posixIt("returns a safe non-file error for a Unix socket config path", async () => {
+    const marker = "p5m-";
+    const dir = mkdtempSync(join(tmpdir(), marker));
+    const configPath = join(dir, "s");
+    const socketServer = createServer();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+
+    const result = await (async () => {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          socketServer.once("error", reject);
+          socketServer.listen(configPath, resolve);
+        });
+        const { client } = await connect(createLocalYdbMcpApplication());
+        return await Promise.race([
+          client.callTool({
+            name: "local_ydb_inventory",
+            arguments: { configPath },
+          }),
+          new Promise<never>((_resolve, reject) => {
+            deadline = setTimeout(
+              () => reject(new Error("Unix socket config call exceeded 2 seconds")),
+              2_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (deadline !== undefined) {
+          clearTimeout(deadline);
+        }
+        if (socketServer.listening) {
+          await new Promise<void>((resolve) => socketServer.close(() => resolve()));
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }
+    })();
+
+    expect(existsSync(dir)).toBe(false);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        code: "CONFIG_NOT_FILE",
+        error: expect.any(String),
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(marker);
+    expect(JSON.stringify(result)).not.toContain(configPath);
+  });
+
+  it("treats an empty config environment value as explicit", async () => {
+    const previousConfigPath = process.env.LOCAL_YDB_TOOLKIT_CONFIG;
+    process.env.LOCAL_YDB_TOOLKIT_CONFIG = "";
+    try {
+      const { client } = await connect(createLocalYdbMcpApplication());
+      const result = await client.callTool({
+        name: "local_ydb_inventory",
+        arguments: {},
+      });
+
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          code: "CONFIG_PATH_NOT_ABSOLUTE",
+          error: expect.any(String),
+        },
+      });
+    } finally {
+      if (previousConfigPath === undefined) {
+        delete process.env.LOCAL_YDB_TOOLKIT_CONFIG;
+      } else {
+        process.env.LOCAL_YDB_TOOLKIT_CONFIG = previousConfigPath;
+      }
+    }
+  });
+
+  it("rejects unknown top-level MCP tool arguments", async () => {
+    const { client } = await connect(createLocalYdbMcpApplication({
+      config: ConfigSchema.parse({}),
+    }));
+    const result = await client.callTool({
+      name: "local_ydb_inventory",
+      arguments: { unexpected: true },
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: { error: expect.any(String) },
+    });
   });
 
   it("propagates client cancellation to the tool handler abort signal", async () => {

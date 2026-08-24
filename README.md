@@ -42,7 +42,7 @@ codex plugin add local-ydb-toolkit@local-ydb-toolkit
 
 Start a new Codex session after installation so the bundled skill and MCP server are loaded. The MCP launcher requires Node.js 20.19 or newer plus `npx`; its first start can access the npm registry to install the pinned `@astandrik/local-ydb-mcp@0.18.1` package.
 
-Agent Plugins start a stdio server with the installed plugin root as its working directory. Use an absolute `configPath` on profile-based tool calls, or set `LOCAL_YDB_TOOLKIT_CONFIG` in the MCP client environment. Do not rely on a project-local `local-ydb.config.json` being discovered from the caller's repository.
+Agent Plugins start a stdio server with the installed plugin root as its working directory. Use an absolute `configPath` on profile-based tool calls, or set `LOCAL_YDB_TOOLKIT_CONFIG` to an absolute path in the MCP client environment. An explicit path must name a readable regular JSON file no larger than 1 MiB; missing or invalid explicit files fail closed instead of selecting the default profile. Do not rely on a project-local `local-ydb.config.json` being discovered from the caller's repository.
 
 The public OpenAI submission artifact is deliberately skills-only because public MCP-backed submissions require a production HTTPS MCP server. Local Docker/YDB operations remain in the repo-marketplace plugin and the npm stdio package.
 
@@ -305,6 +305,8 @@ Example MCP client config for a local checkout:
 
 Start from `examples/local-ydb.config.example.json` and keep private hosts, SSH keys, password files, and backup paths outside committed config.
 
+Explicit configuration through `configPath` or `LOCAL_YDB_TOOLKIT_CONFIG` supports arbitrary absolute files. A present but empty environment value is still explicit and is rejected. The file must exist, be a readable regular file no larger than 1 MiB, match the strict configuration schema, and name an existing `profiles` entry in `defaultProfile`. Only an absent implicit `local-ydb.config.json` in the server's current working directory falls back to the built-in default profile; explicit configuration errors never do. Configuration errors expose a stable code without echoing file contents, parser snippets, or the absolute path.
+
 ### MCP Features
 
 The MCP server exposes tools for local-ydb operations and prompts for guided
@@ -312,7 +314,8 @@ workflows. Prompt templates cover stack diagnosis, root database bootstrap,
 database diagnostics, tenant topology bootstrap, schema generation/apply,
 version upgrades, auth hardening, and storage group reduction. Prompts do not execute commands; they
 return workflow instructions that guide the MCP client toward the existing
-`local_ydb_*` tools.
+`local_ydb_*` tools. When supplied to a prompt, `configPath` must be an absolute
+path, matching the tool-call contract.
 
 Mutating tools remain plan-only unless called with `confirm: true`. Static MCP
 resources are intentionally left for a separate follow-up so the server does not

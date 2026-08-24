@@ -57,6 +57,39 @@ Use these profiles from `examples/local-ydb.config.example.json`:
 
 Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profiles. Prefer the `ghcr261-*` pair for current testing.
 
+## Explicit Configuration Acceptance Flow
+
+Goal: verify that explicit config selection is absolute, fail-closed, and non-disclosing while the missing implicit cwd config retains the built-in fallback.
+
+Preparation:
+
+- Use a disposable directory outside the repository and a generic config with unique container, network, volume, and loopback-port values.
+- Keep a benign marker in invalid fixtures so response disclosure can be detected without using secrets.
+- Save and restore `LOCAL_YDB_TOOLKIT_CONFIG`; remove every disposable file and directory in `finally`.
+
+Positive controls:
+
+1. Start the MCP server with `LOCAL_YDB_TOOLKIT_CONFIG` unset from an empty disposable cwd. With no `local-ydb.config.json`, `local_ydb_inventory` uses the built-in default profile.
+2. Call `local_ydb_inventory` with `configPath` set to the disposable config's absolute path. The selected disposable profile is used without restarting the server.
+3. Start a fresh MCP process with `LOCAL_YDB_TOOLKIT_CONFIG` set to the same absolute path. Omitting `configPath` selects that profile.
+
+Negative controls:
+
+| Input | Expected boundary/result |
+| --- | --- |
+| empty tool `configPath` | rejected by the MCP input schema before config loading |
+| empty or relative `LOCAL_YDB_TOOLKIT_CONFIG`; relative tool `configPath` | `CONFIG_PATH_NOT_ABSOLUTE` |
+| missing absolute file | `CONFIG_NOT_FOUND` |
+| directory, POSIX FIFO without a writer, listening Unix-domain socket, or other non-regular file | bounded `CONFIG_NOT_FILE` without waiting for special-file input |
+| file larger than 1 MiB | `CONFIG_TOO_LARGE` |
+| unreadable file | `CONFIG_READ_FAILED` |
+| malformed JSON containing the benign marker | `CONFIG_INVALID_JSON` |
+| valid JSON with an unknown config key or a `defaultProfile` absent from `profiles`, containing the benign marker | `CONFIG_INVALID_SCHEMA` |
+
+For every config error, require `isError=true`, the exact stable `structuredContent.code`, and a fixed safe message. Neither `content` nor `structuredContent` may contain the absolute path, file contents, benign marker, JSON parser context, Zod input, stack, cause, or filesystem details. No negative control may fall back to the built-in profile or reach Docker/YDB operations.
+
+On POSIX, create the FIFO without a writer and require the MCP call to return within the client deadline. Also bind a short-path listening Unix-domain socket and require the same bounded `CONFIG_NOT_FILE`; close each special file before removing its disposable directory in `finally`. On platforms without POSIX special files, rely on the deterministic unit tests for the same open/error/fstat contract.
+
 ## Global Rules
 
 - Run `local_ydb_check_prerequisites` first on a new host or profile.

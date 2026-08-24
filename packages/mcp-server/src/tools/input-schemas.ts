@@ -8,11 +8,12 @@ function profileProperty(): { type: "string"; description: string } {
   };
 }
 
-function configPathProperty(): { type: "string"; description: string } {
+function configPathProperty(): { type: "string"; minLength: number; description: string } {
   return {
     type: "string",
+    minLength: 1,
     description:
-      "Explicit local-ydb config file path to load for this tool call. Useful when the MCP server should pick up a different config without restart.",
+      "Absolute path to an explicit local-ydb config file. Missing, unreadable, oversized, or invalid explicit files fail closed instead of using defaults.",
   };
 }
 

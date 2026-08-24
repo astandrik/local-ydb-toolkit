@@ -32,7 +32,9 @@ Use `npx` so clients can run the server without a manual checkout:
 
 This form checks the npm registry when the MCP server starts, so clients pick up newly published versions after restarting the MCP client.
 
-The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. If that file is missing, it uses a default local profile with `ghcr.io/ydb-platform/local-ydb:stable-26-1-1`. This named upstream tag is mutable. Set `profiles.<name>.image` explicitly to control upgrades; use a digest for immutable pulls, noting that `local_ydb_upgrade_version` does not accept digest-pinned source profiles.
+The config file is optional. If `LOCAL_YDB_TOOLKIT_CONFIG` is not set, the server reads `local-ydb.config.json` from the current working directory. A present but empty environment value is explicit and returns `CONFIG_PATH_NOT_ABSOLUTE`. If the implicit file is absent, the server uses a default local profile with `ghcr.io/ydb-platform/local-ydb:stable-26-1-1`. `LOCAL_YDB_TOOLKIT_CONFIG` and per-call `configPath` values must be absolute and must name a readable regular JSON file no larger than 1 MiB. The configured `defaultProfile` must name an existing `profiles` entry. Missing, unreadable, oversized, malformed, or schema-invalid explicit files fail closed and return a stable error code without exposing file contents, parser snippets, or the absolute path.
+
+The named upstream default tag is mutable. Set `profiles.<name>.image` explicitly to control upgrades; use a digest for immutable pulls, noting that `local_ydb_upgrade_version` does not accept digest-pinned source profiles.
 
 After a package update changes the implicit default, an existing stack created with the previous default will fail the profile compatibility check instead of mixing YDB images. Add the stack's current image reference to a file-backed profile before restart or bootstrap, then use `local_ydb_upgrade_version` for an intentional dump-and-rebuild upgrade.
 
@@ -44,7 +46,8 @@ The server exposes local-ydb operation tools and static MCP prompts. Prompt
 templates guide stack diagnosis, root database bootstrap, tenant topology
 bootstrap, database diagnostics, schema generation/apply, version upgrades,
 auth hardening, and storage group reduction. Prompts return workflow instructions only; they do not
-execute commands.
+execute commands. A prompt `configPath`, when supplied, must be an absolute path
+just like the corresponding tool argument.
 
 Mutating tools remain plan-only unless called with `confirm: true`.
 

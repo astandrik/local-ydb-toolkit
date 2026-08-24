@@ -3,8 +3,8 @@ import type { SqlParameter } from "@local-ydb-toolkit/core";
 
 export const ProfileArgs = z.object({
   profile: z.string().optional(),
-  configPath: z.string().optional(),
-});
+  configPath: z.string().min(1).optional(),
+}).strict();
 
 export const LogsArgs = ProfileArgs.extend({
   target: z.enum(["static", "dynamic"]),
@@ -625,7 +625,7 @@ export const ListVersionsArgs = z.object({
   image: z.string().optional(),
   pageSize: z.number().int().positive().max(1000).optional(),
   maxPages: z.number().int().positive().max(100).optional(),
-});
+}).strict();
 
 export const PullImageArgs = MutatingArgs.extend({
   image: z.string().min(1).optional(),
@@ -633,7 +633,7 @@ export const PullImageArgs = MutatingArgs.extend({
 
 export const PullStatusArgs = z.object({
   jobId: z.string().min(1),
-});
+}).strict();
 
 export const UpgradeVersionArgs = MutatingArgs.extend({
   version: z.string().min(1),

@@ -6,6 +6,7 @@ import {
   GetPromptRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { ConfigLoadError } from "@local-ydb-toolkit/core";
 import { localYdbMcpServerVersion } from "./metadata.js";
 import { getLocalYdbPrompt, registerLocalYdbPrompts } from "./prompts.js";
 import { resolveResponseContentFormat } from "./response-format.js";
@@ -57,6 +58,7 @@ export function createLocalYdbMcpApplication(
     } catch (error) {
       return errorResult(
         error instanceof Error ? error.message : String(error),
+        error instanceof ConfigLoadError ? error.code : undefined,
       );
     }
   });

@@ -43,6 +43,14 @@ Use one of these mechanisms:
 1. Set `LOCAL_YDB_TOOLKIT_CONFIG` in the MCP client environment to an absolute path.
 2. Pass an absolute `configPath` to a profile-based tool call that supports it.
 
+An explicit path must name a readable regular JSON file no larger than 1 MiB
+and must match the strict configuration schema. Its `defaultProfile` must name
+an existing entry in `profiles`. Missing or invalid explicit
+files fail closed; they never switch the call to the built-in default profile.
+Only an absent implicit `local-ydb.config.json` in the MCP process working
+directory uses that fallback. Configuration errors return stable codes without
+echoing file contents, parser context, or the absolute path.
+
 Agent Plugin MCP processes start from the installed plugin root. Do not rely on
 a `local-ydb.config.json` in the caller's repository being the current working
 directory.
