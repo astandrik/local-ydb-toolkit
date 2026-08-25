@@ -7,10 +7,15 @@ const fileSystemFixture = vi.hoisted(() => ({
   path: "/sentinel/local-ydb-confirmation-input",
   socketPath: "/sentinel/local-ydb-confirmation-input.sock",
   deniedPath: "/sentinel/local-ydb-confirmation-input.denied",
+  oversizedPath: "/sentinel/local-ydb-confirmation-input.oversized",
   descriptor: 97_531,
+  oversizedDescriptor: 97_532,
+  oversizedSize: 16 * 1024 * 1024 + 1,
   openFlags: undefined as Parameters<typeof import("node:fs").openSync>[1] | undefined,
   pathStatCalls: 0,
+  oversizedReadCalls: 0,
   closed: false,
+  oversizedClosed: false,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -53,6 +58,10 @@ vi.mock("node:fs", async (importOriginal) => {
         fileSystemFixture.openFlags = flags;
         return fileSystemFixture.descriptor;
       }
+      if (path === fileSystemFixture.oversizedPath) {
+        fileSystemFixture.openFlags = flags;
+        return fileSystemFixture.oversizedDescriptor;
+      }
       return actual.openSync(path, flags, mode);
     },
     fstatSync: (descriptor: number) => (
@@ -61,6 +70,11 @@ vi.mock("node:fs", async (importOriginal) => {
             isFile: () => true,
             size: 0,
           } as ReturnType<typeof actual.fstatSync>
+        : descriptor === fileSystemFixture.oversizedDescriptor
+          ? {
+              isFile: () => true,
+              size: fileSystemFixture.oversizedSize,
+            } as ReturnType<typeof actual.fstatSync>
         : actual.fstatSync(descriptor)
     ),
     readSync: (
@@ -69,12 +83,23 @@ vi.mock("node:fs", async (importOriginal) => {
       offset: number,
       length: number,
       position: number | null,
-    ) => descriptor === fileSystemFixture.descriptor
-      ? 0
-      : actual.readSync(descriptor, buffer, offset, length, position),
+    ) => {
+      if (descriptor === fileSystemFixture.descriptor) {
+        return 0;
+      }
+      if (descriptor === fileSystemFixture.oversizedDescriptor) {
+        fileSystemFixture.oversizedReadCalls += 1;
+        return 0;
+      }
+      return actual.readSync(descriptor, buffer, offset, length, position);
+    },
     closeSync: (descriptor: number) => {
       if (descriptor === fileSystemFixture.descriptor) {
         fileSystemFixture.closed = true;
+        return;
+      }
+      if (descriptor === fileSystemFixture.oversizedDescriptor) {
+        fileSystemFixture.oversizedClosed = true;
         return;
       }
       actual.closeSync(descriptor);
@@ -82,7 +107,10 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-import { confirmationContentIntent } from "../src/confirmation-inputs.js";
+import {
+  confirmationContentIntent,
+  MAX_CONFIRMATION_FILE_BYTES,
+} from "../src/confirmation-inputs.js";
 import { createContext } from "../src/operations/context.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -90,7 +118,9 @@ describe("confirmation special-file inputs", () => {
   beforeEach(() => {
     fileSystemFixture.openFlags = undefined;
     fileSystemFixture.pathStatCalls = 0;
+    fileSystemFixture.oversizedReadCalls = 0;
     fileSystemFixture.closed = false;
+    fileSystemFixture.oversizedClosed = false;
   });
 
   it("fingerprints local files through one nonblocking descriptor without a path stat", async () => {
@@ -159,5 +189,22 @@ describe("confirmation special-file inputs", () => {
     );
     expect(fileSystemFixture.pathStatCalls).toBe(0);
     expect(fileSystemFixture.closed).toBe(false);
+  });
+
+  it("rejects oversized local credential files before synchronous hashing", async () => {
+    const context = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(confirmationContentIntent(context, [{
+      kind: "file",
+      path: fileSystemFixture.oversizedPath,
+      role: "fixture-oversized",
+    }])).rejects.toThrow("Unable to fingerprint a confirmation content input");
+
+    expect(fileSystemFixture.oversizedSize).toBe(MAX_CONFIRMATION_FILE_BYTES + 1);
+    expect(fileSystemFixture.openFlags).toBe(
+      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0),
+    );
+    expect(fileSystemFixture.oversizedReadCalls).toBe(0);
+    expect(fileSystemFixture.oversizedClosed).toBe(true);
   });
 });

@@ -22,6 +22,10 @@ import {
   COMPOSITE_DUMP_SNAPSHOT_COMMAND,
   createCompositeDumpSnapshot,
 } from "./composite-dump.js";
+import {
+  COMPOSITE_AUTH_CLEANUP_FAILURE,
+  createCompositeAuthArtifacts,
+} from "./composite-auth.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
 import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
 import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
@@ -188,7 +192,22 @@ export async function reduceStorageGroups(
     inventoryState.containers.map((container) => container.names)
   );
   const phaseCtx = withoutConfirmation(ctx);
-  const finalCtx = authReapplyPlanned ? phaseCtx : rebuildCtx;
+  const finalBaseCtx = authReapplyPlanned ? phaseCtx : rebuildCtx;
+  const authArtifactScope = authReapplyPlanned
+    ? {
+        kind: "storage-rebuild-generated-auth",
+        request: {
+          count: groupsToRemove,
+          dumpName,
+          poolName: pool.name,
+          targetNumGroups,
+        },
+      }
+    : undefined;
+  const authArtifacts = authArtifactScope
+    ? createCompositeAuthArtifacts(ctx, finalBaseCtx, authArtifactScope)
+    : undefined;
+  const finalCtx = authArtifacts?.context ?? finalBaseCtx;
 
   const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
   const preparedExtraDynamicContainers = extraDynamicNodes.map((node) => node.container);
@@ -201,9 +220,10 @@ export async function reduceStorageGroups(
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
     ? [
-        await prepareAuthConfig(phaseCtx, { confirm: false }),
-        await writeDynamicNodeAuthConfig(phaseCtx, { confirm: false, sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin" }),
-        await applyAuthHardening(phaseCtx, { confirm: false })
+        await prepareAuthConfig(finalCtx, { confirm: false }),
+        await writeDynamicNodeAuthConfig(finalCtx, { confirm: false, sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin" }),
+        await authArtifacts!.persist({ confirm: false }),
+        await applyAuthHardening(finalCtx, { confirm: false })
       ]
     : [];
   const extraDynamicPlans = [];
@@ -226,7 +246,7 @@ export async function reduceStorageGroups(
     ...restorePlan.plannedCommands,
     ...reapplyPlans.flatMap((plan) => plan.plannedCommands),
     ...extraDynamicPlans.flatMap((plan) => plan.plannedCommands)
-  ];
+  ].map((command) => authArtifacts?.redact(command) ?? command);
   const rollback = [
     `Restore ${ctx.profile.tenantPath} from dump ${dumpName} onto the previous storage layout if the rebuild stops mid-flight.`,
     "Auth artifacts are preserved; rerun local_ydb_prepare_auth_config, local_ydb_write_dynamic_auth_config, and local_ydb_apply_auth_hardening if auth reapply needs to be repeated."
@@ -254,6 +274,8 @@ export async function reduceStorageGroups(
     risk: "high",
     rollback,
     verification,
+  }, {
+    rotatingScope: authArtifactScope,
   });
   if (!decision.execute) {
     return attachConfirmation({
@@ -276,8 +298,10 @@ export async function reduceStorageGroups(
       extraDynamicNodes: extraDynamicNodes.map((node) => node.container)
     }, decision.confirmation);
   }
-  const confirmed = (response: ReduceStorageGroupsResponse) =>
-    attachConfirmation(response, decision.confirmation);
+  const confirmed = (response: ReduceStorageGroupsResponse) => {
+    authArtifacts?.redactResults(response.results ?? []);
+    return attachConfirmation(response, decision.confirmation);
+  };
 
   const results: CommandResult[] = [];
 
@@ -309,16 +333,19 @@ export async function reduceStorageGroups(
     }
 
     if (authReapplyPlanned) {
-      if (!await runOperation(results, await prepareAuthConfig(phaseCtx, { confirm: true }))) {
+      if (!await runOperation(results, await prepareAuthConfig(finalCtx, { confirm: true }))) {
         return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
       }
-      if (!await runOperation(results, await writeDynamicNodeAuthConfig(phaseCtx, {
+      if (!await runOperation(results, await writeDynamicNodeAuthConfig(finalCtx, {
         confirm: true,
         sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin"
       }))) {
         return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
       }
-      if (!await runOperation(results, await applyAuthHardening(phaseCtx, { confirm: true }))) {
+      if (!await runOperation(results, await authArtifacts!.persist({ confirm: true }))) {
+        return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+      }
+      if (!await runOperation(results, await applyAuthHardening(finalCtx, { confirm: true }))) {
         return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
       }
     }
@@ -362,8 +389,13 @@ export async function reduceStorageGroups(
 
     return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results));
   } finally {
-    if (!await dumpSnapshot.remove()) {
+    const dumpRemoved = await dumpSnapshot.remove();
+    const authRemoved = await authArtifacts?.remove() ?? true;
+    if (!dumpRemoved) {
       throw new Error(COMPOSITE_DUMP_CLEANUP_FAILURE);
+    }
+    if (!authRemoved) {
+      throw new Error(COMPOSITE_AUTH_CLEANUP_FAILURE);
     }
   }
 }

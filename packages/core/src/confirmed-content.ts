@@ -15,6 +15,7 @@ import {
   confirmationContentKey,
   confirmationContentSnapshotPlaceholder,
   confirmationHashShellFunctions,
+  MAX_CONFIRMATION_FILE_BYTES,
   type ConfirmationContentBinding,
   type ConfirmationContentFingerprint,
 } from "./confirmation-inputs.js";
@@ -140,8 +141,12 @@ async function prepareSnapshots(
       const copyLines = fingerprint.kind === "file"
         ? [
             `[ -f ${shellQuote(fingerprint.path)} ]`,
+            `size=$(file_size ${shellQuote(fingerprint.path)})`,
+            `[ "$size" -le ${MAX_CONFIRMATION_FILE_BYTES} ]`,
             `cp -p ${shellQuote(fingerprint.path)} ${shellQuote(snapshotPath)} >/dev/null 2>&1`,
             `chmod 0600 ${shellQuote(snapshotPath)}`,
+            `size=$(file_size ${shellQuote(snapshotPath)})`,
+            `[ "$size" -le ${MAX_CONFIRMATION_FILE_BYTES} ]`,
             `${actual}=$(hash_file ${shellQuote(snapshotPath)})`,
           ]
         : [

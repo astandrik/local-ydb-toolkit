@@ -68,6 +68,7 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - A missing, malformed, changed-plan, replayed, or pre-restart token must execute nothing and returns `confirmation.status="rejected"` with a fresh plan/token. No-op responses use `not-required`; successful consumption uses `accepted`.
 - If a package or image becomes present between plan and confirm, the no-op response must use `not-required` and retire any valid submitted process token; making the resource missing again must not make that token executable.
 - Changing a configured auth/password file or a file inside the selected standalone restore dump between plan and confirm must reject the old token; file contents and private fingerprints must never appear in either response.
+- A configured auth/password file larger than 16 MiB must fail before hashing or mutation with no path, size, contents, or filesystem details in the response; the same bound applies to local and SSH targets.
 - After acceptance, replace the canonical auth config, root-password backup input, dynamic-node token, or restore file before its mutation consumer runs. The consumer must observe the reviewed snapshot bytes or fail closed; credential-only reads may change authentication success/failure but not mutation payloads. Responses must omit contents, digests, and actual snapshot paths, and cleanup must remove every snapshot after success, failure, or abort.
 - Marker-shaped user arguments that happen to equal an internal content placeholder must remain byte-for-byte unchanged unless that exact command field has a declared content binding.
 - Treat the token as an ephemeral capability. Do not log it, paste it into reusable notes, persist it across sessions, or treat possession as proof of human approval; the MCP host/client remains responsible for that approval.
@@ -86,6 +87,7 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Tenant bootstrap recreates configured containers in index order, even when a stale container is already running. Readiness requires a stable running exact container plus IC registration; a matching nodelist port alone is insufficient.
 - Default `local_ydb_add_dynamic_nodes` starts at `dynamicNodeCount + 1`; an explicit `startIndex` must be greater than `dynamicNodeCount`, and higher suffixes are one-off runtime nodes.
 - Default `local_ydb_remove_dynamic_nodes` considers only suffixes above `dynamicNodeCount`; explicit selectors or `startIndex` can remove a configured suffix and create drift.
+- Dynamic-node removal binds the token and final command to the inspected Docker container ID. Replacing a selected container under the same name before confirm rejects the token; replacing it after acceptance makes the exact-ID command fail without removing the replacement.
 - Before any restart mutation, the existing static container must pass the full profile check, including exact configured loopback bindings. A mismatch leaves all container IDs and states unchanged and requires destroy/bootstrap.
 - Restart unconditionally recreates every configured container, including containers observed restarting. It reports missing configured and unexpected one-off containers, never removes unexpected containers, and attempts to restore every preflight-running unexpected container even when restart fails.
 - Restart rollback uses restart or bootstrap reconciliation because inventory does not retain removed configured container definitions.
@@ -94,6 +96,7 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Partial primary starts and one-off additions repeat the full static compatibility preflight after checking image presence and immediately before every dynamic container launch. Each container is created but not started until its resolved immutable image ID matches the static container; a concurrent named-tag refresh removes the never-started container and fails closed before later nodes, while a preflight mismatch requires destroy followed by bootstrap.
 - Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy; an incomplete container definition aborts the rebuild before destructive work. The reviewed one-off container set is frozen for teardown, and a late container must not be added to deletion.
 - Both composite rebuilds make a private verified copy of the generated dump before teardown and restore only from that copy. The copy is removed after success, failure, or abort and can require temporary space up to the full dump size when copy-on-write is unavailable.
+- Auth-enabled composite rebuilds generate config, dynamic token, and root credential in a private workspace, persist those exact bytes to the configured host paths, and continue auth reapply and node recreation only from the private copies. Replacing a canonical artifact after persistence must not change the applied bytes, and cleanup removes the private workspace.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
 
 ## Declarative Topology Acceptance Flow
@@ -148,6 +151,7 @@ Expected:
 - `explain` returns a plan or AST without side effects.
 - `execute` always performs mandatory EXPLAIN first. A successful plan call returns `outcome=planned` and a token; the exact repeat call with that token sends one NoTx execution and performs no retries.
 - Invalid YQL is blocked by failed preflight with `executed=false`, `confirmationConsumed=false`, and `confirmation.status=not-required` because no executable plan was produced.
+- If a token was issued after a successful `EXPLAIN` but the confirm-time `EXPLAIN` fails, that submitted current-process token is retired. A recovered preflight must reject its replay and execute zero NoTx calls; malformed or foreign-process tokens remain unrecorded.
 - Parameter names are bare names, declarations are generated deterministically, and response metadata contains canonical parameter types with configured credential paths redacted but does not echo supplied parameter values. Selected result rows can still contain those values.
 - `maxRows` truncates a result set only between complete rows; the first row-limit hit stops all further result capture (read-only execution cancels, confirmed `NoTx` drains). `maxOutputBytes` is shared across captured issues, plan/AST, metadata, and rows.
 - The byte-limit call's placeholder is documentation only; replace it with an actual value of at least 4096 characters, or an equivalent fixture that reliably exceeds the 256-byte capture budget.
@@ -753,6 +757,7 @@ Expected:
 
 - immediately after Scenario 11, default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`
 - `confirm=true` removes that container and verifies its IC port disappears from authenticated `nodelist`
+- planning records the selected container ID; replacing the container under the same name before confirm rejects the token, while replacement after acceptance makes the exact-ID remove fail and preserves the replacement
 - rollback for the removed one-off node uses `local_ydb_add_dynamic_nodes` with matching suffixes and ports, not restart/bootstrap
 - configured containers `ydb-dyn-example-ghcr261`, `-2`, and `-3` remain running with unchanged Docker IDs
 - after all one-off nodes are removed, another default call fails with `found 0` and returns no destructive plan
@@ -857,6 +862,7 @@ Expected:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
+- those three artifacts are generated in a private workspace, persisted to their configured paths, and consumed only from the private copies through auth reapply and extra-node recreation
 - extra dynamic-node suffixes are re-added after restore/auth reapply
 - every one-off node keeps its inspected gRPC, monitoring, and IC ports; an incomplete inspect aborts before dump or destroy
 - a one-off container appearing after token acceptance is not added to teardown
@@ -897,6 +903,7 @@ Expected:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
+- those three artifacts are generated in a private workspace, persisted to their configured paths, and consumed only from the private copies through auth reapply and extra-node recreation
 - successful final inventory verifies the recreated containers' image tags and returns a manual `profileImageUpdate`; it does not write the config
 - after independent image and data readback, manually set `profiles.<name>.image` to the target tag; ordinary files, symlinks, and concurrent edits must remain untouched by the tool
 - a container appearing after token acceptance is not added to teardown

@@ -4,6 +4,7 @@ import {
   attachNotRequiredConfirmation,
   authorizeMutation,
   confirmationSummarySuffix,
+  retireSubmittedConfirmation,
 } from "../confirmation.js";
 import { redactText } from "../auth.js";
 import type { SqlParameter } from "../sql-parameter-types.js";
@@ -192,6 +193,7 @@ export async function sql(
 
   const { result: preflight } = await run("explain");
   if (preflight.completion !== "success") {
+    retireSubmittedConfirmation(ctx, options);
     return attachNotRequiredConfirmation(ctx, responseWithResults({
       ...common,
       summary: preflight.completion === "partial"

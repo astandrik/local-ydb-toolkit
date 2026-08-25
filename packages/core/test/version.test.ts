@@ -147,6 +147,10 @@ function stubUpgradeExecutor(
     dumpSymlink?: boolean;
     captureCompositeRoot?: (path: string) => void;
     throwOnFirstDestroy?: boolean;
+    afterAuthPersist?: () => void;
+    captureAppliedAuth?: (content: string) => void;
+    captureAuthRoot?: (path: string) => void;
+    failAuthPersist?: boolean;
   } = {}
 ): void {
   let dockerPsCalls = 0;
@@ -196,8 +200,47 @@ function stubUpgradeExecutor(
     if (spec.description === "Remove private composite dump snapshot") {
       return runSpecSynchronously(executor, _profile, spec);
     }
+    if (spec.description === "Remove private composite auth artifacts") {
+      return runSpecSynchronously(executor, _profile, spec);
+    }
     const command = executor.display(_profile, spec);
     executor.commands.push(command);
+    const rawScript = spec.args?.[1] ?? "";
+    const authRoot = /\/tmp\/local-ydb-toolkit-composite-auth-[A-Za-z0-9_-]+/.exec(rawScript)?.[0];
+
+    if (authRoot && rawScript.includes("ruby -ryaml -e")) {
+      options.captureAuthRoot?.(authRoot);
+      mkdirSync(authRoot, { recursive: true, mode: 0o700 });
+      writeFileSync(join(authRoot, "config.yaml"), "BENIGN_GENERATED_AUTH\n", { mode: 0o600 });
+      writeFileSync(join(authRoot, "root.password"), "BENIGN_GENERATED_ROOT\n", { mode: 0o600 });
+    }
+    if (authRoot && rawScript.includes("StaffApiUserToken")) {
+      mkdirSync(authRoot, { recursive: true, mode: 0o700 });
+      writeFileSync(join(authRoot, "dynamic-token.txt"), "BENIGN_GENERATED_DYNAMIC\n", { mode: 0o600 });
+    }
+    if (spec.description === "Persist privately generated auth artifacts") {
+      if (options.failAuthPersist) {
+        return {
+          command,
+          exitCode: 1,
+          stdout: "",
+          stderr: "BENIGN_PRIVATE_AUTH_PERSIST_FAILURE",
+          ok: false,
+          timedOut: false,
+        };
+      }
+      const persisted = runSpecSynchronously(executor, _profile, spec);
+      if (persisted.ok) {
+        options.afterAuthPersist?.();
+      }
+      return persisted;
+    }
+    if (spec.description === "Copy confirmed auth config snapshot into the static container") {
+      const snapshot = /confirmed_config_snapshot=([A-Za-z0-9_./-]+)/.exec(rawScript)?.[1];
+      if (snapshot && existsSync(snapshot)) {
+        options.captureAppliedAuth?.(readFileSync(snapshot, "utf8"));
+      }
+    }
 
     if (options.throwOnFirstDestroy && !destroyThrown && command.includes("docker rm -f")) {
       destroyThrown = true;
@@ -692,6 +735,100 @@ describe("version operations", () => {
         profiles: { default: { image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" } },
       });
       expect(statSync(configPath).mode & 0o777).toBe(0o640);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("applies privately generated auth bytes when canonical artifacts change after persistence", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig();
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    const authConfigPath = (rawConfig.profiles.default as { authConfigPath: string }).authConfigPath;
+    let appliedAuth: string | undefined;
+    let privateRoot: string | undefined;
+    try {
+      const context = createContext(
+        undefined,
+        executor,
+        ConfigSchema.parse(rawConfig),
+        configPath,
+      );
+      const ctx = exactConfirmationContext(context);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        realContentSnapshots: true,
+        captureAuthRoot: (path) => {
+          privateRoot = path;
+        },
+        afterAuthPersist: () => {
+          writeFileSync(authConfigPath, "BENIGN_CANONICAL_REPLACEMENT\n", "utf8");
+        },
+        captureAppliedAuth: (content) => {
+          appliedAuth = content;
+        },
+      });
+      const request = {
+        version: "26.1.2.0",
+        dumpName: "upgrade-private-auth",
+      };
+
+      const planned = await upgradeVersion(ctx, request);
+      const accepted = await withRunTimers(() => upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      }));
+
+      expect(accepted.confirmation).toEqual({ status: "accepted" });
+      expect(appliedAuth).toBe("BENIGN_GENERATED_AUTH\n");
+      expect(readFileSync(authConfigPath, "utf8")).toBe("BENIGN_CANONICAL_REPLACEMENT\n");
+      expect(JSON.stringify(accepted)).not.toContain("/tmp/local-ydb-toolkit-composite-auth-");
+      expect(privateRoot).toMatch(/^\/tmp\/local-ydb-toolkit-composite-auth-/);
+      expect(privateRoot && existsSync(privateRoot)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("consumes the token and removes private auth artifacts when persistence fails", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig();
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    let privateRoot: string | undefined;
+    try {
+      const context = createContext(
+        undefined,
+        executor,
+        ConfigSchema.parse(rawConfig),
+        configPath,
+      );
+      const ctx = exactConfirmationContext(context);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        captureAuthRoot: (path) => {
+          privateRoot = path;
+        },
+        failAuthPersist: true,
+      });
+      const request = {
+        version: "26.1.2.0",
+        dumpName: "upgrade-private-auth-persist-failure",
+      };
+      const planned = await upgradeVersion(ctx, request);
+      const confirmedRequest = {
+        ...request,
+        confirm: true as const,
+        confirmationToken: planned.confirmation?.token,
+      };
+
+      const failed = await withRunTimers(() => upgradeVersion(ctx, confirmedRequest));
+      const replay = await upgradeVersion(ctx, confirmedRequest);
+
+      expect(failed.confirmation).toEqual({ status: "accepted" });
+      expect(failed.results?.some((result) => result.stderr.includes("BENIGN_PRIVATE_AUTH_PERSIST_FAILURE"))).toBe(true);
+      expect(replay.confirmation?.status).toBe("rejected");
+      expect(privateRoot).toMatch(/^\/tmp\/local-ydb-toolkit-composite-auth-/);
+      expect(privateRoot && existsSync(privateRoot)).toBe(false);
+      expect(JSON.stringify(failed)).not.toContain("/tmp/local-ydb-toolkit-composite-auth-");
     } finally {
       cleanup();
     }

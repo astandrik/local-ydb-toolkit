@@ -384,6 +384,51 @@ describe("managed SQL operation", () => {
     }
   });
 
+  it("retires a submitted token when the repeated execute preflight fails", async () => {
+    const sql = await loadSql();
+    const ctx = confirmationContext();
+    let explainCalls = 0;
+    let executionCalls = 0;
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      if (request.mode === "noTx") {
+        executionCalls += 1;
+        return successfulResult();
+      }
+      explainCalls += 1;
+      return explainCalls === 2
+        ? {
+            completion: "failed",
+            resultSets: [],
+            capturedBytes: 0,
+            truncationReasons: [],
+          }
+        : successfulResult();
+    };
+    const request = {
+      action: "execute" as const,
+      script: "DELETE FROM items WHERE id = 1;",
+    };
+
+    const planned = await sql(ctx, request, backend);
+    const confirmedRequest = {
+      ...request,
+      confirm: true as const,
+      confirmationToken: planned.confirmation?.token,
+    };
+    const blocked = await sql(ctx, confirmedRequest, backend);
+    const replay = await sql(ctx, confirmedRequest, backend);
+
+    expect(blocked).toMatchObject({
+      executed: false,
+      confirmation: { status: "not-required" },
+    });
+    expect(replay).toMatchObject({
+      executed: false,
+      confirmation: { status: "rejected", token: expect.any(String) },
+    });
+    expect(executionCalls).toBe(0);
+  });
+
   it("blocks execution and hides error text when preflight throws", async () => {
     // Production break caught: a thrown EXPLAIN can escape as raw diagnostics
     // or fall through to a mutation attempt.

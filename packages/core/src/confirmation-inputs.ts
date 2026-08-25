@@ -34,6 +34,7 @@ export type ConfirmationContentFingerprint = ConfirmationContentInput & {
 
 const READ_BUFFER_BYTES = 64 * 1024;
 const CONTENT_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+export const MAX_CONFIRMATION_FILE_BYTES = 16 * 1024 * 1024;
 const CONTENT_DIGEST_PLACEHOLDER_PREFIX = "__LOCAL_YDB_CONFIRMATION_DIGEST_";
 const CONTENT_SNAPSHOT_PLACEHOLDER_PREFIX = "__LOCAL_YDB_CONFIRMATION_SNAPSHOT_";
 
@@ -81,6 +82,11 @@ export function confirmationHashShellFunctions(): string[] {
     "  if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; return; fi",
     "  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'; return; fi",
     "  if command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 -r | awk '{print $1}'; return; fi",
+    "  return 127",
+    "}",
+    "file_size() {",
+    "  if stat -f '%z' \"$1\" >/dev/null 2>&1; then stat -f '%z' \"$1\"; return; fi",
+    "  if stat -c '%s' -- \"$1\" >/dev/null 2>&1; then stat -c '%s' -- \"$1\"; return; fi",
     "  return 127",
     "}",
     "hash_directory() {",
@@ -196,6 +202,9 @@ function fingerprintLocalFileInput(
     if (!stats.isFile()) {
       return { ...input, state: "not-file" };
     }
+    if (stats.size > MAX_CONFIRMATION_FILE_BYTES) {
+      throw new Error("Unable to fingerprint a confirmation content input");
+    }
     return {
       ...input,
       state: "file",
@@ -227,6 +236,12 @@ async function fingerprintShellInput(
     ...confirmationHashShellFunctions(),
     `if [ ! -e ${quotedPath} ]; then printf 'missing\\n'; exit 0; fi`,
     `if [ ! ${typeCheck} ${quotedPath} ]; then printf '${wrongType}\\n'; exit 0; fi`,
+    ...(input.kind === "file"
+      ? [
+          `size=$(file_size ${quotedPath})`,
+          `[ "$size" -le ${MAX_CONFIRMATION_FILE_BYTES} ]`,
+        ]
+      : []),
     `digest=$(${digestCommand})`,
     `printf '${input.kind}:%s\\n' \"$digest\"`,
   ].join("\n");

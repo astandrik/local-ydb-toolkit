@@ -38,8 +38,10 @@ fingerprints are never returned. The token is valid only until use or MCP
 restart and is consumed before the first side effect. A missing, changed,
 replayed, or pre-restart token executes nothing and returns a fresh plan/token.
 A valid submitted token is also retired when a refreshed prerequisite or image
-check makes the requested mutation a no-op, so it cannot become executable
-again if state changes later. Content placeholders are resolved only in their
+check makes the requested mutation a no-op, or when repeated DDL validation or
+SQL `EXPLAIN` blocks a submitted confirmation, so it cannot become executable
+again if state changes later. Configured auth/password files are rejected above
+16 MiB before hashing. Content placeholders are resolved only in their
 declared internal command fields; marker-shaped user arguments are not scanned
 or rewritten globally.
 
@@ -57,7 +59,12 @@ equal to the full dump size. Composite storage reduction and version upgrade
 make the same kind of private verified copy immediately after generating their
 dump and before teardown, then restore only from that copy. Their teardown
 container set is frozen from the reviewed inventory instead of expanding to
-late arrivals. Version upgrade never rewrites the profile config automatically.
+late arrivals. Auth-enabled composite rebuilds generate config, dynamic token,
+and root credential in a separate private workspace, persist those bytes to the
+configured host files, and keep using only the private copies through auth
+reapply and dynamic-node recreation. Dynamic-node removal binds both the token
+and the final remove command to the inspected Docker container ID, so a
+same-name replacement survives. Version upgrade never rewrites the profile config automatically.
 After independently verifying container images and restored data, update
 `profiles.<name>.image` manually; ordinary files, symlinks, and concurrent edits
 remain untouched by the tool.

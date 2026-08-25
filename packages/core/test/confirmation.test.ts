@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -17,6 +17,7 @@ import {
   type ToolkitContext,
 } from "../src/index.js";
 import { runMutating } from "../src/operations/execution.js";
+import { MAX_CONFIRMATION_FILE_BYTES } from "../src/confirmation-inputs.js";
 import { ConfigSchema } from "../src/validation.js";
 
 class CountingExecutor implements CommandExecutor {
@@ -454,6 +455,42 @@ describe("process confirmation store", () => {
         executed: false,
         confirmation: { status: "rejected", token: expect.any(String) },
       });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized SSH credential files before hashing", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "local-ydb-confirmation-ssh-oversized-"));
+    const rootPasswordFile = join(directory, "root.password");
+    writeFileSync(rootPasswordFile, "", "utf8");
+    truncateSync(rootPasswordFile, MAX_CONFIRMATION_FILE_BYTES + 1);
+    try {
+      const config = ConfigSchema.parse({
+        profiles: { default: { rootPasswordFile } },
+      });
+      const localContext = createContext(
+        undefined,
+        new FingerprintingExecutor(),
+        config,
+      );
+      const ctx: ToolkitContext = {
+        ...localContext,
+        profile: {
+          ...localContext.profile,
+          mode: "ssh",
+          ssh: { host: "fingerprint-test.invalid" },
+        },
+        confirmation: {
+          store: new ProcessConfirmationStore(),
+          toolName: "local_ydb_test",
+          configSource: { kind: "provided", config },
+        },
+      };
+
+      await expect(runMutating(ctx, plan, {})).rejects.toThrow(
+        "Unable to fingerprint a confirmation content input",
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

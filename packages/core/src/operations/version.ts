@@ -13,6 +13,10 @@ import {
   COMPOSITE_DUMP_SNAPSHOT_COMMAND,
   createCompositeDumpSnapshot,
 } from "./composite-dump.js";
+import {
+  COMPOSITE_AUTH_CLEANUP_FAILURE,
+  createCompositeAuthArtifacts,
+} from "./composite-auth.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
 import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
@@ -262,8 +266,18 @@ export async function upgradeVersion(
     inventoryState.containers.map((container) => container.names)
   );
   const rebuildCtx = upgradeContext(ctx, targetImage, false);
-  const finalCtx = authReapplyPlanned ? upgradeContext(ctx, targetImage, true) : rebuildCtx;
   const phaseCtx = withoutConfirmation(ctx);
+  const finalBaseCtx = authReapplyPlanned ? upgradeContext(ctx, targetImage, true) : rebuildCtx;
+  const authArtifactScope = authReapplyPlanned
+    ? {
+        kind: "version-upgrade-generated-auth",
+        request: { version, dumpName, sourceImage, targetImage },
+      }
+    : undefined;
+  const authArtifacts = authArtifactScope
+    ? createCompositeAuthArtifacts(ctx, finalBaseCtx, authArtifactScope)
+    : undefined;
+  const finalCtx = authArtifacts?.context ?? finalBaseCtx;
 
   const sourceImageSpec = ensureImagePresentSpec(sourceImage);
   const targetImageSpec = ensureImagePresentSpec(targetImage);
@@ -283,6 +297,7 @@ export async function upgradeVersion(
           confirm: false,
           sid: finalCtx.profile.dynamicNodeAuthSid ?? "root@builtin"
         }),
+        await authArtifacts!.persist({ confirm: false }),
         await applyAuthHardening(finalCtx, { confirm: false })
       ]
     : [];
@@ -308,7 +323,7 @@ export async function upgradeVersion(
     ...restorePlan.plannedCommands,
     ...reapplyPlans.flatMap((plan) => plan.plannedCommands),
     ...extraDynamicPlans.flatMap((plan) => plan.plannedCommands)
-  ];
+  ].map((command) => authArtifacts?.redact(command) ?? command);
   const rollback = [
     `Pull ${sourceImage}, recreate the profile stack with the previous image, and restore dump ${dumpName}.`,
     `If the config was manually updated to ${targetImage}, set profiles.${ctx.profile.name}.image in ${ctx.configPath} back to ${sourceImage} when rolling back.`,
@@ -341,6 +356,8 @@ export async function upgradeVersion(
     risk: "high",
     rollback,
     verification,
+  }, {
+    rotatingScope: authArtifactScope,
   });
   if (!decision.execute) {
     return attachConfirmation({
@@ -358,8 +375,10 @@ export async function upgradeVersion(
       profileImageUpdate
     }, decision.confirmation);
   }
-  const confirmed = (response: UpgradeVersionResponse) =>
-    attachConfirmation(response, decision.confirmation);
+  const confirmed = (response: UpgradeVersionResponse) => {
+    authArtifacts?.redactResults(response.results ?? []);
+    return attachConfirmation(response, decision.confirmation);
+  };
 
   const results: CommandResult[] = [];
   const sourceImageResult = await ctx.client.run(sourceImageSpec);
@@ -432,6 +451,9 @@ export async function upgradeVersion(
         confirm: true,
         sid: finalCtx.profile.dynamicNodeAuthSid ?? "root@builtin"
       }))) {
+        return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+      }
+      if (!await runOperation(results, await authArtifacts!.persist({ confirm: true }))) {
         return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
       }
       if (!await runOperation(results, await applyAuthHardening(finalCtx, { confirm: true }))) {
@@ -513,8 +535,13 @@ export async function upgradeVersion(
       results
     ));
   } finally {
-    if (!await dumpSnapshot.remove()) {
+    const dumpRemoved = await dumpSnapshot.remove();
+    const authRemoved = await authArtifacts?.remove() ?? true;
+    if (!dumpRemoved) {
       throw new Error(COMPOSITE_DUMP_CLEANUP_FAILURE);
+    }
+    if (!authRemoved) {
+      throw new Error(COMPOSITE_AUTH_CLEANUP_FAILURE);
     }
   }
 }

@@ -2,6 +2,7 @@ import type { ToolkitContext, DynamicNodePlan } from "./types.js";
 import { assertPort, escapeRegExp, extraDynamicNodeTarget } from "./helpers.js";
 
 export interface InspectedDynamicNodePorts {
+  containerId?: string;
   grpcPort?: number;
   monitoringPort?: number;
   icPort?: number;
@@ -23,6 +24,7 @@ export async function inspectDynamicNodePorts(
       continue;
     }
     byContainer.set(name, {
+      containerId: typeof obj.Id === "string" ? obj.Id : undefined,
       grpcPort: readCommandPort(obj, "--grpc-port"),
       monitoringPort: readCommandPort(obj, "--mon-port"),
       icPort: readCommandPort(obj, "--ic-port")
