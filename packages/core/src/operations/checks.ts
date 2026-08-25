@@ -1,14 +1,29 @@
-import type { DockerContainerSummary } from "../api-client.js";
+import type { CommandResult, DockerContainerSummary } from "../api-client.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin, ydbRootCli } from "./commands.js";
 import { probeDockerRuntime } from "./docker-runtime.js";
 import { collectGraphShardTabletIds, publicProfile, readPath } from "./helpers.js";
 import { capText, normalizeMaxOutputBytes } from "./output.js";
-import type { HealthcheckOptions, HealthcheckResponse, ToolkitContext } from "./types.js";
+import type {
+  HealthcheckOption,
+  HealthcheckOptions,
+  HealthcheckResponse,
+  ToolkitContext,
+} from "./types.js";
 
 const DEFAULT_HEALTHCHECK_TIMEOUT_MS = 120_000;
 const MAX_HEALTHCHECK_TIMEOUT_MS = 600_000;
 const HEALTHCHECK_PROCESS_TIMEOUT_GRACE_MS = 5_000;
 const DEFAULT_MAX_HEALTHCHECK_ISSUES = 100;
+const HEALTHCHECK_COMPATIBILITY_HELP = "Try 'healthcheck --help' for more information.";
+const HEALTHCHECK_COMPATIBILITY_SUMMARY = "Compatibility fallback applied; inspect warnings.";
+const HEALTHCHECK_OPTION_FLAGS: Record<HealthcheckOption, "--no-cache" | "--no-merge"> = {
+  noCache: "--no-cache",
+  noMerge: "--no-merge",
+};
+const HEALTHCHECK_OPTION_WARNINGS: Record<HealthcheckOption, string> = {
+  noCache: "The requested noCache option is unsupported by this YDB CLI; cache bypass was not guaranteed.",
+  noMerge: "The requested noMerge option is unsupported by this YDB CLI; healthcheck issue entries may have been merged.",
+};
 
 export type InventoryFailureReason =
   | "docker-cli-missing"
@@ -213,7 +228,14 @@ function healthcheckFallback(ctx: ToolkitContext): HealthcheckResponse {
     stdoutTruncated: false,
     stderrTruncated: false,
     maxOutputBytes: normalizeMaxOutputBytes(undefined),
-    maxIssues: DEFAULT_MAX_HEALTHCHECK_ISSUES
+    maxIssues: DEFAULT_MAX_HEALTHCHECK_ISSUES,
+    optionResolution: {
+      requested: [],
+      effective: [],
+      unsupported: [],
+    },
+    compatibilityFallback: false,
+    warnings: [],
   };
 }
 
@@ -247,23 +269,18 @@ export async function healthcheck(
   const timeoutMs = normalizeHealthcheckTimeoutMs(options.timeoutMs);
   const maxOutputBytes = normalizeMaxOutputBytes(options.maxOutputBytes);
   const maxIssues = normalizeMaxIssues(options.maxIssues);
-  const args = [
-    "monitoring",
-    "healthcheck",
-    "--format",
-    "json",
-    "--timeout",
-    String(timeoutMs),
-    ...(options.noCache ? ["--no-cache"] : []),
-    ...(options.noMerge ? ["--no-merge"] : []),
-  ];
-  const commandSpec = databasePath === ctx.profile.rootDatabase
-    ? ydbRootCli(ctx.profile, args, "Run YDB healthcheck")
-    : ydbCli(ctx.profile, args, databasePath, "Run YDB healthcheck");
-  const result = await ctx.client.run({
-    ...commandSpec,
-    timeoutMs: Math.max(commandSpec.timeoutMs ?? 0, timeoutMs + HEALTHCHECK_PROCESS_TIMEOUT_GRACE_MS),
-  });
+  const requested = requestedHealthcheckOptions(options);
+  const deadlineMs = Date.now() + timeoutMs + HEALTHCHECK_PROCESS_TIMEOUT_GRACE_MS;
+  const execution = await runHealthcheckWithCompatibility(
+    ctx,
+    databasePath,
+    timeoutMs,
+    deadlineMs,
+    requested,
+  );
+  const { result, effective, unsupported } = execution;
+  const compatibilityFallback = unsupported.length > 0;
+  const warnings = unsupported.map((option) => HEALTHCHECK_OPTION_WARNINGS[option]);
   const stdout = capText(result.stdout, maxOutputBytes);
   const stderr = capText(result.stderr, maxOutputBytes);
   const base = {
@@ -277,12 +294,19 @@ export async function healthcheck(
     stderrTruncated: stderr.truncated,
     maxOutputBytes,
     maxIssues,
+    optionResolution: {
+      requested,
+      effective,
+      unsupported,
+    },
+    compatibilityFallback,
+    warnings,
   };
 
   if (!result.ok) {
     return {
       ...base,
-      summary: `YDB healthcheck for ${databasePath} failed.`,
+      summary: compatibilitySummary(`YDB healthcheck for ${databasePath} failed.`, compatibilityFallback),
       ok: false,
       commandOk: false,
       healthy: false,
@@ -300,7 +324,10 @@ export async function healthcheck(
   } catch (error) {
     return {
       ...base,
-      summary: `YDB healthcheck for ${databasePath} returned invalid JSON.`,
+      summary: compatibilitySummary(
+        `YDB healthcheck for ${databasePath} returned invalid JSON.`,
+        compatibilityFallback,
+      ),
       ok: false,
       commandOk: true,
       healthy: false,
@@ -318,11 +345,12 @@ export async function healthcheck(
   const issues = issueLog.slice(0, maxIssues);
   const issuesTruncated = issueLog.length > issues.length;
   const healthy = selfCheckResult === "GOOD";
+  const healthSummary = healthy
+    ? `YDB healthcheck for ${databasePath} returned GOOD.`
+    : `YDB healthcheck for ${databasePath} returned ${selfCheckResult ?? "unknown"} with ${issueLog.length} issue(s).`;
   return {
     ...base,
-    summary: healthy
-      ? `YDB healthcheck for ${databasePath} returned GOOD.`
-      : `YDB healthcheck for ${databasePath} returned ${selfCheckResult ?? "unknown"} with ${issueLog.length} issue(s).`,
+    summary: compatibilitySummary(healthSummary, compatibilityFallback),
     ok: true,
     commandOk: true,
     healthy,
@@ -333,6 +361,95 @@ export async function healthcheck(
     issues,
     issuesTruncated,
   };
+}
+
+async function runHealthcheckWithCompatibility(
+  ctx: ToolkitContext,
+  databasePath: string,
+  timeoutMs: number,
+  deadlineMs: number,
+  requested: HealthcheckOption[],
+): Promise<{
+  result: CommandResult;
+  effective: HealthcheckOption[];
+  unsupported: HealthcheckOption[];
+}> {
+  let effective = [...requested];
+  const unsupported: HealthcheckOption[] = [];
+  let result: CommandResult | undefined;
+
+  for (let attempt = 0; attempt <= requested.length; attempt += 1) {
+    if (attempt > 0 && Date.now() >= deadlineMs) {
+      break;
+    }
+    const args = healthcheckArgs(timeoutMs, effective);
+    const commandSpec = databasePath === ctx.profile.rootDatabase
+      ? ydbRootCli(ctx.profile, args, "Run YDB healthcheck")
+      : ydbCli(ctx.profile, args, databasePath, "Run YDB healthcheck");
+    result = await ctx.client.run({
+      ...commandSpec,
+      timeoutMs: Math.max(1, deadlineMs - Date.now()),
+    });
+
+    const unsupportedOption = unsupportedHealthcheckOption(result, args, effective);
+    if (unsupportedOption === undefined || attempt === requested.length || Date.now() >= deadlineMs) {
+      break;
+    }
+    effective = effective.filter((option) => option !== unsupportedOption);
+    unsupported.push(unsupportedOption);
+  }
+
+  if (result === undefined) {
+    throw new Error("YDB healthcheck command could not start before its deadline");
+  }
+  return { result, effective, unsupported };
+}
+
+function requestedHealthcheckOptions(options: HealthcheckOptions): HealthcheckOption[] {
+  return [
+    ...(options.noCache ? ["noCache" as const] : []),
+    ...(options.noMerge ? ["noMerge" as const] : []),
+  ];
+}
+
+function healthcheckArgs(timeoutMs: number, effective: HealthcheckOption[]): string[] {
+  return [
+    "monitoring",
+    "healthcheck",
+    "--format",
+    "json",
+    "--timeout",
+    String(timeoutMs),
+    ...effective.map((option) => HEALTHCHECK_OPTION_FLAGS[option]),
+  ];
+}
+
+function unsupportedHealthcheckOption(
+  result: CommandResult,
+  args: string[],
+  effective: HealthcheckOption[],
+): HealthcheckOption | undefined {
+  if (result.ok || result.timedOut || result.stdout !== "") {
+    return undefined;
+  }
+  const lines = result.stderr.replace(/\r\n/g, "\n").split("\n");
+  while (lines.at(-1) === "") {
+    lines.pop();
+  }
+  if (lines.length !== 2 || lines[1] !== HEALTHCHECK_COMPATIBILITY_HELP) {
+    return undefined;
+  }
+  const match = /^\(NLastGetopt::TUsageException\) unknown option '(no-cache|no-merge)' in '--\1'$/.exec(lines[0] ?? "");
+  if (match === null) {
+    return undefined;
+  }
+  const option: HealthcheckOption = match[1] === "no-cache" ? "noCache" : "noMerge";
+  const flag = HEALTHCHECK_OPTION_FLAGS[option];
+  return effective.includes(option) && args.includes(flag) ? option : undefined;
+}
+
+function compatibilitySummary(summary: string, applied: boolean): string {
+  return applied ? `${summary} ${HEALTHCHECK_COMPATIBILITY_SUMMARY}` : summary;
 }
 
 function normalizeHealthcheckDatabasePath(ctx: ToolkitContext, path: string | undefined): string {
