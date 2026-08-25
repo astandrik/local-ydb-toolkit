@@ -66,8 +66,10 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - If an image is not already present on the target host, plan `local_ydb_pull_image`, repeat that exact request with its token and `confirm: true`, and poll `local_ydb_pull_status` before bootstrap or upgrade.
 - For every mutating tool, call the exact request without `confirm`, review `plannedCommands`, `risk`, `rollback`, and `verification` with the human, then repeat the same arguments with `confirm: true`, copying that response's `confirmation.token` into the `confirmationToken` request argument. The `<token-from-plan>` placeholders below always mean the token from the immediately preceding identical plan call.
 - A missing, malformed, changed-plan, replayed, or pre-restart token must execute nothing and returns `confirmation.status="rejected"` with a fresh plan/token. No-op responses use `not-required`; successful consumption uses `accepted`.
+- If a package or image becomes present between plan and confirm, the no-op response must use `not-required` and retire any valid submitted process token; making the resource missing again must not make that token executable.
 - Changing a configured auth/password file or a file inside the selected standalone restore dump between plan and confirm must reject the old token; file contents and private fingerprints must never appear in either response.
 - After acceptance, replace the canonical auth config, root-password backup input, dynamic-node token, or restore file before its mutation consumer runs. The consumer must observe the reviewed snapshot bytes or fail closed; credential-only reads may change authentication success/failure but not mutation payloads. Responses must omit contents, digests, and actual snapshot paths, and cleanup must remove every snapshot after success, failure, or abort.
+- Marker-shaped user arguments that happen to equal an internal content placeholder must remain byte-for-byte unchanged unless that exact command field has a declared content binding.
 - Treat the token as an ephemeral capability. Do not log it, paste it into reusable notes, persist it across sessions, or treat possession as proof of human approval; the MCP host/client remains responsible for that approval.
 - Do not test `cleanup_storage` against active volumes or paths.
 - Do not mix static and dynamic image tags inside one profile.
@@ -90,7 +92,8 @@ Treat `ghcr-rebuild-clean` and `ghcr-rebuild-auth` as historical rehearsal profi
 - Removal rollback restores configured nodes through restart or bootstrap and recreates one-off nodes through add; a mixed selection returns both instructions.
 - Auth hardening runs the full static compatibility preflight before any config or container mutation, then recreates and verifies every configured node in index order, including profiles without a dynamic-node token file; rollback also uses restart or bootstrap reconciliation.
 - Partial primary starts and one-off additions repeat the full static compatibility preflight after checking image presence and immediately before every dynamic container launch. Each container is created but not started until its resolved immutable image ID matches the static container; a concurrent named-tag refresh removes the never-started container and fails closed before later nodes, while a preflight mismatch requires destroy followed by bootstrap.
-- Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy; an incomplete container definition aborts the rebuild before destructive work.
+- Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy; an incomplete container definition aborts the rebuild before destructive work. The reviewed one-off container set is frozen for teardown, and a late container must not be added to deletion.
+- Both composite rebuilds make a private verified copy of the generated dump before teardown and restore only from that copy. The copy is removed after success, failure, or abort and can require temporary space up to the full dump size when copy-on-write is unavailable.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
 
 ## Declarative Topology Acceptance Flow
@@ -848,6 +851,7 @@ Calls:
 Expected:
 
 - plan-only output starts with a tenant dump
+- immediately after the dump, execution creates a private verified copy; replacing the canonical dump during teardown must not change restored bytes
 - the stack is rebuilt with `admin database /local/example create hdd:1`
 - auth-enabled profiles re-run:
   `local_ydb_prepare_auth_config`
@@ -855,6 +859,7 @@ Expected:
   `local_ydb_apply_auth_hardening`
 - extra dynamic-node suffixes are re-added after restore/auth reapply
 - every one-off node keeps its inspected gRPC, monitoring, and IC ports; an incomplete inspect aborts before dump or destroy
+- a one-off container appearing after token acceptance is not added to teardown
 
 Avoid:
 
@@ -886,12 +891,15 @@ Expected:
 - the plan starts with source and target image preflight checks
 - if either image is missing, run `local_ydb_pull_image` first and retry after `local_ydb_pull_status` reports completion
 - after image preflight, the upgrade path performs dump, destroy, bootstrap, restore, auth reapply, and extra dynamic-node recreation in that order
+- immediately after dump, the upgrade creates a private verified copy and restores only from it; replacing the canonical dump before restore must not change restored bytes
 - before dump or destroy, every one-off node's exact gRPC, monitoring, and IC ports are inspected and retained; an incomplete definition aborts the rebuild
 - auth-enabled profiles re-run:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
 - successful final inventory verifies the recreated containers' image tags and then persists `profiles.<name>.image` in the file-backed config
+- config persistence requires the token-bound config hash and source image to remain unchanged; a concurrent edit is preserved and returns a failed `profileImageUpdate`
+- a container appearing after token acceptance is not added to teardown
 - a verified image mismatch returns the accumulated history and leaves the profile image unchanged
 - if final inventory is unavailable only after dump/rebuild/restore/auth/node phases succeed, the response appends a safe failed verification result, omits `imageVerification`, preserves the full history, and persists the target profile image for subsequent operations
 

@@ -17,6 +17,16 @@ export interface ConfirmationContentInput {
   role: string;
 }
 
+export interface ConfirmationContentBinding {
+  input: ConfirmationContentInput;
+  target:
+    | { field: "command" }
+    | { field: "stdin" }
+    | { field: "arg"; index: number };
+  value: "digest" | "snapshot";
+  occurrences: number;
+}
+
 export type ConfirmationContentFingerprint = ConfirmationContentInput & {
   state: "missing" | "file" | "directory" | "not-file" | "not-directory";
   sha256?: string;
@@ -37,6 +47,20 @@ export function confirmationContentSnapshotPlaceholder(
   input: Pick<ConfirmationContentInput, "kind" | "path">,
 ): string {
   return `${CONTENT_SNAPSHOT_PLACEHOLDER_PREFIX}${contentInputId(input)}__`;
+}
+
+export function confirmationContentArgBinding(
+  input: ConfirmationContentInput,
+  value: ConfirmationContentBinding["value"],
+  occurrences: number,
+  index = 1,
+): ConfirmationContentBinding {
+  return {
+    input,
+    target: { field: "arg", index },
+    value,
+    occurrences,
+  };
 }
 
 export function confirmationContentKey(
@@ -77,6 +101,31 @@ export function confirmationHashShellFunctions(): string[] {
     "      fi",
     "    done",
     "  ) | hash_stream",
+    "}",
+  ];
+}
+
+export function confirmationDirectoryCopyShellFunctions(): string[] {
+  return [
+    "copy_directory_snapshot() {",
+    "  local source=$1 destination=$2",
+    "  local unsupported",
+    "  unsupported=$(find \"$source\" ! -type d ! -type f -print -quit)",
+    "  [ -z \"$unsupported\" ]",
+    "  rm -rf \"$destination\"",
+    "  if cp -a --reflink=always -- \"$source\" \"$destination\" >/dev/null 2>&1; then",
+    "    :",
+    "  else",
+    "    rm -rf \"$destination\"",
+    "    if cp -cR \"$source\" \"$destination\" >/dev/null 2>&1; then",
+    "      :",
+    "    else",
+    "      rm -rf \"$destination\"",
+    "      cp -R \"$source\" \"$destination\" >/dev/null 2>&1",
+    "    fi",
+    "  fi",
+    "  unsupported=$(find \"$destination\" ! -type d ! -type f -print -quit)",
+    "  [ -z \"$unsupported\" ]",
     "}",
   ];
 }
@@ -250,6 +299,7 @@ function contentInputId(
   input: Pick<ConfirmationContentInput, "kind" | "path">,
 ): string {
   return createHash("sha256")
+    // codeql[js/insufficient-password-hash]: This digest is a stable content-input identifier, not a password verifier.
     .update(confirmationContentKey(input), "utf8")
     .digest("hex")
     .slice(0, 32);

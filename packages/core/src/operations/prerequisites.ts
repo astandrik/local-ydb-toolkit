@@ -1,5 +1,5 @@
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
-import { attachNotRequiredConfirmation } from "../confirmation.js";
+import { attachNotRequiredConfirmation, retireSubmittedConfirmation } from "../confirmation.js";
 import { probeDockerRuntime } from "./docker-runtime.js";
 import { runMutating } from "./execution.js";
 import type {
@@ -37,6 +37,7 @@ export async function checkPrerequisites(
   const initial = await collectPrerequisiteSnapshot(ctx);
 
   if (initial.installablePackages.length === 0) {
+    retireSubmittedConfirmation(ctx, options);
     return attachNotRequiredConfirmation(ctx, snapshotResponse(ctx, initial, {
       summarySuffix: prerequisiteSummarySuffix(options.confirm, initial.installablePackages.length),
       plannedCommands: [],
@@ -46,6 +47,7 @@ export async function checkPrerequisites(
   }
 
   if (initial.packageManager !== "apt-get") {
+    retireSubmittedConfirmation(ctx, options);
     return attachNotRequiredConfirmation(ctx, snapshotResponse(ctx, {
       ...initial,
       manualActions: [...initial.manualActions, "Install missing host packages manually on the target machine."]

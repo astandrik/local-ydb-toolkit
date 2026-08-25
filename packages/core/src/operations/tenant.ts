@@ -1,10 +1,13 @@
 import { bash, shellQuote } from "../api-client.js";
+import { redactText } from "../auth.js";
 import type { ConfirmationContentInput } from "../confirmation-inputs.js";
 import { confirmationScopedId } from "../confirmation.js";
 import {
   createTenantSpec,
   helperContainer,
   restoreContainerFromConfirmedSnapshot,
+  restoreContainerFromPreparedSnapshot,
+  type PreparedRestoreSnapshot,
   ydbAuthArgs,
   ydbCli,
 } from "./commands.js";
@@ -108,7 +111,11 @@ export async function dumpTenant(ctx: ToolkitContext, options: DumpTenantOptions
   };
 }
 
-export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantOptions = {}): Promise<RestoreTenantResponse> {
+export async function restoreTenant(
+  ctx: ToolkitContext,
+  options: RestoreTenantOptions = {},
+  preparedSnapshot?: PreparedRestoreSnapshot,
+): Promise<RestoreTenantResponse> {
   if (!options.dumpName) {
     return {
       ...planOnly(ctx, "Restore requires dumpName.", "high", [], ["No changes."], ["Provide dumpName and rerun."]),
@@ -128,11 +135,17 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
     summary: `Restore ${targetPath} from ${ctx.profile.dumpHostPath}/${dumpName}.`,
     risk: "high",
     specs: [
-      restoreContainerFromConfirmedSnapshot(
-        ctx.profile,
-        restoreInput,
-        `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools restore -p ${shellQuote(path)} -i /dump/confirmed`,
-      ),
+      preparedSnapshot
+        ? restoreContainerFromPreparedSnapshot(
+            ctx.profile,
+            preparedSnapshot,
+            `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools restore -p ${shellQuote(path)} -i /dump/confirmed`,
+          )
+        : restoreContainerFromConfirmedSnapshot(
+            ctx.profile,
+            restoreInput,
+            `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools restore -p ${shellQuote(path)} -i /dump/confirmed`,
+          ),
       ...verificationHooks.map((hook) => hook.spec)
     ],
     rollback: ["Restore from a previous dump or restart the previous volume/container set."],
@@ -141,10 +154,21 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
       "small table reads succeed",
       ...verificationHooks.map((hook) => hook.description)
     ],
-    confirmationInputs: [restoreInput],
+    confirmationInputs: preparedSnapshot ? [] : [restoreInput],
   }, options);
+  const safeResponse = preparedSnapshot && response.results
+    ? {
+        ...response,
+        results: response.results.map((result) => ({
+          ...result,
+          command: redactText(result.command, [preparedSnapshot.path, preparedSnapshot.sha256]),
+          stdout: redactText(result.stdout, [preparedSnapshot.path, preparedSnapshot.sha256]),
+          stderr: redactText(result.stderr, [preparedSnapshot.path, preparedSnapshot.sha256]),
+        })),
+      }
+    : response;
   return {
-    ...response,
+    ...safeResponse,
     dumpName,
     path,
     targetPath,

@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +14,8 @@ import {
   type CommandExecutor,
   type CommandResult,
   type CommandSpec,
-  type ResolvedLocalYdbProfile
+  type ResolvedLocalYdbProfile,
+  type ToolkitContext,
 } from "../src/index.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -88,6 +90,24 @@ function writeTempConfig(rawConfig: unknown): { configPath: string; cleanup: () 
   };
 }
 
+function exactConfirmationContext(
+  context: ToolkitContext,
+  toolName = "local_ydb_upgrade_version",
+): ToolkitContext {
+  return {
+    ...context,
+    confirmation: {
+      store: new ProcessConfirmationStore(),
+      toolName,
+      configSource: {
+        kind: "argument",
+        path: context.configPath,
+        contentSha256: "test-config-content",
+      },
+    },
+  };
+}
+
 function materializeProfileFiles(rawConfig: unknown, dir: string): void {
   const profiles = (rawConfig as { profiles?: Record<string, Record<string, unknown>> }).profiles;
   for (const [name, profile] of Object.entries(profiles ?? {})) {
@@ -112,11 +132,30 @@ function materializeProfileFiles(rawConfig: unknown, dir: string): void {
 function stubUpgradeExecutor(
   executor: RecordingExecutor,
   inventoryImage: string,
-  options: { failDockerPsCall?: number; containerNames?: string[]; inspectedNodes?: unknown[]; nodePorts?: number[] } = {}
+  options: {
+    failDockerPsCall?: number;
+    containerNames?: string[];
+    inspectedNodes?: unknown[];
+    nodePorts?: number[];
+    onFirstRequiredImage?: () => void;
+    lateContainer?: string;
+    realContentSnapshots?: boolean;
+    afterCompositeSnapshot?: () => void;
+    captureRestoredContent?: (content: string) => void;
+    dumpContent?: string;
+    dumpSymlink?: boolean;
+    captureCompositeRoot?: (path: string) => void;
+    throwOnFirstDestroy?: boolean;
+  } = {}
 ): void {
   let dockerPsCalls = 0;
+  let acceptedMutationStarted = false;
+  let destroyThrown = false;
   executor.run = async (_profile, spec) => {
     if (spec.description?.startsWith("Fingerprint ")) {
+      if (options.realContentSnapshots) {
+        return runSpecSynchronously(executor, _profile, spec);
+      }
       return {
         command: executor.display(_profile, spec),
         exitCode: 0,
@@ -130,6 +169,9 @@ function stubUpgradeExecutor(
       spec.description === "Prepare confirmed content snapshots"
       || spec.description === "Remove confirmed content snapshots"
     ) {
+      if (options.realContentSnapshots) {
+        return runSpecSynchronously(executor, _profile, spec);
+      }
       return {
         command: executor.display(_profile, spec),
         exitCode: 0,
@@ -139,15 +181,46 @@ function stubUpgradeExecutor(
         timedOut: false,
       };
     }
+    if (spec.description === "Prepare private verified composite dump snapshot") {
+      const snapshotRoot = /snapshot_root=([A-Za-z0-9_./-]+)/.exec(spec.args?.[1] ?? "")?.[1];
+      if (snapshotRoot) {
+        options.captureCompositeRoot?.(snapshotRoot);
+      }
+      const result = runSpecSynchronously(executor, _profile, spec);
+      if (result.ok) {
+        options.afterCompositeSnapshot?.();
+      }
+      return result;
+    }
+    if (spec.description === "Remove private composite dump snapshot") {
+      return runSpecSynchronously(executor, _profile, spec);
+    }
     const command = executor.display(_profile, spec);
     executor.commands.push(command);
+
+    if (options.throwOnFirstDestroy && !destroyThrown && command.includes("docker rm -f")) {
+      destroyThrown = true;
+      throw new Error("BENIGN_SYNTHETIC_COMPOSITE_ABORT");
+    }
+
+    if (spec.description?.startsWith("Require Docker image") && !acceptedMutationStarted) {
+      acceptedMutationStarted = true;
+      options.onFirstRequiredImage?.();
+    }
 
     if (command.includes(" tools dump ")) {
       const dumpName = /-o \/dump\/([^/]+)\/tenant/.exec(command)?.[1];
       if (dumpName) {
         const tenantDump = join(_profile.dumpHostPath, dumpName, "tenant");
         mkdirSync(tenantDump, { recursive: true });
-        writeFileSync(join(tenantDump, "data.csv"), "1,test\n", "utf8");
+        const dataPath = join(tenantDump, "data.csv");
+        if (options.dumpSymlink) {
+          const outside = join(_profile.dumpHostPath, `${dumpName}-outside.csv`);
+          writeFileSync(outside, options.dumpContent ?? "1,test\n", "utf8");
+          symlinkSync(outside, dataPath);
+        } else {
+          writeFileSync(dataPath, options.dumpContent ?? "1,test\n", "utf8");
+        }
       }
     }
 
@@ -163,10 +236,13 @@ function stubUpgradeExecutor(
           timedOut: false
         };
       }
-      const containerNames = options.containerNames ?? [
+      const containerNames = [
+        ...(options.lateContainer && acceptedMutationStarted ? [options.lateContainer] : []),
+        ...(options.containerNames ?? [
         "ydb-dyn-example-2",
         "ydb-dyn-example",
         "ydb-local"
+        ]),
       ];
       return {
         command,
@@ -208,7 +284,34 @@ function stubUpgradeExecutor(
         timedOut: false
       };
     }
+    if (spec.description?.startsWith("Restore from a ")) {
+      const snapshot = /confirmed_restore_snapshot=([A-Za-z0-9_./-]+)/.exec(command)?.[1];
+      if (snapshot) {
+        options.captureRestoredContent?.(readFileSync(join(snapshot, "data.csv"), "utf8"));
+      }
+    }
     return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
+  };
+}
+
+function runSpecSynchronously(
+  executor: RecordingExecutor,
+  profile: ResolvedLocalYdbProfile,
+  spec: CommandSpec,
+): CommandResult {
+  const completed = spawnSync(spec.command, spec.args ?? [], {
+    encoding: "utf8",
+    input: spec.stdin,
+    timeout: spec.timeoutMs,
+  });
+  const ok = completed.status === 0 && !completed.error;
+  return {
+    command: executor.display(profile, spec),
+    exitCode: completed.status,
+    stdout: completed.stdout ?? "",
+    stderr: completed.stderr ?? completed.error?.message ?? "",
+    ok,
+    timedOut: completed.error?.name === "TimeoutError",
   };
 }
 
@@ -537,6 +640,7 @@ describe("version operations", () => {
     const rawConfig = upgradeConfig();
     const { configPath, cleanup } = writeTempConfig(rawConfig);
     try {
+      chmodSync(configPath, 0o640);
       const context = createContext(
         undefined,
         executor,
@@ -579,6 +683,228 @@ describe("version operations", () => {
       });
       expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
         profiles: { default: { image: "ghcr.io/ydb-platform/local-ydb:26.1.2.0" } },
+      });
+      expect(statSync(configPath).mode & 0o777).toBe(0o640);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not overwrite a profile config changed after token consumption", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    const concurrentImage = "ghcr.io/ydb-platform/local-ydb:26.1.1.99";
+    try {
+      const context = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      const ctx = exactConfirmationContext(context);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: ["ydb-dyn-example", "ydb-local"],
+        onFirstRequiredImage: () => {
+          const current = JSON.parse(readFileSync(configPath, "utf8")) as {
+            profiles: { default: { image: string } };
+          };
+          current.profiles.default.image = concurrentImage;
+          writeFileSync(configPath, `${JSON.stringify(current, null, 2)}\n`, "utf8");
+        },
+      });
+      const request = { version: "26.1.2.0", dumpName: "upgrade-config-cas" };
+
+      const planned = await upgradeVersion(ctx, request);
+      const accepted = await withRunTimers(() => upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      }));
+
+      expect(accepted.confirmation).toEqual({ status: "accepted" });
+      expect(accepted.profileImageUpdate).toMatchObject({ executed: true, ok: false });
+      expect(accepted.profileImageUpdate?.error).toBe(
+        "Profile config changed after confirmation or could not be updated safely.",
+      );
+      expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
+        profiles: { default: { image: concurrentImage } },
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not expand composite teardown to a container discovered after confirmation", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const context = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      const ctx = exactConfirmationContext(context);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: ["ydb-dyn-example", "ydb-local"],
+        lateContainer: "ydb-dyn-example-2",
+      });
+      const request = { version: "26.1.2.0", dumpName: "upgrade-frozen-teardown" };
+
+      const planned = await upgradeVersion(ctx, request);
+      const accepted = await withRunTimers(() => upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      }));
+
+      expect(planned.plannedCommands.join("\n")).not.toContain("docker rm -f ydb-dyn-example-2");
+      expect(accepted.confirmation).toEqual({ status: "accepted" });
+      expect(executor.commands.join("\n")).not.toContain("docker rm -f ydb-dyn-example-2");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("restores composite upgrades only from the private copy made before teardown", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    const dumpName = "upgrade-private-dump";
+    const reviewed = "BENIGN_REVIEWED_COMPOSITE_DUMP\n";
+    const replacement = "BENIGN_REPLACEMENT_COMPOSITE_DUMP\n";
+    let restoredContent: string | undefined;
+    let compositeRoot: string | undefined;
+    try {
+      const context = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      const ctx = exactConfirmationContext(context);
+      const dumpHostPath = ctx.profile.dumpHostPath;
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: ["ydb-dyn-example", "ydb-local"],
+        realContentSnapshots: true,
+        afterCompositeSnapshot: () => {
+          writeFileSync(join(dumpHostPath, dumpName, "tenant", "data.csv"), replacement, "utf8");
+        },
+        captureRestoredContent: (content) => {
+          restoredContent = content;
+        },
+        dumpContent: reviewed,
+        captureCompositeRoot: (path) => {
+          compositeRoot = path;
+        },
+      });
+      const request = { version: "26.1.2.0", dumpName };
+      const planned = await upgradeVersion(ctx, request);
+
+      const accepted = await withRunTimers(() => upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      }));
+
+      expect(accepted.confirmation).toEqual({ status: "accepted" });
+      expect(restoredContent).toBe(reviewed);
+      expect(JSON.stringify(accepted)).not.toContain(replacement.trim());
+      expect(JSON.stringify(accepted)).not.toContain("/tmp/local-ydb-toolkit-composite-");
+      expect(compositeRoot && existsSync(compositeRoot)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("consumes the token and stops before teardown when composite dump isolation fails", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    let compositeRoot: string | undefined;
+    try {
+      const context = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      const ctx = exactConfirmationContext(context);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: ["ydb-dyn-example", "ydb-local"],
+        dumpSymlink: true,
+        captureCompositeRoot: (path) => {
+          compositeRoot = path;
+        },
+      });
+      const request = { version: "26.1.2.0", dumpName: "upgrade-invalid-dump" };
+      const planned = await upgradeVersion(ctx, request);
+      const confirmedRequest = {
+        ...request,
+        confirm: true as const,
+        confirmationToken: planned.confirmation?.token,
+      };
+
+      const failed = await withRunTimers(() => upgradeVersion(ctx, confirmedRequest));
+      const replay = await upgradeVersion(ctx, confirmedRequest);
+
+      expect(failed).toMatchObject({
+        confirmation: { status: "accepted" },
+        results: expect.arrayContaining([expect.objectContaining({
+          command: "prepare private verified composite dump snapshot",
+          ok: false,
+          stderr: "Private composite dump snapshot could not be created or verified.",
+        })]),
+      });
+      expect(replay.confirmation?.status).toBe("rejected");
+      expect(executor.commands.join("\n")).not.toContain("docker rm -f ydb-local");
+      expect(compositeRoot && existsSync(compositeRoot)).toBe(false);
+      expect(JSON.stringify(failed)).not.toContain("upgrade-invalid-dump-outside.csv");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("removes the private composite dump when a later phase aborts", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    let compositeRoot: string | undefined;
+    try {
+      const context = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      const ctx = exactConfirmationContext(context);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: ["ydb-dyn-example", "ydb-local"],
+        throwOnFirstDestroy: true,
+        captureCompositeRoot: (path) => {
+          compositeRoot = path;
+        },
+      });
+      const request = { version: "26.1.2.0", dumpName: "upgrade-aborted-after-snapshot" };
+      const planned = await upgradeVersion(ctx, request);
+
+      await expect(upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      })).rejects.toThrow("BENIGN_SYNTHETIC_COMPOSITE_ABORT");
+
+      expect(compositeRoot).toMatch(/^\/tmp\/local-ydb-toolkit-composite-/);
+      expect(compositeRoot && existsSync(compositeRoot)).toBe(false);
+      expect(await upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      })).toMatchObject({
+        executed: false,
+        confirmation: { status: "rejected" },
       });
     } finally {
       cleanup();
@@ -734,7 +1060,7 @@ describe("version operations", () => {
     try {
       const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
       stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
-        failDockerPsCall: 4,
+        failDockerPsCall: 2,
         containerNames: ["ydb-dyn-example", "ydb-local"]
       });
 
@@ -772,7 +1098,7 @@ describe("version operations", () => {
     const configPath = join(tmpdir(), `local-ydb-unavailable-${Date.now()}`, "local-ydb.config.json");
     const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
     stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
-      failDockerPsCall: 4,
+      failDockerPsCall: 2,
       containerNames: ["ydb-dyn-example", "ydb-local"]
     });
 

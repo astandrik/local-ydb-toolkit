@@ -37,6 +37,11 @@ for configured auth files or the selected standalone restore dump; contents and
 fingerprints are never returned. The token is valid only until use or MCP
 restart and is consumed before the first side effect. A missing, changed,
 replayed, or pre-restart token executes nothing and returns a fresh plan/token.
+A valid submitted token is also retired when a refreshed prerequisite or image
+check makes the requested mutation a no-op, so it cannot become executable
+again if state changes later. Content placeholders are resolved only in their
+declared internal command fields; marker-shaped user arguments are not scanned
+or rewritten globally.
 
 For accepted auth config, password-rotation backup inputs, dynamic-node token,
 and standalone restore operations, the server first creates a private snapshot
@@ -48,7 +53,13 @@ Restore rejects symlinks and special filesystem entries before mutation.
 Snapshot contents, digests, and temporary paths are omitted from responses and
 cleaned after success, failure, or abort. Restore tries copy-on-write or reflink
 cloning first, but its portable fallback can temporarily require free space
-equal to the full dump size.
+equal to the full dump size. Composite storage reduction and version upgrade
+make the same kind of private verified copy immediately after generating their
+dump and before teardown, then restore only from that copy. Their teardown
+container set is frozen from the reviewed inventory instead of expanding to
+late arrivals. Version profile persistence also compares the current config
+hash and source image with the accepted plan; a concurrent change is left
+untouched and reported as a failed profile update.
 
 Treat the token as an ephemeral capability: do not log or persist it. It does
 not prove that a human approved the plan; the MCP host/client must enforce that

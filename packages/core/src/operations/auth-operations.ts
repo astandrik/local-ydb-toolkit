@@ -2,6 +2,7 @@ import { dirname } from "node:path";
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
 import { withAuthorizedContentExecution } from "../confirmed-content.js";
 import {
+  confirmationContentArgBinding,
   confirmationContentDigestPlaceholder,
   confirmationContentSnapshotPlaceholder,
   confirmationHashShellFunctions,
@@ -65,6 +66,10 @@ export async function applyAuthHardening(
         ...pathRedactions(configHostPath),
         configSnapshot,
         configDigest,
+      ],
+      confirmationContentBindings: [
+        confirmationContentArgBinding(configInput, "snapshot", 1),
+        confirmationContentArgBinding(configInput, "digest", 1),
       ],
       description: "Copy confirmed auth config snapshot into the static container",
     }),
@@ -532,6 +537,12 @@ export async function setRootPassword(
       configDigest,
       passwordSnapshot,
       passwordDigest,
+    ],
+    confirmationContentBindings: [
+      confirmationContentArgBinding(configInput, "snapshot", 1),
+      confirmationContentArgBinding(configInput, "digest", 1),
+      confirmationContentArgBinding(passwordInput, "snapshot", 1),
+      confirmationContentArgBinding(passwordInput, "digest", 1),
     ],
     description: "Sync host auth config and root password file with the new root password"
   });

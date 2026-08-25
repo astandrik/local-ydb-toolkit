@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   applyAuthHardening,
+  cleanupStorage,
   commandToShell,
   createContext,
   ProcessConfirmationStore,
@@ -27,6 +28,7 @@ import {
   type ResolvedLocalYdbProfile,
   type ToolkitContext,
 } from "../src/index.js";
+import { confirmationContentSnapshotPlaceholder } from "../src/confirmation-inputs.js";
 import { ConfigSchema } from "../src/validation.js";
 
 const REVIEWED_AUTH = "BENIGN_REVIEWED_AUTH_CONFIG\n";
@@ -46,6 +48,9 @@ class ContentBoundaryExecutor implements CommandExecutor {
   capturedContent: string | undefined;
   capturedConfigBackupContent: string | undefined;
   capturedPasswordBackupContent: string | undefined;
+  credentialReadAtMutation: string | undefined;
+  mutationCommand: string | undefined;
+  mutationStdin: string | undefined;
   snapshotPath: string | undefined;
   failPreparation = false;
   failCleanup = false;
@@ -53,6 +58,7 @@ class ContentBoundaryExecutor implements CommandExecutor {
   afterPreparation: (() => void) | undefined;
   beforeFirstExecution: (() => void) | undefined;
   backupSources: { config: string; password: string } | undefined;
+  credentialSource: string | undefined;
   private executionStarted = false;
   private readonly shell = new ShellCommandExecutor();
 
@@ -94,6 +100,13 @@ class ContentBoundaryExecutor implements CommandExecutor {
       this.beforeFirstExecution?.();
     }
     this.executionCommands.push(command);
+    if (spec.description?.startsWith("Alter runtime root password")) {
+      this.mutationCommand = command;
+      this.mutationStdin = spec.stdin;
+      this.credentialReadAtMutation = this.credentialSource
+        ? readFileSync(this.credentialSource, "utf8")
+        : undefined;
+    }
     const snapshotPath = extractSnapshotPath(command);
     if (snapshotPath && existsSync(snapshotPath)) {
       this.snapshotPath = snapshotPath;
@@ -181,6 +194,38 @@ describe("confirmed content execution", () => {
       expect(snapshotPath && existsSync(snapshotPath)).toBe(false);
       expect(consumer).not.toContain(configPath);
       expect(executor.cleanupCommands).toHaveLength(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not substitute marker-shaped user arguments without an explicit binding", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "local-ydb-confirmed-marker-"));
+    const configPath = join(directory, "auth.yaml");
+    writeFileSync(configPath, REVIEWED_AUTH, { mode: 0o600 });
+    const marker = confirmationContentSnapshotPlaceholder({
+      kind: "file",
+      path: configPath,
+    });
+    const executor = new ContentBoundaryExecutor();
+    const ctx = confirmationContext(executor, {
+      authConfigPath: configPath,
+    }, "local_ydb_cleanup_storage");
+
+    try {
+      const planned = await cleanupStorage(ctx, { paths: [marker] });
+      const confirmed = await cleanupStorage(ctx, {
+        paths: [marker],
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      });
+
+      expect(confirmed.confirmation).toEqual({ status: "accepted" });
+      expect(executor.executionCommands.at(-1)).toContain(marker);
+      expect(executor.executionCommands.at(-1)).not.toContain(
+        "/tmp/local-ydb-toolkit-confirmation-",
+      );
+      expect(executor.preparationCommands).toEqual([]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -345,6 +390,41 @@ describe("confirmed content execution", () => {
     }
   });
 
+  it("keeps changed credential-only bytes out of the password mutation payload", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "local-ydb-confirmed-credential-"));
+    const configPath = join(directory, "auth.yaml");
+    const passwordPath = join(directory, "root.password");
+    const requestedPassword = "BENIGN_REQUESTED_NEW_PASSWORD";
+    writeFileSync(configPath, REVIEWED_AUTH, { mode: 0o600 });
+    writeFileSync(passwordPath, REVIEWED_PASSWORD, { mode: 0o600 });
+    const executor = new ContentBoundaryExecutor();
+    executor.backupSources = { config: configPath, password: passwordPath };
+    executor.credentialSource = passwordPath;
+    executor.beforeFirstExecution = () => {
+      writeFileSync(passwordPath, REPLACEMENT_PASSWORD, "utf8");
+    };
+    const ctx = confirmationContext(executor, {
+      authConfigPath: configPath,
+      rootPasswordFile: passwordPath,
+    }, "local_ydb_set_root_password");
+
+    try {
+      const planned = await setRootPassword(ctx, { password: requestedPassword });
+      const confirmed = await setRootPassword(ctx, {
+        password: requestedPassword,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      });
+
+      expect(confirmed.confirmation).toEqual({ status: "accepted" });
+      expect(executor.credentialReadAtMutation).toBe(REPLACEMENT_PASSWORD);
+      expect(executor.mutationStdin).toBe(requestedPassword);
+      expect(executor.mutationCommand).not.toContain(REPLACEMENT_PASSWORD.trim());
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("consumes the token and reaches no mutation when snapshot preparation fails", async () => {
     const directory = mkdtempSync(join(tmpdir(), "local-ydb-confirmed-failure-"));
     const configPath = join(directory, "auth.yaml");
@@ -489,6 +569,7 @@ function expectPublicResponseToHideContent(
   const serialized = JSON.stringify(response);
   for (const content of contents) {
     expect(serialized).not.toContain(content.trim());
+    // codeql[js/insufficient-password-hash]: This test checks response disclosure of content digests, not password storage.
     expect(serialized).not.toContain(createHash("sha256").update(content).digest("hex"));
   }
   expect(serialized).not.toContain("/tmp/local-ydb-toolkit-confirmation-");

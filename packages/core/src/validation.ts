@@ -1,12 +1,9 @@
-import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { constants as osConstants } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
+import { BoundedFileReadError, readBoundedRegularFile } from "./config-file.js";
 
 export const DEFAULT_IMAGE = "ghcr.io/ydb-platform/local-ydb:stable-26-1-1";
 export const MAX_CONFIG_FILE_BYTES = 1_048_576;
-const CONFIG_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 export type ConfigLoadErrorCode =
   | "CONFIG_PATH_NOT_ABSOLUTE"
@@ -167,11 +164,11 @@ export function loadConfigDocument(configPath?: string): LoadedConfigDocument {
   }
   const path = configuredPath ?? resolve(process.cwd(), "local-ydb.config.json");
 
-  let descriptor: number;
+  let contents: ReturnType<typeof readBoundedRegularFile>;
   try {
-    descriptor = openSync(path, CONFIG_OPEN_FLAGS);
+    contents = readBoundedRegularFile(path, MAX_CONFIG_FILE_BYTES);
   } catch (error) {
-    if (isFileSystemError(error, "ENOENT")) {
+    if (error instanceof BoundedFileReadError && error.code === "not-found") {
       if (explicit) {
         throw new ConfigLoadError("CONFIG_NOT_FOUND");
       }
@@ -180,92 +177,27 @@ export function loadConfigDocument(configPath?: string): LoadedConfigDocument {
         source: { kind: "built-in" },
       };
     }
-    const darwinSocketError = process.platform === "darwin"
-      && error instanceof Error
-      && "errno" in error
-      && error.errno === -osConstants.errno.EOPNOTSUPP;
-    // Linux reports sockets as ENXIO; Darwin uses EOPNOTSUPP, which Node exposes via errno.
-    if (
-      isFileSystemError(error, "EISDIR")
-      || isFileSystemError(error, "ENXIO")
-      || darwinSocketError
-    ) {
+    if (error instanceof BoundedFileReadError && error.code === "not-file") {
       throw new ConfigLoadError("CONFIG_NOT_FILE");
+    }
+    if (error instanceof BoundedFileReadError && error.code === "too-large") {
+      throw new ConfigLoadError("CONFIG_TOO_LARGE");
     }
     throw new ConfigLoadError("CONFIG_READ_FAILED");
   }
 
-  try {
-    let stats: ReturnType<typeof fstatSync>;
-    try {
-      stats = fstatSync(descriptor);
-    } catch {
-      throw new ConfigLoadError("CONFIG_READ_FAILED");
-    }
-    if (!stats.isFile()) {
-      throw new ConfigLoadError("CONFIG_NOT_FILE");
-    }
-    if (stats.size > MAX_CONFIG_FILE_BYTES) {
-      throw new ConfigLoadError("CONFIG_TOO_LARGE");
-    }
-
-    let buffer = Buffer.alloc(Math.min(
-      MAX_CONFIG_FILE_BYTES + 1,
-      Math.max(4_096, stats.size + 1),
-    ));
-    let bytesRead = 0;
-    try {
-      while (true) {
-        if (bytesRead === buffer.length) {
-          if (buffer.length === MAX_CONFIG_FILE_BYTES + 1) {
-            break;
-          }
-          const expanded = Buffer.alloc(Math.min(
-            MAX_CONFIG_FILE_BYTES + 1,
-            buffer.length * 2,
-          ));
-          buffer.copy(expanded);
-          buffer = expanded;
-        }
-        const count = readSync(
-          descriptor,
-          buffer,
-          bytesRead,
-          buffer.length - bytesRead,
-          null,
-        );
-        if (count === 0) {
-          break;
-        }
-        bytesRead += count;
-      }
-    } catch {
-      throw new ConfigLoadError("CONFIG_READ_FAILED");
-    }
-    if (bytesRead > MAX_CONFIG_FILE_BYTES) {
-      throw new ConfigLoadError("CONFIG_TOO_LARGE");
-    }
-
-    const text = buffer.toString("utf8", 0, bytesRead);
-    return {
-      config: parseConfigText(text),
-      source: {
-        kind: argumentSource
-          ? "argument"
-          : environmentPath !== undefined
-            ? "environment"
-            : "implicit",
-        path,
-        contentSha256: createHash("sha256").update(text).digest("hex"),
-      },
-    };
-  } finally {
-    try {
-      closeSync(descriptor);
-    } catch {
-      // The read result or safe ConfigLoadError remains authoritative.
-    }
-  }
+  return {
+    config: parseConfigText(contents.text),
+    source: {
+      kind: argumentSource
+        ? "argument"
+        : environmentPath !== undefined
+          ? "environment"
+          : "implicit",
+      path,
+      contentSha256: contents.contentSha256,
+    },
+  };
 }
 
 function parseConfigText(text: string): LocalYdbConfig {
@@ -280,10 +212,6 @@ function parseConfigText(text: string): LocalYdbConfig {
     throw new ConfigLoadError("CONFIG_INVALID_SCHEMA");
   }
   return result.data;
-}
-
-function isFileSystemError(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && error.code === code;
 }
 
 export function resolveProfile(config: LocalYdbConfig, profileName?: string): ResolvedLocalYdbProfile {

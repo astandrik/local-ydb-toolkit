@@ -17,6 +17,11 @@ import {
 } from "../confirmation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
 import { inventory, requireInventory } from "./checks.js";
+import {
+  COMPOSITE_DUMP_CLEANUP_FAILURE,
+  COMPOSITE_DUMP_SNAPSHOT_COMMAND,
+  createCompositeDumpSnapshot,
+} from "./composite-dump.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
 import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
 import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
@@ -186,7 +191,12 @@ export async function reduceStorageGroups(
   const finalCtx = authReapplyPlanned ? phaseCtx : rebuildCtx;
 
   const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
-  const destroyPlan = await destroyStack(phaseCtx, { confirm: false });
+  const preparedExtraDynamicContainers = extraDynamicNodes.map((node) => node.container);
+  const destroyPlan = await destroyStack(
+    phaseCtx,
+    { confirm: false },
+    preparedExtraDynamicContainers,
+  );
   const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
@@ -210,6 +220,7 @@ export async function reduceStorageGroups(
 
   const plannedCommands = [
     ...dumpPlan.plannedCommands,
+    COMPOSITE_DUMP_SNAPSHOT_COMMAND,
     ...destroyPlan.plannedCommands,
     ...bootstrapPlan.plannedCommands,
     ...restorePlan.plannedCommands,
@@ -273,69 +284,88 @@ export async function reduceStorageGroups(
   if (!await runOperation(results, await dumpTenant(phaseCtx, { confirm: true, dumpName }))) {
     return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
   }
-  if (!await runOperation(results, await destroyStack(phaseCtx, { confirm: true }))) {
-    return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
-  }
-  if (!await runOperation(results, await bootstrap(rebuildCtx, { confirm: true }))) {
-    return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
-  }
-  if (!await runOperation(results, await restoreTenant(rebuildCtx, { confirm: true, dumpName }))) {
-    return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
-  }
+  const dumpSnapshot = await createCompositeDumpSnapshot(phaseCtx, dumpName);
+  results.push(dumpSnapshot.result);
+  try {
+    if (!dumpSnapshot.result.ok || !dumpSnapshot.preparedRestore) {
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+    }
+    if (!await runOperation(results, await destroyStack(
+      phaseCtx,
+      { confirm: true },
+      preparedExtraDynamicContainers,
+    ))) {
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+    }
+    if (!await runOperation(results, await bootstrap(rebuildCtx, { confirm: true }))) {
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+    }
+    if (!await runOperation(results, await restoreTenant(
+      rebuildCtx,
+      { confirm: true, dumpName },
+      dumpSnapshot.preparedRestore,
+    ))) {
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+    }
 
-  if (authReapplyPlanned) {
-    if (!await runOperation(results, await prepareAuthConfig(phaseCtx, { confirm: true }))) {
-      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+    if (authReapplyPlanned) {
+      if (!await runOperation(results, await prepareAuthConfig(phaseCtx, { confirm: true }))) {
+        return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+      }
+      if (!await runOperation(results, await writeDynamicNodeAuthConfig(phaseCtx, {
+        confirm: true,
+        sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin"
+      }))) {
+        return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+      }
+      if (!await runOperation(results, await applyAuthHardening(phaseCtx, { confirm: true }))) {
+        return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+      }
     }
-    if (!await runOperation(results, await writeDynamicNodeAuthConfig(phaseCtx, {
-      confirm: true,
-      sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin"
-    }))) {
-      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
-    }
-    if (!await runOperation(results, await applyAuthHardening(phaseCtx, { confirm: true }))) {
-      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
-    }
-  }
 
-  for (const node of extraDynamicNodes) {
-    if (!await runOperation(results, await addDynamicNodes(finalCtx, {
-      confirm: true,
-      count: 1,
-      startIndex: node.index,
-      grpcPortStart: node.grpcPort,
-      monitoringPortStart: node.monitoringPort,
-      icPortStart: node.icPort
-    }))) {
-      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+    for (const node of extraDynamicNodes) {
+      if (!await runOperation(results, await addDynamicNodes(finalCtx, {
+        confirm: true,
+        count: 1,
+        startIndex: node.index,
+        grpcPortStart: node.grpcPort,
+        monitoringPortStart: node.monitoringPort,
+        icPortStart: node.icPort
+      }))) {
+        return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
+      }
     }
-  }
 
-  const observedPool = await readTargetStoragePool(finalCtx, pool.name);
-  const observedNumGroups = observedPool.numGroups;
-  results.push({
-    command: `verify storage pool ${pool.name} NumGroups`,
-    exitCode: observedNumGroups === targetNumGroups ? 0 : 1,
-    stdout: `Observed NumGroups: ${observedNumGroups}`,
-    stderr: observedNumGroups === targetNumGroups ? "" : `Expected NumGroups: ${targetNumGroups}`,
-    ok: observedNumGroups === targetNumGroups,
-    timedOut: false
-  });
-  if (observedNumGroups !== targetNumGroups) {
+    const observedPool = await readTargetStoragePool(finalCtx, pool.name);
+    const observedNumGroups = observedPool.numGroups;
+    results.push({
+      command: `verify storage pool ${pool.name} NumGroups`,
+      exitCode: observedNumGroups === targetNumGroups ? 0 : 1,
+      stdout: `Observed NumGroups: ${observedNumGroups}`,
+      stderr: observedNumGroups === targetNumGroups ? "" : `Expected NumGroups: ${targetNumGroups}`,
+      ok: observedNumGroups === targetNumGroups,
+      timedOut: false
+    });
+    if (observedNumGroups !== targetNumGroups) {
+      return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results));
+    }
+
+    results.push(await finalCtx.client.run(waitForYdbCli(
+      finalCtx.profile,
+      ["scheme", "ls", finalCtx.profile.tenantPath],
+      finalCtx.profile.tenantPath,
+      "Wait for tenant metadata"
+    )));
+    if (results.at(-1)?.ok) {
+      results.push(await verifyRebuiltProfileContainers(finalCtx, extraDynamicNodes));
+    }
+
     return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results));
+  } finally {
+    if (!await dumpSnapshot.remove()) {
+      throw new Error(COMPOSITE_DUMP_CLEANUP_FAILURE);
+    }
   }
-
-  results.push(await finalCtx.client.run(waitForYdbCli(
-    finalCtx.profile,
-    ["scheme", "ls", finalCtx.profile.tenantPath],
-    finalCtx.profile.tenantPath,
-    "Wait for tenant metadata"
-  )));
-  if (results.at(-1)?.ok) {
-    results.push(await verifyRebuiltProfileContainers(finalCtx, extraDynamicNodes));
-  }
-
-  return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results));
 }
 
 function expectedProfileContainerNames(

@@ -12,6 +12,7 @@ import {
   commandForStaticCompatibilityCheck,
   commandForStaticEnsureRun,
   createTenantSpec,
+  dynamicNodeAuthConfirmationBindings,
   dynamicNodeAuthRedactions,
   dynamicNodeStartSpecs,
   removeTenantIfPresentSpec,
@@ -156,6 +157,7 @@ export async function startDynamicNode(ctx: ToolkitContext, options: MutatingOpt
       bash(commandForDynamicEnsureRun(ctx.profile, plan), {
         timeoutMs: 60_000,
         redactions: dynamicNodeAuthRedactions(ctx.profile),
+        confirmationContentBindings: dynamicNodeAuthConfirmationBindings(ctx.profile),
       })
     ],
     rollback: [`docker rm -f ${ctx.profile.dynamicContainer}`],
@@ -163,9 +165,17 @@ export async function startDynamicNode(ctx: ToolkitContext, options: MutatingOpt
   }, options);
 }
 
-export async function destroyStack(ctx: ToolkitContext, options: DestroyStackOptions = {}): Promise<DestroyStackResponse> {
-  const inventoryState = await requireInventory(ctx);
-  const extraDynamicNodes = findExtraDynamicContainers(ctx.profile, inventoryState.containers.map((container) => container.names));
+export async function destroyStack(
+  ctx: ToolkitContext,
+  options: DestroyStackOptions = {},
+  preparedExtraDynamicNodes?: readonly string[],
+): Promise<DestroyStackResponse> {
+  const extraDynamicNodes = preparedExtraDynamicNodes
+    ? [...preparedExtraDynamicNodes]
+    : findExtraDynamicContainers(
+        ctx.profile,
+        (await requireInventory(ctx)).containers.map((container) => container.names),
+      );
   const specs: CommandSpec[] = [
     removeTenantIfPresentSpec(ctx.profile),
     ...extraDynamicNodes.map((container) => bash(`docker rm -f ${shellQuote(container)} 2>/dev/null || true`, {

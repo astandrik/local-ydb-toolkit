@@ -1,10 +1,13 @@
 import { bash, shellQuote, type CommandSpec } from "../api-client.js";
 import {
+  confirmationContentArgBinding,
   confirmationContentDigestPlaceholder,
   confirmationContentSnapshotPlaceholder,
   confirmationHashShellFunctions,
+  type ConfirmationContentBinding,
   type ConfirmationContentInput,
 } from "../confirmation-inputs.js";
+import { pathRedactions } from "../redactions.js";
 import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { generatedConfigDiscoveryLines } from "./generated-config.js";
 import { statusCommandFailureLines } from "./helpers.js";
@@ -339,6 +342,7 @@ export function dynamicNodeStartSpecs(
       timeoutMs: 60_000,
       description: `Start dynamic tenant node ${plan.container}`,
       redactions: dynamicNodeAuthRedactions(profile),
+      confirmationContentBindings: dynamicNodeAuthConfirmationBindings(profile),
     }),
     bash("sleep 5", { description: `Wait briefly for ${plan.container} startup` })
   ];
@@ -352,6 +356,18 @@ export function dynamicNodeAuthRedactions(profile: ResolvedLocalYdbProfile): str
         confirmationContentSnapshotPlaceholder(input),
       ]
     : [];
+}
+
+export function dynamicNodeAuthConfirmationBindings(
+  profile: ResolvedLocalYdbProfile,
+): ConfirmationContentBinding[] | undefined {
+  const input = dynamicNodeAuthInput(profile);
+  return input
+    ? [
+        confirmationContentArgBinding(input, "snapshot", 2),
+        confirmationContentArgBinding(input, "digest", 1),
+      ]
+    : undefined;
 }
 
 function dynamicNodeAuthInput(
@@ -596,6 +612,44 @@ export function restoreContainerFromConfirmedSnapshot(
 ): CommandSpec {
   const snapshot = confirmationContentSnapshotPlaceholder(input);
   const digest = confirmationContentDigestPlaceholder(input);
+  return restoreContainerFromSnapshot(profile, snapshot, digest, innerCommand, {
+    description: "Restore from a confirmed dump snapshot",
+    confirmationContentBindings: [
+      confirmationContentArgBinding(input, "snapshot", 2),
+      confirmationContentArgBinding(input, "digest", 1),
+    ],
+  });
+}
+
+export interface PreparedRestoreSnapshot {
+  path: string;
+  sha256: string;
+}
+
+export function restoreContainerFromPreparedSnapshot(
+  profile: ResolvedLocalYdbProfile,
+  snapshot: PreparedRestoreSnapshot,
+  innerCommand: string,
+): CommandSpec {
+  if (!/^[a-f0-9]{64}$/.test(snapshot.sha256)) {
+    throw new Error("Prepared restore snapshot digest is invalid");
+  }
+  return restoreContainerFromSnapshot(
+    profile,
+    snapshot.path,
+    snapshot.sha256,
+    innerCommand,
+    { description: "Restore from a prepared composite dump snapshot" },
+  );
+}
+
+function restoreContainerFromSnapshot(
+  profile: ResolvedLocalYdbProfile,
+  snapshot: string,
+  digest: string,
+  innerCommand: string,
+  options: Pick<CommandSpec, "description" | "confirmationContentBindings">,
+): CommandSpec {
   const passwordMount = profile.rootPasswordFile
     ? ["-v", `${profile.rootPasswordFile}:/tmp/root.password:ro`]
     : [];
@@ -621,12 +675,14 @@ export function restoreContainerFromConfirmedSnapshot(
     runCommand,
   ].join("\n"), {
     timeoutMs: 300_000,
-    description: "Restore from a confirmed dump snapshot",
+    description: options.description,
     redactions: [
       profile.rootPasswordFile ?? "",
+      ...pathRedactions(snapshot),
       snapshot,
       digest,
     ],
+    confirmationContentBindings: options.confirmationContentBindings,
   });
 }
 

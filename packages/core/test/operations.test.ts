@@ -1496,6 +1496,51 @@ describe("mutating operations", () => {
     expect(JSON.stringify(response)).not.toContain("/tmp/local-ydb-auth/root.password");
   });
 
+  it("retires a prerequisite token when the install becomes unnecessary", async () => {
+    const executor = new RecordingExecutor();
+    const config = ConfigSchema.parse({});
+    const context = createContext(undefined, executor, config);
+    const ctx = {
+      ...context,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_check_prerequisites",
+        configSource: { kind: "provided" as const, config },
+      },
+    };
+    let curlPresent = false;
+    let installCalls = 0;
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      if (spec.description === "Check curl availability") {
+        return commandResult(command, curlPresent ? {} : { ok: false, exitCode: 1 });
+      }
+      if (
+        spec.description === "Update apt package index"
+        || spec.description === "Install missing prerequisite packages"
+      ) {
+        installCalls += 1;
+      }
+      return commandResult(command);
+    };
+
+    const planned = await checkPrerequisites(ctx);
+    curlPresent = true;
+    const noOp = await checkPrerequisites(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+    curlPresent = false;
+    const replay = await checkPrerequisites(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(noOp.confirmation).toEqual({ status: "not-required" });
+    expect(replay.confirmation?.status).toBe("rejected");
+    expect(installCalls).toBe(0);
+  });
+
   it("installs supported prerequisite packages when confirm=true", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -3050,6 +3095,7 @@ describe("mutating operations", () => {
     expect(response.authReapplyPlanned).toBe(true);
     expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
     expect(response.plannedCommands.join("\n")).toContain("/dump/shrink-smoke/tenant");
+    expect(response.plannedCommands).toContain("prepare private verified composite dump snapshot");
     expect(response.plannedCommands.join("\n")).toContain("admin database /local/example create hdd:1");
     expect(response.plannedCommands.join("\n")).toContain("/tmp/local-ydb-auth/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
@@ -3166,6 +3212,11 @@ describe("mutating operations", () => {
         || spec.description === "Remove confirmed content snapshots"
       ) {
         return commandResult(executor.display(_profile, spec));
+      }
+      if (spec.description === "Prepare private verified composite dump snapshot") {
+        return commandResult(executor.display(_profile, spec), {
+          stdout: `${"a".repeat(64)}\n`,
+        });
       }
       const command = executor.display(_profile, spec);
       executor.commands.push(command);
@@ -3293,6 +3344,7 @@ describe("mutating operations", () => {
 
     const commands = response.results?.map((result) => result.command) ?? [];
     expect(commands.some((command) => command.includes("/dump/shrink-smoke/tenant"))).toBe(true);
+    expect(commands).toContain("prepare private verified composite dump snapshot");
     expect(commands.some((command) => command.includes("admin database /local/example create hdd:1"))).toBe(true);
     expect(commands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(2);
     expect(commands.some((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""))).toBe(true);

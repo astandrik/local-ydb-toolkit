@@ -11,9 +11,11 @@ import {
 import { redactText } from "./auth.js";
 import {
   confirmationContentDigestPlaceholder,
+  confirmationDirectoryCopyShellFunctions,
   confirmationContentKey,
   confirmationContentSnapshotPlaceholder,
   confirmationHashShellFunctions,
+  type ConfirmationContentBinding,
   type ConfirmationContentFingerprint,
 } from "./confirmation-inputs.js";
 import type { ConfirmationReceipt } from "./confirmation.js";
@@ -84,18 +86,29 @@ function requiredFingerprints(
   receipt: ConfirmationReceipt | undefined,
   specs: readonly CommandSpec[],
 ): ConfirmationContentFingerprint[] {
+  const bindings = specs.flatMap((spec) => spec.confirmationContentBindings ?? []);
   if (!receipt) {
+    if (bindings.length > 0) {
+      throw new Error(SNAPSHOT_FAILURE);
+    }
     return [];
   }
-  const serializedSpecs = specs.flatMap((spec) => [
-    spec.command,
-    ...(spec.args ?? []),
-    spec.stdin ?? "",
-  ]).join("\0");
-  return receipt.contentInputs.filter((fingerprint) => (
-    serializedSpecs.includes(confirmationContentDigestPlaceholder(fingerprint))
-      || serializedSpecs.includes(confirmationContentSnapshotPlaceholder(fingerprint))
-  ));
+  const fingerprints = new Map(
+    receipt.contentInputs.map((fingerprint) => [
+      confirmationContentKey(fingerprint),
+      fingerprint,
+    ]),
+  );
+  const required = new Map<string, ConfirmationContentFingerprint>();
+  for (const binding of bindings) {
+    const key = confirmationContentKey(binding.input);
+    const fingerprint = fingerprints.get(key);
+    if (!fingerprint) {
+      throw new Error(SNAPSHOT_FAILURE);
+    }
+    required.set(key, fingerprint);
+  }
+  return [...required.values()];
 }
 
 async function prepareSnapshots(
@@ -117,26 +130,7 @@ async function prepareSnapshots(
     "trap snapshot_failed ERR HUP INT TERM",
     "install -d -m 0700 \"$snapshot_root\"",
     ...confirmationHashShellFunctions(),
-    "copy_directory_snapshot() {",
-    "  local source=$1 destination=$2",
-    "  local unsupported",
-    "  unsupported=$(find \"$source\" ! -type d ! -type f -print -quit)",
-    "  [ -z \"$unsupported\" ]",
-    "  rm -rf \"$destination\"",
-    "  if cp -a --reflink=always -- \"$source\" \"$destination\" >/dev/null 2>&1; then",
-    "    :",
-    "  else",
-    "    rm -rf \"$destination\"",
-    "    if cp -cR \"$source\" \"$destination\" >/dev/null 2>&1; then",
-    "      :",
-    "    else",
-    "      rm -rf \"$destination\"",
-    "      cp -R \"$source\" \"$destination\" >/dev/null 2>&1",
-    "    fi",
-    "  fi",
-    "  unsupported=$(find \"$destination\" ! -type d ! -type f -print -quit)",
-    "  [ -z \"$unsupported\" ]",
-    "}",
+    ...confirmationDirectoryCopyShellFunctions(),
     ...prepared.flatMap(({ fingerprint, snapshotPath }, index) => {
       if (!fingerprint.sha256) {
         return [`rm -rf ${shellQuote(snapshotPath)}`];
@@ -228,7 +222,12 @@ class ConfirmedContentExecutor implements CommandExecutor {
         command: this.delegate.display(profile, spec),
       });
     }
-    const resolved = resolveSpec(spec, this.prepared);
+    let resolved: CommandSpec;
+    try {
+      resolved = resolveSpec(spec, this.prepared);
+    } catch {
+      return Promise.resolve(fixedSnapshotFailure());
+    }
     return this.delegate.run(profile, resolved, outputObserver).then((result) => ({
       ...result,
       command: redactText(result.command, resolved.redactions ?? []),
@@ -243,21 +242,42 @@ function resolveSpec(
   prepared: ReadonlyMap<string, PreparedContent>,
 ): CommandSpec {
   let command = spec.command;
-  let args = spec.args;
+  const args = spec.args?.slice();
   let stdin = spec.stdin;
   const redactions = [...(spec.redactions ?? [])];
-  for (const { fingerprint, snapshotPath } of prepared.values()) {
-    const digestPlaceholder = confirmationContentDigestPlaceholder(fingerprint);
-    const snapshotPlaceholder = confirmationContentSnapshotPlaceholder(fingerprint);
+  for (const binding of spec.confirmationContentBindings ?? []) {
+    const preparedContent = prepared.get(confirmationContentKey(binding.input));
+    if (!preparedContent) {
+      throw new Error(SNAPSHOT_FAILURE);
+    }
+    const { fingerprint, snapshotPath } = preparedContent;
+    const placeholder = binding.value === "digest"
+      ? confirmationContentDigestPlaceholder(fingerprint)
+      : confirmationContentSnapshotPlaceholder(fingerprint);
     const digest = fingerprint.sha256 ?? "";
-    command = replaceAll(command, digestPlaceholder, digest, snapshotPlaceholder, snapshotPath);
-    args = args?.map((arg) => replaceAll(arg, digestPlaceholder, digest, snapshotPlaceholder, snapshotPath));
-    stdin = stdin === undefined
-      ? undefined
-      : replaceAll(stdin, digestPlaceholder, digest, snapshotPlaceholder, snapshotPath);
+    const replacement = binding.value === "digest"
+      ? digest
+      : snapshotPath;
+    const current = bindingTargetValue(binding, command, args, stdin);
+    if (
+      !Number.isSafeInteger(binding.occurrences)
+      || binding.occurrences < 1
+      || countOccurrences(current, placeholder) !== binding.occurrences
+    ) {
+      throw new Error(SNAPSHOT_FAILURE);
+    }
+    const resolved = current.replaceAll(placeholder, replacement);
+    if (binding.target.field === "command") {
+      command = resolved;
+    } else if (binding.target.field === "stdin") {
+      stdin = resolved;
+    } else if (args?.[binding.target.index] !== undefined) {
+      args[binding.target.index] = resolved;
+    } else {
+      throw new Error(SNAPSHOT_FAILURE);
+    }
     redactions.push(
-      digestPlaceholder,
-      snapshotPlaceholder,
+      placeholder,
       snapshotPath,
       ...pathRedactions(fingerprint.path),
     );
@@ -265,19 +285,49 @@ function resolveSpec(
       redactions.push(digest);
     }
   }
-  return { ...spec, command, args, stdin, redactions };
+  return {
+    ...spec,
+    command,
+    args,
+    stdin,
+    redactions,
+    confirmationContentBindings: undefined,
+  };
 }
 
-function replaceAll(
-  value: string,
-  digestPlaceholder: string,
-  digest: string,
-  snapshotPlaceholder: string,
-  snapshotPath: string,
+function bindingTargetValue(
+  binding: ConfirmationContentBinding,
+  command: string,
+  args: string[] | undefined,
+  stdin: string | undefined,
 ): string {
-  return value
-    .replaceAll(digestPlaceholder, digest)
-    .replaceAll(snapshotPlaceholder, snapshotPath);
+  if (binding.target.field === "command") {
+    return command;
+  }
+  if (binding.target.field === "stdin") {
+    if (stdin === undefined) {
+      throw new Error(SNAPSHOT_FAILURE);
+    }
+    return stdin;
+  }
+  const value = args?.[binding.target.index];
+  if (value === undefined) {
+    throw new Error(SNAPSHOT_FAILURE);
+  }
+  return value;
+}
+
+function countOccurrences(value: string, placeholder: string): number {
+  let count = 0;
+  let offset = 0;
+  while (true) {
+    const next = value.indexOf(placeholder, offset);
+    if (next === -1) {
+      return count;
+    }
+    count += 1;
+    offset = next + placeholder.length;
+  }
 }
 
 function fixedSnapshotFailure(result?: CommandResult): CommandResult {
