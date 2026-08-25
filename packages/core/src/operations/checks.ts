@@ -278,8 +278,7 @@ export async function healthcheck(
     deadlineMs,
     requested,
   );
-  const { result, effective, unsupported } = execution;
-  const compatibilityFallback = unsupported.length > 0;
+  const { result, effective, unsupported, compatibilityFallback } = execution;
   const warnings = unsupported.map((option) => HEALTHCHECK_OPTION_WARNINGS[option]);
   const stdout = capText(result.stdout, maxOutputBytes);
   const stderr = capText(result.stderr, maxOutputBytes);
@@ -373,14 +372,19 @@ async function runHealthcheckWithCompatibility(
   result: CommandResult;
   effective: HealthcheckOption[];
   unsupported: HealthcheckOption[];
+  compatibilityFallback: boolean;
 }> {
   let effective = [...requested];
   const unsupported: HealthcheckOption[] = [];
+  let compatibilityFallback = false;
   let result: CommandResult | undefined;
 
   for (let attempt = 0; attempt <= requested.length; attempt += 1) {
-    if (attempt > 0 && Date.now() >= deadlineMs) {
-      break;
+    if (attempt > 0) {
+      if (Date.now() >= deadlineMs) {
+        break;
+      }
+      compatibilityFallback = true;
     }
     const args = healthcheckArgs(timeoutMs, effective);
     const commandSpec = databasePath === ctx.profile.rootDatabase
@@ -392,17 +396,20 @@ async function runHealthcheckWithCompatibility(
     });
 
     const unsupportedOption = unsupportedHealthcheckOption(result, args, effective);
-    if (unsupportedOption === undefined || attempt === requested.length || Date.now() >= deadlineMs) {
+    if (unsupportedOption === undefined) {
       break;
     }
     effective = effective.filter((option) => option !== unsupportedOption);
     unsupported.push(unsupportedOption);
+    if (attempt === requested.length || Date.now() >= deadlineMs) {
+      break;
+    }
   }
 
   if (result === undefined) {
     throw new Error("YDB healthcheck command could not start before its deadline");
   }
-  return { result, effective, unsupported };
+  return { result, effective, unsupported, compatibilityFallback };
 }
 
 function requestedHealthcheckOptions(options: HealthcheckOptions): HealthcheckOption[] {

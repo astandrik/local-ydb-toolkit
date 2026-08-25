@@ -860,11 +860,19 @@ describe("mcp tools", () => {
 
     const healthcheckTool = localYdbTools.find((tool) => tool.name === "local_ydb_healthcheck");
     expect(healthcheckTool?.inputSchema.properties?.noCache).toMatchObject({
-      description: expect.stringContaining("compatibility fallback"),
+      description: expect.stringContaining("always recorded in optionResolution and warnings"),
     });
     expect(healthcheckTool?.inputSchema.properties?.noMerge).toMatchObject({
-      description: expect.stringContaining("compatibility fallback"),
+      description: expect.stringContaining("always recorded in optionResolution and warnings"),
     });
+    const noCacheSchema = healthcheckTool?.inputSchema.properties?.noCache as { description?: string } | undefined;
+    const noMergeSchema = healthcheckTool?.inputSchema.properties?.noMerge as { description?: string } | undefined;
+    expect(noCacheSchema?.description).toContain(
+      "when the shared deadline permits an actual retry",
+    );
+    expect(noMergeSchema?.description).toContain(
+      "compatibilityFallback is true",
+    );
   });
 
   it("annotates tools with behavioral hints", () => {

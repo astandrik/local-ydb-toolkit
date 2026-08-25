@@ -658,13 +658,33 @@ describe("read-only checks", () => {
       });
     };
 
-    try {
-      await healthcheck(ctx, { noCache: true, timeoutMs: 1_000 });
-    } finally {
-      nowSpy.mockRestore();
-    }
+    const response = await (async () => {
+      try {
+        return await healthcheck(ctx, { noCache: true, timeoutMs: 1_000 });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    })();
 
     expect(executor.commands).toHaveLength(1);
+    expect(response).toMatchObject({
+      summary: "YDB healthcheck for /local/example failed.",
+      ok: false,
+      commandOk: false,
+      healthy: false,
+      optionResolution: {
+        requested: ["noCache"],
+        effective: [],
+        unsupported: ["noCache"],
+      },
+      compatibilityFallback: false,
+      warnings: [
+        "The requested noCache option is unsupported by this YDB CLI; cache bypass was not guaranteed.",
+      ],
+    });
+    expect(response.command).toContain("--no-cache");
+    expect(response.stderr).toContain("NLastGetopt::TUsageException");
+    expect(response.summary).not.toContain("Compatibility fallback applied");
   });
 
   it("parses a degraded YDB healthcheck with issue counts and types", async () => {
