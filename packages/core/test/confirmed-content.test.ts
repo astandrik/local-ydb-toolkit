@@ -569,7 +569,8 @@ function expectPublicResponseToHideContent(
   const serialized = JSON.stringify(response);
   for (const content of contents) {
     expect(serialized).not.toContain(content.trim());
-    // codeql[js/insufficient-password-hash]: This test checks response disclosure of content digests, not password storage.
+    // This test checks response disclosure of content digests, not password storage.
+    // codeql[js/insufficient-password-hash]
     expect(serialized).not.toContain(createHash("sha256").update(content).digest("hex"));
   }
   expect(serialized).not.toContain("/tmp/local-ydb-toolkit-confirmation-");

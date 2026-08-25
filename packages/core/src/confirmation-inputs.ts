@@ -299,7 +299,8 @@ function contentInputId(
   input: Pick<ConfirmationContentInput, "kind" | "path">,
 ): string {
   return createHash("sha256")
-    // codeql[js/insufficient-password-hash]: This digest is a stable content-input identifier, not a password verifier.
+    // This digest is a stable content-input identifier, not a password verifier.
+    // codeql[js/insufficient-password-hash]
     .update(confirmationContentKey(input), "utf8")
     .digest("hex")
     .slice(0, 32);

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +17,7 @@ import {
   type ResolvedLocalYdbProfile,
   type ToolkitContext,
 } from "../src/index.js";
+import { MANUAL_PROFILE_IMAGE_UPDATE_ERROR } from "../src/operations/profile-image-config.js";
 import { ConfigSchema } from "../src/validation.js";
 
 class RecordingExecutor implements CommandExecutor {
@@ -513,7 +514,8 @@ describe("version operations", () => {
       expect(response.plannedCommands.join("\n")).toContain("/dump/");
       expect(response.plannedCommands.join("\n")).toContain("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
       expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
-      expect(response.plannedCommands.join("\n")).toContain(`profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0`);
+      expect(response.plannedCommands.join("\n")).not.toContain("profiles.default.image");
+      expect(response.verification.join("\n")).toContain(`manually set profiles.default.image in ${configPath}`);
     } finally {
       cleanup();
     }
@@ -616,12 +618,13 @@ describe("version operations", () => {
         profile: "default",
         sourceImage: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
         targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
-        executed: true,
-        ok: true
+        executed: false,
+        ok: false,
+        error: MANUAL_PROFILE_IMAGE_UPDATE_ERROR
       });
-      expect(response.summary).toContain("Final image verification succeeded");
-      const updatedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
-      expect(updatedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.summary).toContain("profile config was not updated automatically and requires manual action");
+      const unchangedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
+      expect(unchangedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.1.6");
 
       const commands = response.results?.map((result) => result.command) ?? [];
       expect(commands[0]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6");
@@ -629,7 +632,7 @@ describe("version operations", () => {
       expect(commands.some((command) => command.includes("--name ydb-local") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("--name ydb-dyn-example-2") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("verify profile containers use image ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
-      expect(commands.some((command) => command.includes("profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
+      expect(commands.some((command) => command.includes("profiles.default.image"))).toBe(false);
     } finally {
       cleanup();
     }
@@ -679,10 +682,14 @@ describe("version operations", () => {
       expect(accepted).toMatchObject({
         executed: true,
         confirmation: { status: "accepted" },
-        profileImageUpdate: { executed: true, ok: true },
+        profileImageUpdate: {
+          executed: false,
+          ok: false,
+          error: MANUAL_PROFILE_IMAGE_UPDATE_ERROR,
+        },
       });
       expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
-        profiles: { default: { image: "ghcr.io/ydb-platform/local-ydb:26.1.2.0" } },
+        profiles: { default: { image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" } },
       });
       expect(statSync(configPath).mode & 0o777).toBe(0o640);
     } finally {
@@ -723,12 +730,55 @@ describe("version operations", () => {
       }));
 
       expect(accepted.confirmation).toEqual({ status: "accepted" });
-      expect(accepted.profileImageUpdate).toMatchObject({ executed: true, ok: false });
-      expect(accepted.profileImageUpdate?.error).toBe(
-        "Profile config changed after confirmation or could not be updated safely.",
-      );
+      expect(accepted.profileImageUpdate).toMatchObject({
+        executed: false,
+        ok: false,
+        error: MANUAL_PROFILE_IMAGE_UPDATE_ERROR,
+      });
       expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
         profiles: { default: { image: concurrentImage } },
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("preserves a symlink-backed profile config and its target", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    const targetPath = `${configPath}.target`;
+    try {
+      renameSync(configPath, targetPath);
+      symlinkSync(targetPath, configPath);
+      const context = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      const ctx = exactConfirmationContext(context);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: ["ydb-dyn-example", "ydb-local"],
+      });
+      const request = { version: "26.1.2.0", dumpName: "upgrade-symlink-config" };
+
+      const planned = await upgradeVersion(ctx, request);
+      const accepted = await withRunTimers(() => upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      }));
+
+      expect(accepted.confirmation).toEqual({ status: "accepted" });
+      expect(accepted.profileImageUpdate).toMatchObject({
+        executed: false,
+        ok: false,
+        error: MANUAL_PROFILE_IMAGE_UPDATE_ERROR,
+      });
+      expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+      expect(JSON.parse(readFileSync(targetPath, "utf8"))).toMatchObject({
+        profiles: { default: { image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6" } },
       });
     } finally {
       cleanup();
@@ -973,7 +1023,7 @@ describe("version operations", () => {
     expect(executor.commands).toEqual([]);
   });
 
-  it("reports a failed config image update after successful image verification", async () => {
+  it("reports a manual config update after successful image verification", async () => {
     const executor = new RecordingExecutor();
     const rawConfig = upgradeConfig();
     const fixtureDir = mkdtempSync(join(tmpdir(), "local-ydb-missing-config-test-"));
@@ -998,15 +1048,11 @@ describe("version operations", () => {
       profile: "default",
       sourceImage: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
       targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
-      executed: true,
-      ok: false
-    });
-    expect(response.profileImageUpdate?.error).toBeTruthy();
-    expect(response.results?.at(-1)).toMatchObject({
-      command: `update ${configPath}: profiles.default.image ghcr.io/ydb-platform/local-ydb:26.1.1.6 -> ghcr.io/ydb-platform/local-ydb:26.1.2.0`,
+      executed: false,
       ok: false,
-      exitCode: 1
+      error: MANUAL_PROFILE_IMAGE_UPDATE_ERROR
     });
+    expect(response.results?.some((result) => result.command.includes("profiles.default.image"))).toBe(false);
     rmSync(fixtureDir, { recursive: true, force: true });
   });
 
@@ -1048,7 +1094,7 @@ describe("version operations", () => {
     }
   });
 
-  it("persists the target image and returns history when final inventory is unavailable", async () => {
+  it("requires a manual profile update when final inventory is unavailable", async () => {
     const executor = new RecordingExecutor();
     const rawConfig = upgradeConfig({
       authConfigPath: undefined,
@@ -1073,21 +1119,21 @@ describe("version operations", () => {
       expect(response.imageVerification).toBeUndefined();
       expect(response.profileImageUpdate).toMatchObject({
         targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
-        executed: true,
-        ok: true
+        executed: false,
+        ok: false,
+        error: MANUAL_PROFILE_IMAGE_UPDATE_ERROR
       });
-      expect(response.summary).toContain("could not be verified");
-      expect(response.results?.at(-2)).toMatchObject({ ok: false, exitCode: 1 });
-      expect(response.results?.at(-2)?.stderr).not.toContain("private final inventory failure");
-      expect(response.results?.at(-1)).toMatchObject({ ok: true, exitCode: 0 });
-      const updatedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
-      expect(updatedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.summary).toContain("requires independent verification before manual action");
+      expect(response.results?.at(-1)).toMatchObject({ ok: false, exitCode: 1 });
+      expect(response.results?.at(-1)?.stderr).not.toContain("private final inventory failure");
+      const unchangedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
+      expect(unchangedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.1.6");
     } finally {
       cleanup();
     }
   });
 
-  it("reports a structured config write failure after unavailable final verification", async () => {
+  it("reports manual action without a fake config result after unavailable final verification", async () => {
     const executor = new RecordingExecutor();
     const rawConfig = upgradeConfig({
       authConfigPath: undefined,
@@ -1110,13 +1156,14 @@ describe("version operations", () => {
 
     expect(response.imageVerification).toBeUndefined();
     expect(response.profileImageUpdate).toMatchObject({
-      executed: true,
+      executed: false,
       ok: false,
-      targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0"
+      targetImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+      error: MANUAL_PROFILE_IMAGE_UPDATE_ERROR
     });
-    expect(response.summary).toContain("could not be verified");
-    expect(response.results?.at(-2)).toMatchObject({ ok: false, exitCode: 1 });
+    expect(response.summary).toContain("requires independent verification before manual action");
     expect(response.results?.at(-1)).toMatchObject({ ok: false, exitCode: 1 });
+    expect(response.results?.some((result) => result.command.includes("profiles.default.image"))).toBe(false);
   });
 
   it("rejects digest-pinned profile images for upgrade", async () => {

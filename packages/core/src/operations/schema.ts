@@ -4,6 +4,7 @@ import {
   attachNotRequiredConfirmation,
   authorizeMutation,
   confirmationSummarySuffix,
+  retireSubmittedConfirmation,
 } from "../confirmation.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { Driver } from "@ydbjs/core";
@@ -100,6 +101,7 @@ export async function applySchema(
     }
 
     if (!validation.ok) {
+      retireSubmittedConfirmation(ctx, options);
       return attachNotRequiredConfirmation(ctx, {
         summary: `Schema DDL apply for ${databasePath} was not executed because validation failed.`,
         action,

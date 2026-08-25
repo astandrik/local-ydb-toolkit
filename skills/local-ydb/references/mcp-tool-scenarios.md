@@ -897,11 +897,11 @@ Expected:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
-- successful final inventory verifies the recreated containers' image tags and then persists `profiles.<name>.image` in the file-backed config
-- config persistence requires the token-bound config hash and source image to remain unchanged; a concurrent edit is preserved and returns a failed `profileImageUpdate`
+- successful final inventory verifies the recreated containers' image tags and returns a manual `profileImageUpdate`; it does not write the config
+- after independent image and data readback, manually set `profiles.<name>.image` to the target tag; ordinary files, symlinks, and concurrent edits must remain untouched by the tool
 - a container appearing after token acceptance is not added to teardown
 - a verified image mismatch returns the accumulated history and leaves the profile image unchanged
-- if final inventory is unavailable only after dump/rebuild/restore/auth/node phases succeed, the response appends a safe failed verification result, omits `imageVerification`, preserves the full history, and persists the target profile image for subsequent operations
+- if final inventory is unavailable only after dump/rebuild/restore/auth/node phases succeed, the response appends a safe failed verification result, omits `imageVerification`, preserves the full history, and requires independent verification before the manual profile update
 
 Avoid:
 

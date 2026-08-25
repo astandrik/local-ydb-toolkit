@@ -57,9 +57,10 @@ equal to the full dump size. Composite storage reduction and version upgrade
 make the same kind of private verified copy immediately after generating their
 dump and before teardown, then restore only from that copy. Their teardown
 container set is frozen from the reviewed inventory instead of expanding to
-late arrivals. Version profile persistence also compares the current config
-hash and source image with the accepted plan; a concurrent change is left
-untouched and reported as a failed profile update.
+late arrivals. Version upgrade never rewrites the profile config automatically.
+After independently verifying container images and restored data, update
+`profiles.<name>.image` manually; ordinary files, symlinks, and concurrent edits
+remain untouched by the tool.
 
 Treat the token as an ephemeral capability: do not log or persist it. It does
 not prove that a human approved the plan; the MCP host/client must enforce that

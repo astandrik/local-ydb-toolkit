@@ -20,10 +20,9 @@ import { assertPositiveInteger } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
 import {
   captureProfileConfigReceipt,
+  MANUAL_PROFILE_IMAGE_UPDATE_ERROR,
+  manualProfileImageUpdate,
   plannedProfileImageUpdate,
-  profileImageUpdateCommand,
-  profileImageUpdateResult,
-  updateProfileImage,
   type ProfileImageUpdate,
 } from "./profile-image-config.js";
 import { bootstrap, destroyStack } from "./stack.js";
@@ -246,7 +245,7 @@ export async function upgradeVersion(
     throw new Error("Automatic version upgrade does not support bindMountPath profiles because the upgrade must rebuild from empty storage.");
   }
   if (!ctx.configPath) {
-    throw new Error("Automatic version upgrade requires a file-backed local-ydb config path so the upgraded profile image can be persisted.");
+    throw new Error("Automatic version upgrade requires a file-backed local-ydb config path so the reviewed source profile can be verified and updated manually after the upgrade.");
   }
   const profileConfigReceipt = captureProfileConfigReceipt(
     ctx.configPath,
@@ -308,12 +307,11 @@ export async function upgradeVersion(
     ...bootstrapPlan.plannedCommands,
     ...restorePlan.plannedCommands,
     ...reapplyPlans.flatMap((plan) => plan.plannedCommands),
-    ...extraDynamicPlans.flatMap((plan) => plan.plannedCommands),
-    profileImageUpdateCommand(ctx.configPath, ctx.profile.name, sourceImage, targetImage)
+    ...extraDynamicPlans.flatMap((plan) => plan.plannedCommands)
   ];
   const rollback = [
     `Pull ${sourceImage}, recreate the profile stack with the previous image, and restore dump ${dumpName}.`,
-    `Set profiles.${ctx.profile.name}.image in ${ctx.configPath} back to ${sourceImage} if future profile operations should use the previous image.`,
+    `If the config was manually updated to ${targetImage}, set profiles.${ctx.profile.name}.image in ${ctx.configPath} back to ${sourceImage} when rolling back.`,
     "Auth artifacts are preserved; rerun local_ydb_prepare_auth_config, local_ydb_write_dynamic_auth_config, and local_ydb_apply_auth_hardening if auth reapply needs to be repeated."
   ];
   const verification = [
@@ -328,7 +326,7 @@ export async function upgradeVersion(
       ...extraDynamicNodes.map((node) => node.icPort)
     ].join(", ")}`,
     `profile containers use image ${targetImage}`,
-    `profiles.${ctx.profile.name}.image in ${ctx.configPath} is ${targetImage}`
+    `after independent image and data verification, manually set profiles.${ctx.profile.name}.image in ${ctx.configPath} to ${targetImage}`
   ];
 
   const summary = `Upgrade ${ctx.profile.name} from ${sourceImage} to ${targetImage} via dump, rebuild, and restore.`;
@@ -473,14 +471,12 @@ export async function upgradeVersion(
     }
 
     if (imageVerification.kind === "unavailable") {
-      const executedProfileImageUpdate = updateProfileImage(
+      const manualProfileUpdate = manualProfileImageUpdate(
         ctx.configPath,
         ctx.profile.name,
         sourceImage,
         targetImage,
-        profileConfigReceipt,
       );
-      results.push(profileImageUpdateResult(executedProfileImageUpdate));
       return confirmed(upgradeVersionResponse(
         sourceImage,
         targetImage,
@@ -488,7 +484,7 @@ export async function upgradeVersion(
         authReapplyPlanned,
         extraDynamicNodes,
         undefined,
-        executedProfileImageUpdate,
+        manualProfileUpdate,
         plannedCommands,
         rollback,
         verification,
@@ -496,14 +492,12 @@ export async function upgradeVersion(
       ));
     }
 
-    const executedProfileImageUpdate = updateProfileImage(
+    const manualProfileUpdate = manualProfileImageUpdate(
       ctx.configPath,
       ctx.profile.name,
       sourceImage,
       targetImage,
-      profileConfigReceipt,
     );
-    results.push(profileImageUpdateResult(executedProfileImageUpdate));
 
     return confirmed(upgradeVersionResponse(
       sourceImage,
@@ -512,7 +506,7 @@ export async function upgradeVersion(
       authReapplyPlanned,
       extraDynamicNodes,
       imageVerification.verification,
-      executedProfileImageUpdate,
+      manualProfileUpdate,
       plannedCommands,
       rollback,
       verification,
@@ -812,10 +806,16 @@ function upgradeVersionSummary(
     if (imageVerification.missing.length > 0 || imageVerification.mismatches.length > 0) {
       return `${progress} Final image verification found a mismatch; the profile image was not updated.`;
     }
+    if (profileImageUpdate?.error === MANUAL_PROFILE_IMAGE_UPDATE_ERROR) {
+      return `${progress} Final image verification succeeded; profile config was not updated automatically and requires manual action.`;
+    }
     if (profileImageUpdate?.executed) {
       return `${progress} Final image verification succeeded; profile image update ${profileImageUpdate.ok ? "succeeded" : "failed"}.`;
     }
     return `${progress} Final image verification succeeded.`;
+  }
+  if (profileImageUpdate?.error === MANUAL_PROFILE_IMAGE_UPDATE_ERROR) {
+    return `${progress} Final container images could not be verified; profile config was not updated automatically and requires independent verification before manual action.`;
   }
   if (profileImageUpdate?.executed) {
     return `${progress} Final container images could not be verified; the target profile image update ${profileImageUpdate.ok ? "succeeded" : "failed"}.`;

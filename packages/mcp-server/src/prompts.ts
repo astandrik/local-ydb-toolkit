@@ -109,7 +109,7 @@ export const localYdbPromptDefinitions = {
         workflowSafety,
         "Run local_ydb_status_report or local_ydb_inventory first to establish the current stack state.",
         "Run local_ydb_list_versions before choosing or trusting the target tag. If the source or target image must be pulled, call local_ydb_pull_image without confirm first to review the pull plan. For the upgrade target, pass image set to the exact target image from the upgrade preflight, not the current profile image. After explicit approval, repeat the same local_ydb_pull_image call with confirm=true and the plan response's confirmation.token in the confirmationToken request argument; poll local_ydb_pull_status with the returned jobId until completed.",
-        "Call local_ydb_upgrade_version without confirm using the exact version argument. Include dumpName only if the user supplied it. Review the returned plan for image preflight, dump, teardown, bootstrap, restore, auth reapply, extra-node recreation, image verification, and profile image persistence before asking for execution approval.",
+        "Call local_ydb_upgrade_version without confirm using the exact version argument. Include dumpName only if the user supplied it. Review the returned plan for image preflight, dump, teardown, bootstrap, restore, auth reapply, extra-node recreation, image verification, and the manual profile-image update required after independent verification before asking for execution approval.",
         "Do not use this automatic upgrade path for bindMountPath profiles.",
       ].join("\n\n");
     },

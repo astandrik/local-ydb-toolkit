@@ -956,6 +956,7 @@ describe("mcp tools", () => {
     expect(text).toContain("read its one-time token from confirmation.token");
     expect(text).toContain("confirmationToken request argument");
     expect(text).toContain("do not log or persist it");
+    expect(text).toContain("manual profile-image update required after independent verification");
     expect(text).toContain("\"profile\": \"demo\"");
   });
 
@@ -1205,6 +1206,7 @@ describe("mcp tools", () => {
     expect(authTool?.description).toContain("rollback uses restart or bootstrap reconciliation");
     expect(reduceTool?.description).toContain("preserves its exact gRPC, monitoring, and IC ports");
     expect(upgradeTool?.description).toContain("preserves its exact gRPC, monitoring, and IC ports");
+    expect(upgradeTool?.description).toContain("never updated automatically");
 
     const removeTool = localYdbTools.find((tool) => tool.name === "local_ydb_remove_dynamic_nodes");
     const removeStartIndex = removeTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;
@@ -1439,14 +1441,20 @@ describe("mcp tools", () => {
         version: "26.1.2.0"
       }, {
         executor: new RecordingExecutor()
-      }) as { executed: boolean; profileImageUpdate?: { configPath: string; ok: boolean }; plannedCommands: string[] };
+      }) as {
+        executed: boolean;
+        profileImageUpdate?: { configPath: string; ok: boolean };
+        plannedCommands: string[];
+        verification: string[];
+      };
 
       expect(result.executed).toBe(false);
       expect(result.profileImageUpdate).toMatchObject({
         configPath,
         ok: false
       });
-      expect(result.plannedCommands.join("\n")).toContain(`update ${configPath}: profiles.default.image`);
+      expect(result.plannedCommands.join("\n")).not.toContain("profiles.default.image");
+      expect(result.verification.join("\n")).toContain(`manually set profiles.default.image in ${configPath}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2505,6 +2513,7 @@ describe("mcp tools", () => {
     expect(server._instructions).toContain("local_ydb_check_prerequisites");
     expect(server._instructions).toContain("local_ydb_status_report");
     expect(server._instructions).toContain("PENDING_RESOURCES");
+    expect(server._instructions).toContain("never updates the config automatically");
   });
 
   it("declares tools and list-change-aware prompts capabilities", () => {

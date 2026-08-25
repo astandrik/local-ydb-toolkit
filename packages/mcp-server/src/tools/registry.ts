@@ -523,7 +523,7 @@ export const toolDefinitions = [
     instructionOrder: 8,
     name: "local_ydb_upgrade_version",
     description:
-      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; before dump or destroy it inspects every one-off dynamic node and preserves its exact gRPC, monitoring, and IC ports, aborting on an incomplete definition. It then preflights source and target images, dumps, rebuilds, restores, reapplies auth when configured, recreates extra nodes, and performs final image verification. A verified mismatch leaves the profile unchanged; if final inventory is unavailable after successful rebuild phases, the response keeps command history, reports partial verification, and persists the target profile image.",
+      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; before dump or destroy it inspects every one-off dynamic node and preserves its exact gRPC, monitoring, and IC ports, aborting on an incomplete definition. It then preflights source and target images, dumps, rebuilds, restores, reapplies auth when configured, recreates extra nodes, and performs final image verification. The config is never updated automatically: after independent verification, set profiles.<name>.image manually. A verified mismatch leaves the profile unchanged; unavailable final inventory requires independent verification before that manual update.",
     inputSchema: upgradeVersionSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: async (args, options) => {

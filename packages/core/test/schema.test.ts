@@ -214,6 +214,62 @@ describe("schema application", () => {
     ]);
   });
 
+  it("retires a submitted token when repeated apply validation fails", async () => {
+    const calls: SchemaSdkExecuteRequest[] = [];
+    let validationCalls = 0;
+    let executionCalls = 0;
+    const store = new ProcessConfirmationStore();
+    const context = createContext(undefined, undefined, ConfigSchema.parse({}));
+    const ctx: ToolkitContext = {
+      ...context,
+      confirmation: {
+        store,
+        toolName: "local_ydb_apply_schema",
+        configSource: { kind: "provided", config: context.config },
+      },
+    };
+    const request = {
+      action: "apply" as const,
+      script: "CREATE TABLE exact_plan (id Uint64, PRIMARY KEY (id));",
+      sdkExecutor: async (sdkRequest: SchemaSdkExecuteRequest) => {
+        calls.push(sdkRequest);
+        if (sdkRequest.mode === "validate") {
+          validationCalls += 1;
+          if (validationCalls === 2) {
+            return {
+              ok: false,
+              status: "UNAVAILABLE",
+              issues: "BENIGN_TRANSIENT_VALIDATION",
+            };
+          }
+        } else {
+          executionCalls += 1;
+        }
+        return { ok: true, status: "SUCCESS", issues: "" };
+      },
+    };
+
+    const planned = await applySchema(ctx, request);
+    const confirmedRequest = {
+      ...request,
+      confirm: true as const,
+      confirmationToken: planned.confirmation?.token,
+    };
+    const blocked = await applySchema(ctx, confirmedRequest);
+    const replay = await applySchema(ctx, confirmedRequest);
+
+    expect(blocked).toMatchObject({
+      executed: false,
+      confirmation: { status: "not-required" },
+    });
+    expect(replay).toMatchObject({
+      executed: false,
+      confirmation: { status: "rejected" },
+    });
+    expect(executionCalls).toBe(0);
+    expect(calls.map((call) => call.mode)).toEqual(["validate", "validate", "validate"]);
+  });
+
   it("shares one absolute timeout across schema validation and execution", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
     const calls: SchemaSdkExecuteRequest[] = [];

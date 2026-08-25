@@ -118,7 +118,8 @@ export class ProcessConfirmationStore {
 
   #sign(nonce: Buffer, intent: unknown): Buffer {
     return createHmac("sha256", this.#key)
-      // codeql[js/insufficient-password-hash]: This is a keyed capability HMAC, not password hashing.
+      // This is a keyed capability HMAC, not password hashing.
+      // codeql[js/insufficient-password-hash]
       .update(nonce)
       .update("\0")
       .update(canonicalJson(intent), "utf8")
