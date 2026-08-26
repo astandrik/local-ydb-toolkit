@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.18.1...mcp-server-v0.18.2) (2026-08-26)
+
+
+### Bug Fixes
+
+* **core:** harden explicit config loading ([#155](https://github.com/astandrik/local-ydb-toolkit/issues/155)) ([3d3ae58](https://github.com/astandrik/local-ydb-toolkit/commit/3d3ae58b4a71d3904f6ce855d7bd875296a1ce9c))
+* **core:** support legacy healthcheck options ([#160](https://github.com/astandrik/local-ydb-toolkit/issues/160)) ([dc22df0](https://github.com/astandrik/local-ydb-toolkit/commit/dc22df04496c426f948f8dc3ae9045a31e9e31f5))
+
 ## [0.18.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.18.0...mcp-server-v0.18.1) (2026-08-22)
 
 
