@@ -76,6 +76,42 @@ export function ensureImagePresentSpec(image: string): CommandSpec {
   });
 }
 
+export async function inspectImageId(ctx: ToolkitContext, image: string): Promise<string> {
+  const spec: CommandSpec = {
+    command: "docker",
+    args: ["image", "inspect", "--format", "{{.Id}}", image],
+    timeoutMs: IMAGE_INSPECT_TIMEOUT_MS,
+    allowFailure: true,
+    description: `Inspect exact Docker image identity for ${image}`,
+  };
+  const result = await ctx.client.run(spec);
+  const imageId = result.stdout.trim();
+  if (!result.ok || !imageId || /\s/.test(imageId)) {
+    throw new Error("Unable to inspect exact Docker image identity.");
+  }
+  return imageId;
+}
+
+export function ensureImageIdSpec(image: string, expectedImageId: string): CommandSpec {
+  const message = `Docker image ${image} no longer matches the confirmed image identity.`;
+  return bash([
+    "set -euo pipefail",
+    `expected_image_id=${shellQuote(expectedImageId)}`,
+    `if ! observed_image_id=$(docker image inspect --format ${shellQuote("{{.Id}}")} ${shellQuote(image)} 2>/dev/null); then`,
+    `  printf '%s\\n' ${shellQuote(message)} >&2`,
+    "  exit 42",
+    "fi",
+    "if [ \"$observed_image_id\" != \"$expected_image_id\" ]; then",
+    `  printf '%s\\n' ${shellQuote(message)} >&2`,
+    "  exit 42",
+    "fi",
+  ].join("\n"), {
+    timeoutMs: IMAGE_INSPECT_TIMEOUT_MS,
+    allowFailure: true,
+    description: `Require exact Docker image identity for ${image}`,
+  });
+}
+
 export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions = {}): Promise<ImagePullResponse> {
   const image = (options.image ?? ctx.profile.image).trim();
   if (!image) {

@@ -232,6 +232,7 @@ async function runStaticEnsureCase(options: {
   fixture?: Partial<StaticContainerFixture>;
   profileOverrides?: Record<string, unknown>;
   checkOnly?: boolean;
+  expectedImageId?: string;
 } = {}) {
   const tempDir = createTempDir();
   try {
@@ -327,7 +328,17 @@ if [ "$1" = "inspect" ]; then
   fi
   return 0
 fi
+if [ "$1" = "create" ]; then
+  printf '%s\n' created-static-id
+  return 0
+fi
 if [ "$1" = "start" ] && [ "$2" = "ydb-local" ]; then
+  return 0
+fi
+if [ "$1" = "start" ] && [ "$2" = "created-static-id" ]; then
+  return 0
+fi
+if [ "$1" = "rm" ] && [ "$2" = "-f" ] && [ "$3" = "created-static-id" ]; then
   return 0
 fi
 printf '%s\\n' "unexpected docker invocation: $*" >&2
@@ -347,9 +358,10 @@ return 99
             )
           })
         : commandForStaticEnsureRun(profile, {
-            enableGraphShard: true,
-            requireGraphShard: true,
-            publishedDynamicGrpcPorts: Array.from(
+          enableGraphShard: true,
+          requireGraphShard: true,
+          expectedImageId: options.expectedImageId,
+          publishedDynamicGrpcPorts: Array.from(
               { length: profile.dynamicNodeCount },
               (_, offset) => profile.ports.dynamicGrpc + offset
             )
@@ -539,5 +551,35 @@ describe("commandForStaticEnsureRun", () => {
     expect(response.result.ok).toBe(false);
     expect(response.injectionMarkerCreated).toBe(false);
     expect(response.result.stderr).not.toContain("touch");
+  });
+
+  it("starts a newly created static container only after its image ID matches the confirmed target", async () => {
+    const response = await runStaticEnsureCase({
+      fixture: { exists: "false" },
+      expectedImageId: "sha256:current-image",
+    });
+    const createIndex = response.invocations.findIndex((invocation) => invocation.startsWith("create "));
+    const imageCheckIndex = response.invocations.findIndex((invocation) => invocation.includes("{{.Image}} created-static-id"));
+    const startIndex = response.invocations.findIndex((invocation) => invocation === "start created-static-id");
+
+    expect(response.result.ok).toBe(true);
+    expect(createIndex).toBeGreaterThanOrEqual(0);
+    expect(imageCheckIndex).toBeGreaterThan(createIndex);
+    expect(startIndex).toBeGreaterThan(imageCheckIndex);
+  });
+
+  it("removes a newly created static container when a tag retargets before creation completes", async () => {
+    const response = await runStaticEnsureCase({
+      fixture: {
+        exists: "false",
+        containerImageId: "sha256:retagged-image",
+      },
+      expectedImageId: "sha256:current-image",
+    });
+
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain("no longer matches the confirmed image identity");
+    expect(response.invocations).toContain("rm -f created-static-id");
+    expect(response.invocations).not.toContain("start created-static-id");
   });
 });

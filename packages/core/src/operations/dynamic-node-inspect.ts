@@ -81,6 +81,23 @@ export async function inspectDynamicNodePorts(
   return byContainer;
 }
 
+export async function inspectExactDynamicNodeTargets(
+  ctx: ToolkitContext,
+  containers: string[],
+): Promise<ExactDynamicNodeTarget[]> {
+  if (containers.length === 0) {
+    return [];
+  }
+  const byContainer = await inspectDynamicNodePorts(ctx, containers);
+  return containers.map((container) => {
+    const containerId = byContainer.get(container)?.containerId;
+    if (!containerId) {
+      throw new Error("Could not inspect exact Docker identity for every extra dynamic node before destructive teardown.");
+    }
+    return { container, containerId };
+  });
+}
+
 export async function inspectExtraDynamicNodePlans(
   ctx: ToolkitContext,
   names: Array<string | undefined>

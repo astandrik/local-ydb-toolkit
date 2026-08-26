@@ -1142,7 +1142,8 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         const recoveryResultIndex = failedRestart.results?.findIndex((result, index) => (
           index > failedResultIndex
           && result.ok === true
-          && result.command?.includes(`docker start ${oneOffContainer}`)
+          && result.command?.includes("docker start")
+          && result.command.includes(oneOffContainer)
         )) ?? -1;
         assert(failedResultIndex >= 0, "restart with an unused monitoring endpoint did not fail readiness.");
         assert(recoveryResultIndex > failedResultIndex, "failed restart did not restore the running one-off container after the original error.");

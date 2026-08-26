@@ -23,11 +23,20 @@ interface StaticCompatibilityOptions {
 
 interface StaticEnsureOptions extends StaticCompatibilityOptions {
   enableGraphShard?: boolean;
+  expectedImageId?: string;
 }
 
 export function commandForStaticRun(
   profile: ResolvedLocalYdbProfile,
   options: { enableGraphShard?: boolean; publishedDynamicGrpcPorts?: readonly number[] } = {}
+): string {
+  return commandForStaticCreateOrRun(profile, options, "run");
+}
+
+function commandForStaticCreateOrRun(
+  profile: ResolvedLocalYdbProfile,
+  options: { enableGraphShard?: boolean; publishedDynamicGrpcPorts?: readonly number[] },
+  mode: "create" | "run",
 ): string {
   const enableGraphShard = options.enableGraphShard ?? true;
   const publishedDynamicGrpcPorts = options.publishedDynamicGrpcPorts ?? [];
@@ -36,7 +45,8 @@ export function commandForStaticRun(
   const grpcPortMappings = requiredPublishedGrpcPorts(profile, publishedDynamicGrpcPorts)
     .flatMap((port) => ["-p", `127.0.0.1:${port}:${port}`]);
   return [
-    "docker", "run", "-d",
+    "docker", mode,
+    ...(mode === "run" ? ["-d"] : []),
     "--name", profile.staticContainer,
     "--no-healthcheck",
     "--network", profile.network,
@@ -99,11 +109,16 @@ function commandForStaticContainer(
     "YDB_LOCAL_SURVIVE_RESTART=1",
     ...(requireGraphShard ? ["YDB_FEATURE_FLAGS=enable_graph_shard"] : [])
   ];
+  const expectedImageIdLines = options.expectedImageId
+    ? [`expected_image_id=${shellQuote(options.expectedImageId)}`]
+    : [
+        `if ! expected_image_id=$(docker image inspect --format ${shellQuote("{{.Id}}")} ${shellQuote(profile.image)} 2>/dev/null); then`,
+        ...staticContainerMismatchLines(profile, "image ID", "  "),
+        "fi",
+      ];
   const compatibilityLines = [
     ...staticInspectValueCheck(profile, "{{.Config.Image}}", profile.image, "image reference"),
-    `if ! expected_image_id=$(docker image inspect --format ${shellQuote("{{.Id}}")} ${shellQuote(profile.image)} 2>/dev/null); then`,
-    ...staticContainerMismatchLines(profile, "image ID", "  "),
-    "fi",
+    ...expectedImageIdLines,
     `if ! observed=$(docker inspect --type container --format ${shellQuote("{{.Image}}")} ${container} 2>/dev/null); then`,
     ...staticContainerMismatchLines(profile, "image ID", "  "),
     "fi",
@@ -140,7 +155,9 @@ function commandForStaticContainer(
     `if ! printf '%s\\n' \"$existing_containers\" | grep -Fxq ${shellQuote(profile.staticContainer)}; then`,
     ...(checkOnly
       ? staticContainerMismatchLines(profile, "container inspection", "  ")
-      : [`  ${commandForStaticRun(profile, { enableGraphShard, publishedDynamicGrpcPorts })}`, "  exit 0"]),
+      : options.expectedImageId
+        ? exactStaticCreateLines(profile, options.expectedImageId, { enableGraphShard, publishedDynamicGrpcPorts })
+        : [`  ${commandForStaticRun(profile, { enableGraphShard, publishedDynamicGrpcPorts })}`, "  exit 0"]),
     "fi",
     ...compatibilityLines,
     ...(checkOnly
@@ -159,6 +176,41 @@ function commandForStaticContainer(
         "exit 0"
       ])
   ].join("\n");
+}
+
+function exactStaticCreateLines(
+  profile: ResolvedLocalYdbProfile,
+  expectedImageId: string,
+  options: { enableGraphShard?: boolean; publishedDynamicGrpcPorts?: readonly number[] },
+): string[] {
+  const imageMismatch = `Docker image ${profile.image} no longer matches the confirmed image identity.`;
+  const createCommand = commandForStaticCreateOrRun(profile, options, "create");
+  return [
+    `  expected_image_id=${shellQuote(expectedImageId)}`,
+    `  if ! observed_image_id=$(docker image inspect --format ${shellQuote("{{.Id}}")} ${shellQuote(profile.image)} 2>/dev/null); then`,
+    `    printf '%s\\n' ${shellQuote(imageMismatch)} >&2`,
+    "    exit 1",
+    "  fi",
+    "  if [ \"$observed_image_id\" != \"$expected_image_id\" ]; then",
+    `    printf '%s\\n' ${shellQuote(imageMismatch)} >&2`,
+    "    exit 1",
+    "  fi",
+    `  if ! created_id=$(${createCommand}); then`,
+    "    exit 1",
+    "  fi",
+    `  if ! observed_image_id=$(docker inspect --type container --format ${shellQuote("{{.Image}}")} "$created_id" 2>/dev/null); then`,
+    "    docker rm -f \"$created_id\" >/dev/null 2>&1 || true",
+    `    printf '%s\\n' ${shellQuote(imageMismatch)} >&2`,
+    "    exit 1",
+    "  fi",
+    "  if [ \"$observed_image_id\" != \"$expected_image_id\" ]; then",
+    "    docker rm -f \"$created_id\" >/dev/null 2>&1 || true",
+    `    printf '%s\\n' ${shellQuote(imageMismatch)} >&2`,
+    "    exit 1",
+    "  fi",
+    "  docker start \"$created_id\" >/dev/null",
+    "  exit 0",
+  ];
 }
 
 function staticInspectValueCheck(

@@ -151,9 +151,13 @@ function stubUpgradeExecutor(
     captureAppliedAuth?: (content: string) => void;
     captureAuthRoot?: (path: string) => void;
     failAuthPersist?: boolean;
+    targetImageId?: string;
+    finalContainerImageId?: string;
+    failExactTargetImageCheckCall?: number;
   } = {}
 ): void {
   let dockerPsCalls = 0;
+  let exactTargetImageCheckCalls = 0;
   let acceptedMutationStarted = false;
   let destroyThrown = false;
   executor.run = async (_profile, spec) => {
@@ -205,6 +209,35 @@ function stubUpgradeExecutor(
     }
     const command = executor.display(_profile, spec);
     executor.commands.push(command);
+    const targetImageId = options.targetImageId ?? "sha256:reviewed-target-image";
+    if (
+      spec.command === "docker"
+      && spec.args?.[0] === "image"
+      && spec.args?.[1] === "inspect"
+      && spec.args?.[2] === "--format"
+      && spec.args?.[3] === "{{.Id}}"
+    ) {
+      return {
+        command,
+        exitCode: 0,
+        stdout: `${targetImageId}\n`,
+        stderr: "",
+        ok: true,
+        timedOut: false,
+      };
+    }
+    if (spec.description?.startsWith("Require exact Docker image identity")) {
+      exactTargetImageCheckCalls += 1;
+      const ok = exactTargetImageCheckCalls !== options.failExactTargetImageCheckCall;
+      return {
+        command,
+        exitCode: ok ? 0 : 42,
+        stdout: "",
+        stderr: ok ? "" : "BENIGN_TARGET_IMAGE_ID_MISMATCH",
+        ok,
+        timedOut: false,
+      };
+    }
     const rawScript = spec.args?.[1] ?? "";
     const authRoot = /\/tmp\/local-ydb-toolkit-composite-auth-[A-Za-z0-9_-]+/.exec(rawScript)?.[0];
 
@@ -304,6 +337,33 @@ function stubUpgradeExecutor(
     }
     if (command.includes("{{.RestartCount}}")) {
       return { command, exitCode: 0, stdout: "container-id\ttrue\tfalse\t0", stderr: "", ok: true, timedOut: false };
+    }
+    if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+      const inspectedNames = spec.args.slice(1);
+      if (inspectedNames.includes(_profile.staticContainer)) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: JSON.stringify(inspectedNames.map((name) => ({
+            Name: `/${name}`,
+            Image: options.finalContainerImageId ?? targetImageId,
+          }))),
+          stderr: "",
+          ok: true,
+          timedOut: false,
+        };
+      }
+      return {
+        command,
+        exitCode: 0,
+        stdout: JSON.stringify(options.inspectedNodes ?? [
+          { Id: "reviewed-ydb-dyn-example-2-id", Name: "/ydb-dyn-example-2", Args: ["--grpc-port", "2138", "--mon-port", "8767", "--ic-port", "19003"] },
+          { Id: "reviewed-ydb-dyn-example-4-id", Name: "/ydb-dyn-example-4", Args: ["--grpc-port", "2140", "--mon-port", "8769", "--ic-port", "19005"] }
+        ]),
+        stderr: "",
+        ok: true,
+        timedOut: false
+      };
     }
     if (command.includes("docker inspect")) {
       return {
@@ -553,7 +613,9 @@ describe("version operations", () => {
         ok: false
       });
       expect(response.plannedCommands[0]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6");
-      expect(response.plannedCommands[1]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.plannedCommands[1]).toContain("docker image inspect --format");
+      expect(response.plannedCommands[1]).toContain("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.plannedCommands[1]).toContain("sha256:reviewed-target-image");
       expect(response.plannedCommands.join("\n")).toContain("/dump/");
       expect(response.plannedCommands.join("\n")).toContain("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
       expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-ydb-dyn-example-2-id");
@@ -604,6 +666,33 @@ describe("version operations", () => {
       }
       expect(response.verification.join("\n")).toContain("ydb-dyn-example, ydb-dyn-example-2, ydb-dyn-example-3, ydb-dyn-example-4");
       expect(response.verification.join("\n")).toContain("19002, 19003, 19004, 19204");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects an exact-plan token when the target tag resolves to a different image ID", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig();
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    const stubOptions = { targetImageId: "sha256:reviewed-target-image" };
+    try {
+      const context = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      const ctx = exactConfirmationContext(context);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.1.6", stubOptions);
+      const request = { version: "26.1.2.0", dumpName: "upgrade-retagged-before-confirm" };
+
+      const planned = await upgradeVersion(ctx, request);
+      stubOptions.targetImageId = "sha256:replacement-target-image";
+      const confirmed = await upgradeVersion(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      });
+
+      expect(confirmed.confirmation?.status).toBe("rejected");
+      expect(executor.commands.some((command) => command.includes(" tools dump "))).toBe(false);
+      expect(executor.commands.some((command) => command.includes("docker rm -f ydb-local"))).toBe(false);
     } finally {
       cleanup();
     }
@@ -677,11 +766,44 @@ describe("version operations", () => {
 
       const commands = response.results?.map((result) => result.command) ?? [];
       expect(commands[0]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.1.6");
-      expect(commands[1]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(commands[1]).toContain("docker image inspect --format");
+      expect(commands[1]).toContain("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(commands[1]).toContain("sha256:reviewed-target-image");
       expect(commands.some((command) => command.includes("--name ydb-local") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("--name ydb-dyn-example-2") && command.includes("ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("verify profile containers use image ghcr.io/ydb-platform/local-ydb:26.1.2.0"))).toBe(true);
       expect(commands.some((command) => command.includes("profiles.default.image"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("fails before teardown when the target tag changes after dump snapshot creation", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.1.6", {
+        failExactTargetImageCheckCall: 2,
+        containerNames: ["ydb-dyn-example", "ydb-local"],
+      });
+
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-retagged-before-destroy",
+      }));
+
+      expect(response.executed).toBe(true);
+      expect(response.results?.some((result) => result.stderr === "BENIGN_TARGET_IMAGE_ID_MISMATCH")).toBe(true);
+      expect(executor.commands.some((command) => command.includes("docker rm -f ydb-local"))).toBe(false);
+      expect(executor.commands.some((command) => command.includes("docker network rm"))).toBe(false);
     } finally {
       cleanup();
     }
@@ -1232,6 +1354,74 @@ describe("version operations", () => {
       expect(response.summary).toContain("Final image verification found a mismatch");
       const unchangedConfig = JSON.parse(readFileSync(configPath, "utf8")) as { profiles: { default: { image: string } } };
       expect(unchangedConfig.profiles.default.image).toBe("ghcr.io/ydb-platform/local-ydb:26.1.1.6");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reports a mismatch when final containers keep the target tag but use another image ID", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: ["ydb-dyn-example", "ydb-local"],
+        finalContainerImageId: "sha256:unexpected-final-image",
+      });
+
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-final-id-mismatch",
+      }));
+
+      expect(response.imageVerification).toEqual({
+        expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        missing: [],
+        mismatches: [
+          "ydb-local -> unexpected image ID",
+          "ydb-dyn-example -> unexpected image ID",
+        ],
+      });
+      expect(response.profileImageUpdate).toMatchObject({ executed: false, ok: false });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reports inventory-missing containers without downgrading final verification to unavailable", async () => {
+    const executor = new RecordingExecutor();
+    const rawConfig = upgradeConfig({
+      authConfigPath: undefined,
+      dynamicNodeAuthSid: undefined,
+      dynamicNodeAuthTokenFile: undefined,
+      rootPasswordFile: undefined,
+    });
+    const { configPath, cleanup } = writeTempConfig(rawConfig);
+    try {
+      const ctx = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+      stubUpgradeExecutor(executor, "ghcr.io/ydb-platform/local-ydb:26.1.2.0", {
+        containerNames: ["ydb-local"],
+      });
+
+      const response = await withRunTimers(() => upgradeVersion(ctx, {
+        confirm: true,
+        version: "26.1.2.0",
+        dumpName: "upgrade-final-container-missing",
+      }));
+
+      expect(response.imageVerification).toEqual({
+        expectedImage: "ghcr.io/ydb-platform/local-ydb:26.1.2.0",
+        missing: ["ydb-dyn-example"],
+        mismatches: [],
+      });
+      expect(response.profileImageUpdate).toMatchObject({ executed: false, ok: false });
     } finally {
       cleanup();
     }

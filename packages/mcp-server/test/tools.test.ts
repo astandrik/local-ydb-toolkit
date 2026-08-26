@@ -102,6 +102,12 @@ class RecordingExecutor implements CommandExecutor {
     if (command.includes("docker volume ls")) {
       return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
     }
+    if (
+      spec.command === "docker"
+      && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+    ) {
+      return { command, exitCode: 0, stdout: "sha256:reviewed-target-image\n", stderr: "", ok: true, timedOut: false };
+    }
     if (command.includes("docker inspect")) {
       return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
     }
@@ -1283,6 +1289,7 @@ describe("mcp tools", () => {
     const startTool = localYdbTools.find((tool) => tool.name === "local_ydb_start_dynamic_node");
     const reduceTool = localYdbTools.find((tool) => tool.name === "local_ydb_reduce_storage_groups");
     const upgradeTool = localYdbTools.find((tool) => tool.name === "local_ydb_upgrade_version");
+    const destroyTool = localYdbTools.find((tool) => tool.name === "local_ydb_destroy_stack");
     expect(bootstrapTool?.description).toContain("stable by container ID and RestartCount across two checks");
     expect(bootstrapTool?.description).toContain("every configured dynamic gRPC port");
     expect(bootstrapTool?.description).toContain("configured container names must be distinct from the static container");
@@ -1299,10 +1306,16 @@ describe("mcp tools", () => {
     expect(restartTool?.description).toContain("bound to its full inspected Docker ID for both stop and recovery");
     expect(restartTool?.description).toContain("same-name replacement is rejected and left untouched");
     expect(restartTool?.description).toContain("rollback uses restart or bootstrap reconciliation");
+    expect(destroyTool?.description).toContain("bound to its exact inspected Docker container ID");
+    expect(destroyTool?.description).toContain("same-name replacement after confirmation is rejected and preserved");
     expect(authTool?.description).toContain("before any config or container mutation");
     expect(authTool?.description).toContain("even when no dynamic-node token file is configured");
     expect(authTool?.description).toContain("rollback uses restart or bootstrap reconciliation");
     expect(reduceTool?.description).toContain("preserves its exact gRPC, monitoring, and IC ports");
+    expect(upgradeTool?.description).toContain("binds the target tag to its resolved Docker image ID");
+    expect(upgradeTool?.description).toContain("rechecks it immediately before teardown");
+    expect(upgradeTool?.description).toContain("creates the replacement static container stopped");
+    expect(upgradeTool?.description).toContain("verifies final container image IDs as well as tags");
     expect(upgradeTool?.description).toContain("preserves its exact gRPC, monitoring, and IC ports");
     expect(upgradeTool?.description).toContain("never updated automatically");
 

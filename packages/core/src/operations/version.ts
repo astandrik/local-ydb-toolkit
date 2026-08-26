@@ -21,7 +21,7 @@ import { addDynamicNodes } from "./dynamic-nodes.js";
 import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
 import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
 import { assertPositiveInteger } from "./helpers.js";
-import { ensureImagePresentSpec } from "./images.js";
+import { ensureImageIdSpec, ensureImagePresentSpec, inspectImageId } from "./images.js";
 import {
   captureProfileConfigReceipt,
   MANUAL_PROFILE_IMAGE_UPDATE_ERROR,
@@ -256,6 +256,7 @@ export async function upgradeVersion(
     ctx.profile.name,
     sourceImage,
   );
+  const targetImageId = await inspectImageId(ctx, targetImage);
 
   const authReapplyPlanned = requiresAuthReapply(ctx.profile);
   const dumpName = options.dumpName ?? buildUpgradeDumpName(ctx.profile, sourceImage, version);
@@ -271,7 +272,7 @@ export async function upgradeVersion(
   const authArtifactScope = authReapplyPlanned
     ? {
         kind: "version-upgrade-generated-auth",
-        request: { version, dumpName, sourceImage, targetImage },
+        request: { version, dumpName, sourceImage, targetImage, targetImageId },
       }
     : undefined;
   const authArtifacts = authArtifactScope
@@ -280,7 +281,7 @@ export async function upgradeVersion(
   const finalCtx = authArtifacts?.context ?? finalBaseCtx;
 
   const sourceImageSpec = ensureImagePresentSpec(sourceImage);
-  const targetImageSpec = ensureImagePresentSpec(targetImage);
+  const targetImageSpec = ensureImageIdSpec(targetImage, targetImageId);
   const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
   const preparedExtraDynamicNodes = extraDynamicNodes;
   const destroyPlan = await destroyStack(
@@ -288,7 +289,7 @@ export async function upgradeVersion(
     { confirm: false },
     preparedExtraDynamicNodes,
   );
-  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false });
+  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false }, { expectedImageId: targetImageId });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
     ? [
@@ -318,6 +319,7 @@ export async function upgradeVersion(
     ctx.client.display(targetImageSpec),
     ...dumpPlan.plannedCommands,
     COMPOSITE_DUMP_SNAPSHOT_COMMAND,
+    ctx.client.display(targetImageSpec),
     ...destroyPlan.plannedCommands,
     ...bootstrapPlan.plannedCommands,
     ...restorePlan.plannedCommands,
@@ -347,7 +349,7 @@ export async function upgradeVersion(
   const summary = `Upgrade ${ctx.profile.name} from ${sourceImage} to ${targetImage} via dump, rebuild, and restore.`;
   const decision = await authorizeMutation(ctx, options, {
     kind: "version-upgrade",
-    request: { version, dumpName, sourceImage, targetImage },
+    request: { version, dumpName, sourceImage, targetImage, targetImageId },
     profileConfigReceipt,
     profileImageUpdate,
     extraDynamicNodes,
@@ -425,6 +427,11 @@ export async function upgradeVersion(
     if (!dumpSnapshot.result.ok || !dumpSnapshot.preparedRestore) {
       return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
     }
+    const destructiveBoundaryImageResult = await ctx.client.run(targetImageSpec);
+    results.push(destructiveBoundaryImageResult);
+    if (!destructiveBoundaryImageResult.ok) {
+      return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+    }
     if (!await runOperation(results, await destroyStack(
       phaseCtx,
       { confirm: true },
@@ -432,7 +439,7 @@ export async function upgradeVersion(
     ))) {
       return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
     }
-    if (!await runOperation(results, await bootstrap(rebuildCtx, { confirm: true }))) {
+    if (!await runOperation(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: targetImageId }))) {
       return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
     }
     if (!await runOperation(results, await restoreTenant(
@@ -474,7 +481,12 @@ export async function upgradeVersion(
       }
     }
 
-    const imageVerification = await verifyProfileImages(finalCtx, targetImage, extraDynamicNodes.map((node) => node.container));
+    const imageVerification = await verifyProfileImages(
+      finalCtx,
+      targetImage,
+      targetImageId,
+      extraDynamicNodes.map((node) => node.container),
+    );
     results.push(imageVerification.result);
     if (imageVerification.kind === "mismatch") {
       return confirmed(upgradeVersionResponse(
@@ -724,6 +736,7 @@ function upgradeContext(ctx: ToolkitContext, targetImage: string, includeAuth: b
 async function verifyProfileImages(
   ctx: ToolkitContext,
   expectedImage: string,
+  expectedImageId: string,
   extraDynamicContainers: string[]
 ): Promise<ImageVerificationOutcome> {
   const inv = await inventory(ctx);
@@ -751,10 +764,44 @@ async function verifyProfileImages(
       .map((container) => [container.names as string, container.image as string])
   );
   const missing = targetNames.filter((name) => !imageByName.has(name));
-  const mismatches = targetNames
-    .map((name) => ({ name, image: imageByName.get(name) }))
-    .filter((item): item is { name: string; image: string } => typeof item.image === "string" && item.image !== expectedImage)
-    .map((item) => `${item.name} -> ${item.image}`);
+  const presentNames = targetNames.filter((name) => imageByName.has(name));
+  let exactImageByName: Map<string, string>;
+  try {
+    const inspected = await ctx.client.dockerInspect(presentNames);
+    exactImageByName = new Map(inspected.flatMap((item) => {
+      if (!item || typeof item !== "object") {
+        return [];
+      }
+      const value = item as Record<string, unknown>;
+      const name = typeof value.Name === "string" ? value.Name.replace(/^\//, "") : undefined;
+      const imageId = typeof value.Image === "string" ? value.Image : undefined;
+      return name && imageId ? [[name, imageId] as const] : [];
+    }));
+  } catch {
+    return {
+      kind: "unavailable",
+      result: {
+        command: `verify profile containers use image ${expectedImage}`,
+        exitCode: 1,
+        stdout: "",
+        stderr: "Docker image identity inspection was unavailable during final verification.",
+        ok: false,
+        timedOut: false,
+      },
+    };
+  }
+  const mismatches = targetNames.flatMap((name) => {
+    const image = imageByName.get(name);
+    if (!image) {
+      return [];
+    }
+    if (image !== expectedImage) {
+      return [`${name} -> ${image}`];
+    }
+    return exactImageByName.get(name) === expectedImageId
+      ? []
+      : [`${name} -> unexpected image ID`];
+  });
   const ok = missing.length === 0 && mismatches.length === 0;
 
   const verification = { expectedImage, missing, mismatches };

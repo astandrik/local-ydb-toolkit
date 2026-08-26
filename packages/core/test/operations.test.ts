@@ -3905,7 +3905,12 @@ describe("mutating operations", () => {
         return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
       }
       if (command.includes("docker inspect")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+        return commandResult(command, {
+          stdout: JSON.stringify([
+            { Id: "reviewed-extra-3", Name: "/ydb-dyn-example-3" },
+            { Id: "reviewed-extra-2", Name: "/ydb-dyn-example-2" },
+          ]),
+        });
       }
       return {
         command,
@@ -3920,12 +3925,87 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-3", "ydb-dyn-example-2"]);
     expect(response.plannedCommands.join("\n")).toContain("admin database /local/example remove --force");
-    expect(response.plannedCommands.join("\n")).toContain("docker rm -f ydb-dyn-example-3");
+    expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-extra-3");
+    expect(response.plannedCommands.join("\n")).toContain('docker rm -f "$expected_id"');
     expect(response.plannedCommands.join("\n")).toContain("docker rm -f ydb-dyn-example");
     expect(response.plannedCommands.join("\n")).toContain("docker network rm ydb-net");
     expect(response.plannedCommands.join("\n")).toContain("docker volume rm ydb-local-data");
     expect(response.removesAuthArtifacts).toBe(false);
     expect(response.removesDumpHostPath).toBe(false);
+  });
+
+  it("rejects standalone destroy planning when an extra container identity is unavailable", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (spec.command === "docker" && spec.args?.[0] === "ps") {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local"}',
+            '{"Names":"ydb-dyn-example"}',
+            '{"Names":"ydb-dyn-example-2"}',
+          ].join("\n"),
+        });
+      }
+      if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+        return commandResult(command, { stdout: "[]" });
+      }
+      return commandResult(command);
+    };
+
+    await expect(destroyStack(ctx, {})).rejects.toThrow(
+      "Could not inspect exact Docker identity for every extra dynamic node before destructive teardown.",
+    );
+    expect(executor.commands.some((command) => command.includes("docker rm -f"))).toBe(false);
+  });
+
+  it("rejects a standalone destroy token after an extra container is replaced", async () => {
+    let extraContainerId = "reviewed-extra-id";
+    let extraRemovalCalls = 0;
+    const executor = new RecordingExecutor();
+    const context = createContext(undefined, executor, ConfigSchema.parse({}));
+    const ctx = {
+      ...context,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_destroy_stack",
+        configSource: { kind: "provided" as const, config: context.config },
+      },
+    };
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (spec.command === "docker" && spec.args?.[0] === "ps") {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local"}',
+            '{"Names":"ydb-dyn-example"}',
+            '{"Names":"ydb-dyn-example-2"}',
+          ].join("\n"),
+        });
+      }
+      if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+        return commandResult(command, {
+          stdout: JSON.stringify([{ Id: extraContainerId, Name: "/ydb-dyn-example-2" }]),
+        });
+      }
+      if (spec.description === "Remove exact extra dynamic tenant node ydb-dyn-example-2") {
+        extraRemovalCalls += 1;
+      }
+      return commandResult(command);
+    };
+
+    const planned = await destroyStack(ctx, {});
+    extraContainerId = "replacement-extra-id";
+    const confirmed = await destroyStack(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(confirmed.confirmation?.status).toBe("rejected");
+    expect(extraRemovalCalls).toBe(0);
   });
 
   it("fails closed when a prepared composite extra-node identity changes", async () => {
@@ -4052,6 +4132,11 @@ describe("mutating operations", () => {
       }
       if (command.includes("docker volume ls")) {
         return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
+      }
+      if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+        return commandResult(command, {
+          stdout: JSON.stringify([{ Id: "reviewed-extra-2", Name: "/ydb-dyn-example-2" }]),
+        });
       }
       if (command.includes("admin database /local/example remove --force")) {
         return {

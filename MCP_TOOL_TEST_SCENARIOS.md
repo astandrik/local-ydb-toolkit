@@ -952,6 +952,7 @@ Expected:
 - extra dynamic-node suffixes are re-added after restore/auth reapply
 - every one-off node keeps its inspected Docker ID plus gRPC, monitoring, and IC ports; an incomplete inspect aborts before dump or destroy
 - a one-off container appearing after token acceptance is not added to teardown, and a same-name replacement is preserved because its ID does not match the reviewed target
+- standalone `local_ydb_destroy_stack` also resolves every discovered extra node to its exact Docker ID before returning a plan; a missing ID aborts, and replacing a reviewed name before confirm rejects the token without removing the replacement
 
 Avoid:
 
@@ -981,8 +982,10 @@ Optional execution path on a disposable stack:
 Expected:
 
 - the plan starts with source and target image preflight checks
+- the target tag's resolved Docker image ID is part of the confirmed plan; retagging before confirm rejects the token, and retagging after acceptance fails the repeated exact-ID check before teardown
 - if either image is missing, run `local_ydb_pull_image` first and retry after `local_ydb_pull_status` reports completion
 - after image preflight, the upgrade path performs dump, destroy, bootstrap, restore, auth reapply, and extra dynamic-node recreation in that order
+- the replacement static container is created stopped and removed without being started if its resolved image ID differs from the confirmed target; final verification checks container image IDs as well as tag labels
 - immediately after dump, the upgrade creates a private verified copy and restores only from it; replacing the canonical dump before restore must not change restored bytes
 - before dump or destroy, every one-off node's exact Docker ID plus gRPC, monitoring, and IC ports are inspected and retained; an incomplete definition aborts the rebuild
 - auth-enabled profiles re-run:

@@ -417,7 +417,7 @@ export const toolDefinitions = [
     instructionOrder: 6,
     name: "local_ydb_destroy_stack",
     description:
-      "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup.",
+      "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup. Before returning or executing a standalone plan, every discovered extra dynamic node is bound to its exact inspected Docker container ID; an unavailable identity aborts planning, while a same-name replacement after confirmation is rejected and preserved.",
     inputSchema: destroyStackSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: withContext(DestroyStackArgs, (context, parsed) =>
@@ -523,7 +523,7 @@ export const toolDefinitions = [
     instructionOrder: 8,
     name: "local_ydb_upgrade_version",
     description:
-      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; before dump or destroy it inspects every one-off dynamic node and preserves its exact gRPC, monitoring, and IC ports, aborting on an incomplete definition. It then preflights source and target images, dumps, rebuilds, restores, regenerates auth artifacts in a private workspace when configured, recreates extra nodes from those private bytes, and performs final image verification. The config is never updated automatically: after independent verification, set profiles.<name>.image manually. A verified mismatch leaves the profile unchanged; unavailable final inventory requires independent verification before that manual update.",
+      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; before dump or destroy it inspects every one-off dynamic node and preserves its exact gRPC, monitoring, and IC ports, aborting on an incomplete definition. The plan also binds the target tag to its resolved Docker image ID, rechecks it immediately before teardown, creates the replacement static container stopped and verifies its image ID before start, and verifies final container image IDs as well as tags. It then dumps, rebuilds, restores, regenerates auth artifacts in a private workspace when configured, and recreates extra nodes from those private bytes. The config is never updated automatically: after independent verification, set profiles.<name>.image manually. A verified mismatch leaves the profile unchanged; unavailable final inventory requires independent verification before that manual update.",
     inputSchema: upgradeVersionSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: async (args, options) => {

@@ -8,14 +8,18 @@ const fileSystemFixture = vi.hoisted(() => ({
   socketPath: "/sentinel/local-ydb-confirmation-input.sock",
   deniedPath: "/sentinel/local-ydb-confirmation-input.denied",
   oversizedPath: "/sentinel/local-ydb-confirmation-input.oversized",
+  growingPath: "/sentinel/local-ydb-confirmation-input.growing",
   descriptor: 97_531,
   oversizedDescriptor: 97_532,
+  growingDescriptor: 97_533,
   oversizedSize: 16 * 1024 * 1024 + 1,
   openFlags: undefined as Parameters<typeof import("node:fs").openSync>[1] | undefined,
   pathStatCalls: 0,
   oversizedReadCalls: 0,
+  growingReadCalls: 0,
   closed: false,
   oversizedClosed: false,
+  growingClosed: false,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -62,6 +66,10 @@ vi.mock("node:fs", async (importOriginal) => {
         fileSystemFixture.openFlags = flags;
         return fileSystemFixture.oversizedDescriptor;
       }
+      if (path === fileSystemFixture.growingPath) {
+        fileSystemFixture.openFlags = flags;
+        return fileSystemFixture.growingDescriptor;
+      }
       return actual.openSync(path, flags, mode);
     },
     fstatSync: (descriptor: number) => (
@@ -75,6 +83,11 @@ vi.mock("node:fs", async (importOriginal) => {
               isFile: () => true,
               size: fileSystemFixture.oversizedSize,
             } as ReturnType<typeof actual.fstatSync>
+          : descriptor === fileSystemFixture.growingDescriptor
+            ? {
+                isFile: () => true,
+                size: 0,
+              } as ReturnType<typeof actual.fstatSync>
         : actual.fstatSync(descriptor)
     ),
     readSync: (
@@ -91,6 +104,10 @@ vi.mock("node:fs", async (importOriginal) => {
         fileSystemFixture.oversizedReadCalls += 1;
         return 0;
       }
+      if (descriptor === fileSystemFixture.growingDescriptor) {
+        fileSystemFixture.growingReadCalls += 1;
+        return Math.min(length, 64 * 1024);
+      }
       return actual.readSync(descriptor, buffer, offset, length, position);
     },
     closeSync: (descriptor: number) => {
@@ -100,6 +117,10 @@ vi.mock("node:fs", async (importOriginal) => {
       }
       if (descriptor === fileSystemFixture.oversizedDescriptor) {
         fileSystemFixture.oversizedClosed = true;
+        return;
+      }
+      if (descriptor === fileSystemFixture.growingDescriptor) {
+        fileSystemFixture.growingClosed = true;
         return;
       }
       actual.closeSync(descriptor);
@@ -119,8 +140,10 @@ describe("confirmation special-file inputs", () => {
     fileSystemFixture.openFlags = undefined;
     fileSystemFixture.pathStatCalls = 0;
     fileSystemFixture.oversizedReadCalls = 0;
+    fileSystemFixture.growingReadCalls = 0;
     fileSystemFixture.closed = false;
     fileSystemFixture.oversizedClosed = false;
+    fileSystemFixture.growingClosed = false;
   });
 
   it("fingerprints local files through one nonblocking descriptor without a path stat", async () => {
@@ -206,5 +229,18 @@ describe("confirmation special-file inputs", () => {
     );
     expect(fileSystemFixture.oversizedReadCalls).toBe(0);
     expect(fileSystemFixture.oversizedClosed).toBe(true);
+  });
+
+  it("stops hashing when a local file grows beyond its reviewed descriptor size", async () => {
+    const context = createContext(undefined, undefined, ConfigSchema.parse({}));
+
+    await expect(confirmationContentIntent(context, [{
+      kind: "file",
+      path: fileSystemFixture.growingPath,
+      role: "fixture-growing",
+    }])).rejects.toThrow("Unable to fingerprint a confirmation content input");
+
+    expect(fileSystemFixture.growingReadCalls).toBe(1);
+    expect(fileSystemFixture.growingClosed).toBe(true);
   });
 });

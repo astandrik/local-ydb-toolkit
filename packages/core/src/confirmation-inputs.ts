@@ -282,8 +282,11 @@ function hashLocalFileDescriptor(descriptor: number, expectedSize: number): stri
     if (count === 0) {
       break;
     }
-    hash.update(buffer.subarray(0, count));
     bytesRead += count;
+    if (bytesRead > expectedSize || bytesRead > MAX_CONFIRMATION_FILE_BYTES) {
+      throw new Error("Confirmation content input changed while it was fingerprinted");
+    }
+    hash.update(buffer.subarray(0, count));
   }
   if (bytesRead !== expectedSize) {
     throw new Error("Confirmation content input changed while it was fingerprinted");

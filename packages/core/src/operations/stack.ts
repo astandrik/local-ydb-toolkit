@@ -32,6 +32,7 @@ import { ensureImagePresentSpec } from "./images.js";
 import {
   exactDynamicNodeActionSpec,
   exactDynamicNodeRemovalSpec,
+  inspectExactDynamicNodeTargets,
   inspectDynamicNodePorts,
   type ExactDynamicNodeTarget,
   type InspectedDynamicNodePlan,
@@ -45,7 +46,11 @@ import type {
   ToolkitContext
 } from "./types.js";
 
-export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<OperationResponse> {
+export async function bootstrap(
+  ctx: ToolkitContext,
+  options: MutatingOptions = {},
+  executionOptions: { expectedImageId?: string } = {},
+): Promise<OperationResponse> {
   const plans = configuredDynamicNodePlans(ctx.profile);
   const baseSpecs = [
     ensureImagePresentSpec(ctx.profile.image),
@@ -56,7 +61,8 @@ export async function bootstrap(ctx: ToolkitContext, options: MutatingOptions = 
     bash(commandForStaticEnsureRun(ctx.profile, {
       enableGraphShard: true,
       requireGraphShard: true,
-      publishedDynamicGrpcPorts: plans.map((plan) => plan.grpcPort)
+      publishedDynamicGrpcPorts: plans.map((plan) => plan.grpcPort),
+      expectedImageId: executionOptions.expectedImageId,
     }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
     bash("sleep 5", { description: "Wait briefly for static node startup" }),
     createTenantSpec(ctx.profile),
@@ -179,9 +185,12 @@ export async function destroyStack(
 ): Promise<DestroyStackResponse> {
   const preparedTargets = preparedExtraDynamicNodes
     ? [...preparedExtraDynamicNodes]
-    : findExtraDynamicContainers(
-        ctx.profile,
-        (await requireInventory(ctx)).containers.map((container) => container.names),
+    : await inspectExactDynamicNodeTargets(
+        ctx,
+        findExtraDynamicContainers(
+          ctx.profile,
+          (await requireInventory(ctx)).containers.map((container) => container.names),
+        ),
       );
   const extraDynamicNodes = preparedTargets.map((target) =>
     typeof target === "string" ? target : target.container
