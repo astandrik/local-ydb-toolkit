@@ -1296,6 +1296,8 @@ describe("mcp tools", () => {
     expect(restartTool?.description).toContain("configured binding changes require destroy followed by bootstrap");
     expect(restartTool?.description).toContain("exact Docker container to be stably running plus registered by IC port");
     expect(restartTool?.description).toContain("including containers observed restarting");
+    expect(restartTool?.description).toContain("bound to its full inspected Docker ID for both stop and recovery");
+    expect(restartTool?.description).toContain("same-name replacement is rejected and left untouched");
     expect(restartTool?.description).toContain("rollback uses restart or bootstrap reconciliation");
     expect(authTool?.description).toContain("before any config or container mutation");
     expect(authTool?.description).toContain("even when no dynamic-node token file is configured");

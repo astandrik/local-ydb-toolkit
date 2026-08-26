@@ -16,20 +16,44 @@ export interface ExactDynamicNodeTarget {
 
 export interface InspectedDynamicNodePlan extends DynamicNodePlan, ExactDynamicNodeTarget {}
 
-export function exactDynamicNodeRemovalSpec(
+export type ExactDynamicNodeAction = "remove" | "stop" | "start";
+
+export function exactDynamicNodeActionSpec(
   target: ExactDynamicNodeTarget,
+  action: ExactDynamicNodeAction,
   description: string,
 ): CommandSpec {
+  const dockerCommand = exactDynamicNodeCommand(action);
   return bash([
     "set -euo pipefail",
     `expected_id=${shellQuote(target.containerId)}`,
     `actual_id=$(docker inspect --format '{{.Id}}' ${shellQuote(target.container)})`,
     `[ "$actual_id" = "$expected_id" ]`,
-    "docker rm -f \"$expected_id\"",
+    dockerCommand,
   ].join("\n"), {
     timeoutMs: 60_000,
     description,
   });
+}
+
+function exactDynamicNodeCommand(action: ExactDynamicNodeAction): string {
+  switch (action) {
+    case "remove":
+      return "docker rm -f \"$expected_id\"";
+    case "stop":
+      return "docker stop \"$expected_id\"";
+    case "start":
+      return "docker start \"$expected_id\"";
+    default:
+      throw new Error("Unsupported exact dynamic-node action.");
+  }
+}
+
+export function exactDynamicNodeRemovalSpec(
+  target: ExactDynamicNodeTarget,
+  description: string,
+): CommandSpec {
+  return exactDynamicNodeActionSpec(target, "remove", description);
 }
 
 export async function inspectDynamicNodePorts(

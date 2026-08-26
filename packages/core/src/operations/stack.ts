@@ -30,7 +30,10 @@ import { normalizeExpectedYdbResult, runCommandSpecs, runMutating } from "./exec
 import { findExtraDynamicContainers } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
 import {
+  exactDynamicNodeActionSpec,
   exactDynamicNodeRemovalSpec,
+  inspectDynamicNodePorts,
+  type ExactDynamicNodeTarget,
   type InspectedDynamicNodePlan,
 } from "./dynamic-node-inspect.js";
 import type {
@@ -331,14 +334,25 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
   const runningConfigured = inventory.containers
     .filter((container) => container.names && configuredNames.has(container.names) && container.state === "running")
     .map((container) => container.names as string);
-  const runningUnexpected = drift.unexpected
+  const runningUnexpectedNames = drift.unexpected
     .filter((container) => container.state === "running" && container.names)
     .map((container) => container.names as string);
-  const stopSpecs = [...runningConfigured.slice().reverse(), ...runningUnexpected.slice().reverse()]
+  const inspectedUnexpected = await inspectDynamicNodePorts(ctx, runningUnexpectedNames);
+  const runningUnexpected = runningUnexpectedNames.map((container): ExactDynamicNodeTarget => {
+    const containerId = inspectedUnexpected.get(container)?.containerId;
+    if (!containerId) {
+      throw new Error(`Could not inspect exact Docker identity for unexpected dynamic node ${container} before restart.`);
+    }
+    return { container, containerId };
+  });
+  const unexpectedStopSpecs = runningUnexpected.slice().reverse().map((target) =>
+    exactDynamicNodeActionSpec(target, "stop", `Stop exact unexpected dynamic tenant node ${target.container}`));
+  const configuredStopSpecs = runningConfigured.slice().reverse()
     .map((container) => bash(`docker stop ${shellQuote(container)}`, {
       timeoutMs: 60_000,
       description: `Stop dynamic tenant node ${container}`
     }));
+  const stopSpecs = [...unexpectedStopSpecs, ...configuredStopSpecs];
   const preflightSpecs = [
     ensureImagePresentSpec(ctx.profile.image),
     bash(commandForStaticCompatibilityCheck(ctx.profile, {
@@ -355,10 +369,8 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
     bash("sleep 5")
   ];
   const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan, "recreate"));
-  const unexpectedStartSpecs = runningUnexpected.map((container) => bash(`docker start ${shellQuote(container)}`, {
-    timeoutMs: 60_000,
-    description: `Restore unexpected dynamic tenant node ${container}`
-  }));
+  const unexpectedStartSpecs = runningUnexpected.map((target) =>
+    exactDynamicNodeActionSpec(target, "start", `Restore exact unexpected dynamic tenant node ${target.container}`));
   const metadataSpec = waitForYdbCli(
     ctx.profile,
     ["scheme", "ls", ctx.profile.tenantPath],
@@ -369,7 +381,7 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
   const specs = [...preflightSpecs, ...mutationSpecs, ...nodeSpecs, ...finalSpecs];
   const rollback = [
     "Recreate configured nodes with local_ydb_restart_stack or local_ydb_bootstrap; local_ydb_inventory does not retain removed container definitions.",
-    ...runningUnexpected.map((container) => `docker start ${container}`)
+    ...runningUnexpected.map((target) => `docker start ${target.containerId}`)
   ];
   const verification = [
     "static and configured dynamic containers are Up",

@@ -2354,6 +2354,11 @@ describe("mutating operations", () => {
           ].join("\n")
         });
       }
+      if (command.startsWith("docker inspect ydb-dyn-example-4")) {
+        return commandResult(command, {
+          stdout: '[{"Id":"one-off-id","Name":"/ydb-dyn-example-4"}]'
+        });
+      }
       if (command.includes("docker rm -f ydb-dyn-example")) {
         return commandResult(command, { exitCode: 1, stderr: "mutation reached", ok: false });
       }
@@ -2398,7 +2403,14 @@ describe("mutating operations", () => {
         };
       }
       if (command.startsWith("docker inspect ")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Id":"one-off-4-id","Name":"/ydb-dyn-example-4"}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
       }
       return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
     };
@@ -2408,14 +2420,90 @@ describe("mutating operations", () => {
 
     expect(response.missingDynamicContainers).toEqual(["ydb-dyn-example-2"]);
     expect(response.unexpectedDynamicContainers).toEqual(["ydb-dyn-example-4", "ydb-dyn-example-5"]);
-    expect(plan).toContain("docker stop ydb-dyn-example-4");
-    expect(plan).toContain("docker start ydb-dyn-example-4");
+    expect(plan).toContain("expected_id=one-off-4-id");
+    expect(plan).toContain("docker inspect --format");
+    expect(plan).toContain("docker stop \"$expected_id\"");
+    expect(plan).toContain("docker start \"$expected_id\"");
     expect(plan).not.toContain("docker start ydb-dyn-example-5");
     expect(plan).not.toMatch(/docker rm -f ydb-dyn-example-4(?:\s|$)/);
     expect(plan).not.toMatch(/docker rm -f ydb-dyn-example-5(?:\s|$)/);
     expect(response.rollback.join("\n")).toMatch(/local_ydb_(restart_stack|bootstrap)/);
     expect(response.rollback.join("\n")).not.toContain("configured container definitions captured by local_ydb_inventory");
-    expect(response.rollback).toContain("docker start ydb-dyn-example-4");
+    expect(response.rollback).toContain("docker start one-off-4-id");
+  });
+
+  it("rejects a restart token after a running unexpected container is replaced", async () => {
+    let unexpectedId = "reviewed-unexpected-id";
+    let unexpectedStopCalls = 0;
+    const executor = new RecordingExecutor();
+    const baseCtx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const ctx = {
+      ...baseCtx,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_restart_stack",
+        configSource: { kind: "provided" as const, config: ConfigSchema.parse({}) }
+      }
+    };
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local","State":"running","ID":"static-id"}',
+            '{"Names":"ydb-dyn-example","State":"running","ID":"primary-id"}',
+            JSON.stringify({ Names: "ydb-dyn-example-2", State: "running", ID: unexpectedId })
+          ].join("\n")
+        });
+      }
+      if (command.startsWith("docker inspect ydb-dyn-example-2")) {
+        return commandResult(command, {
+          stdout: JSON.stringify([{ Id: unexpectedId, Name: "/ydb-dyn-example-2" }])
+        });
+      }
+      if (command.includes("docker stop") && command.includes("ydb-dyn-example-2")) {
+        unexpectedStopCalls += 1;
+      }
+      return commandResult(command);
+    };
+
+    const planned = await restartStack(ctx, {});
+    unexpectedId = "replacement-unexpected-id";
+    const confirmed = await restartStack(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token
+    });
+
+    expect(confirmed.confirmation?.status).toBe("rejected");
+    expect(unexpectedStopCalls).toBe(0);
+  });
+
+  it("rejects restart planning when a running unexpected container identity is unavailable", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local","State":"running"}',
+            '{"Names":"ydb-dyn-example","State":"running"}',
+            '{"Names":"ydb-dyn-example-2","State":"running"}'
+          ].join("\n")
+        });
+      }
+      if (command.startsWith("docker inspect ydb-dyn-example-2")) {
+        return commandResult(command, { stdout: "[]" });
+      }
+      return commandResult(command);
+    };
+
+    await expect(restartStack(ctx, {})).rejects.toThrow(
+      "Could not inspect exact Docker identity for unexpected dynamic node ydb-dyn-example-2 before restart."
+    );
+    expect(executor.commands.some((command) => command.includes("docker stop"))).toBe(false);
   });
 
   it("recreates a configured container found restarting during restart preflight", async () => {
@@ -2499,7 +2587,14 @@ describe("mutating operations", () => {
         return { command, exitCode: 0, stdout: STABLE_DYNAMIC_CONTAINER_STATE, stderr: "", ok: true, timedOut: false };
       }
       if (command.startsWith("docker inspect ")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Id":"running-extra","Name":"/ydb-dyn-example-2"}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
       }
       if (command.includes("viewer/json/nodelist")) {
         return { command, exitCode: 0, stdout: '[{"Port":19002}]', stderr: "", ok: true, timedOut: false };
@@ -2509,12 +2604,21 @@ describe("mutating operations", () => {
 
     const response = await withRunTimers(() => restartStack(ctx, { confirm: true }));
     const commands = executor.commands.join("\n");
+    const unexpectedStop = executor.commands.findIndex((command) => (
+      command.includes("docker stop \"$expected_id\"") && command.includes("ydb-dyn-example-2")
+    ));
+    const configuredStop = executor.commands.findIndex((command) => command.includes("docker stop ydb-dyn-example"));
     const configuredStart = executor.commands.findIndex((command) => command.includes("--name ydb-dyn-example "));
-    const unexpectedStart = executor.commands.findIndex((command) => command.includes("docker start ydb-dyn-example-2"));
+    const unexpectedStart = executor.commands.findIndex((command) => (
+      command.includes("docker start") && command.includes("ydb-dyn-example-2")
+    ));
 
     expect(response.results?.every((result) => result.ok)).toBe(true);
-    expect(commands).toContain("docker stop ydb-dyn-example-2");
+    expect(commands).toContain("expected_id=running-extra");
+    expect(commands).toContain("docker stop \"$expected_id\"");
     expect(commands).not.toContain("docker stop ydb-dyn-example-3");
+    expect(unexpectedStop).toBeGreaterThan(-1);
+    expect(unexpectedStop).toBeLessThan(configuredStop);
     expect(unexpectedStart).toBeGreaterThan(configuredStart);
     expect(commands).not.toContain("docker start ydb-dyn-example-3");
     expect(commands).not.toMatch(/docker rm -f ydb-dyn-example-[23](?:\s|$)/);
@@ -2543,6 +2647,11 @@ describe("mutating operations", () => {
           timedOut: false
         };
       }
+      if (command.startsWith("docker inspect ydb-dyn-example-2")) {
+        return commandResult(command, {
+          stdout: '[{"Id":"one-off-2","Name":"/ydb-dyn-example-2"}]'
+        });
+      }
       if (command.includes(failureCommand)) {
         return { command, exitCode: 1, stdout: "", stderr: error, ok: false, timedOut: false };
       }
@@ -2551,7 +2660,9 @@ describe("mutating operations", () => {
 
     const response = await restartStack(ctx, { confirm: true });
     const failureIndex = response.results?.findIndex((result) => result.stderr === error) ?? -1;
-    const recoveryIndex = response.results?.findIndex((result) => result.command.includes("docker start ydb-dyn-example-2")) ?? -1;
+    const recoveryIndex = response.results?.findIndex((result) => (
+      result.command.includes("docker start") && result.command.includes("ydb-dyn-example-2")
+    )) ?? -1;
 
     expect(failureIndex).toBeGreaterThan(-1);
     expect(recoveryIndex).toBeGreaterThan(failureIndex);
@@ -2579,6 +2690,11 @@ describe("mutating operations", () => {
           timedOut: false
         };
       }
+      if (command.startsWith("docker inspect ydb-dyn-example-2")) {
+        return commandResult(command, {
+          stdout: '[{"Id":"one-off-2","Name":"/ydb-dyn-example-2"}]'
+        });
+      }
       if (command.includes("{{.RestartCount}}")) {
         return {
           command,
@@ -2596,7 +2712,9 @@ describe("mutating operations", () => {
     await vi.runAllTimersAsync();
     const response = await pending;
     const failureIndex = response.results?.findIndex((result) => result.command.includes("verify dynamic node")) ?? -1;
-    const recoveryIndex = response.results?.findIndex((result) => result.command.includes("docker start ydb-dyn-example-2")) ?? -1;
+    const recoveryIndex = response.results?.findIndex((result) => (
+      result.command.includes("docker start") && result.command.includes("ydb-dyn-example-2")
+    )) ?? -1;
 
     expect(response.results?.[failureIndex]).toMatchObject({ ok: false });
     expect(response.results?.[failureIndex]?.stderr).toContain("matching IC port does not confirm the exact container");
@@ -2626,7 +2744,12 @@ describe("mutating operations", () => {
           timedOut: false
         };
       }
-      if (command.includes("docker start ydb-dyn-example-2")) {
+      if (command.startsWith("docker inspect ydb-dyn-example-2 ydb-dyn-example-3")) {
+        return commandResult(command, {
+          stdout: '[{"Id":"one-off-2","Name":"/ydb-dyn-example-2"},{"Id":"one-off-3","Name":"/ydb-dyn-example-3"}]'
+        });
+      }
+      if (command.includes("docker start \"$expected_id\"") && command.includes("ydb-dyn-example-2")) {
         return { command, exitCode: 1, stdout: "", stderr: "first recovery failed", ok: false, timedOut: false };
       }
       const stdout = command.includes("{{.RestartCount}}") ? STABLE_DYNAMIC_CONTAINER_STATE : "";
@@ -2635,11 +2758,11 @@ describe("mutating operations", () => {
 
     const response = await withRunTimers(() => restartStack(ctx, { confirm: true }));
     const recoveryCommands = response.results
-      ?.filter((result) => result.command.includes("docker start ydb-dyn-example-"));
+      ?.filter((result) => result.command.includes("docker start") && result.command.includes("ydb-dyn-example-"));
 
     expect(recoveryCommands).toHaveLength(2);
-    expect(recoveryCommands?.[0].command).toContain("docker start ydb-dyn-example-2");
-    expect(recoveryCommands?.[1].command).toContain("docker start ydb-dyn-example-3");
+    expect(recoveryCommands?.[0].command).toContain("ydb-dyn-example-2");
+    expect(recoveryCommands?.[1].command).toContain("ydb-dyn-example-3");
     expect(executor.commands.some((command) => command.includes("docker start ydb-dyn-example-4"))).toBe(false);
     expect(executor.commands.some((command) => command.includes("scheme ls /local/example"))).toBe(false);
   });
