@@ -40,7 +40,7 @@ codex plugin marketplace add astandrik/local-ydb-toolkit --ref main
 codex plugin add local-ydb-toolkit@local-ydb-toolkit
 ```
 
-Start a new Codex session after installation so the bundled skill and MCP server are loaded. The MCP launcher requires Node.js 20.19 or newer plus `npx`; its first start can access the npm registry to install the pinned `@astandrik/local-ydb-mcp@0.18.1` package.
+Start a new Codex session after installation so the bundled skill and MCP server are loaded. The MCP launcher requires Node.js 20.19 or newer plus `npx`; its first start can access the npm registry to install the pinned `@astandrik/local-ydb-mcp@0.18.2` package.
 
 Agent Plugins start a stdio server with the installed plugin root as its working directory. Use an absolute `configPath` on profile-based tool calls, or set `LOCAL_YDB_TOOLKIT_CONFIG` to an absolute path in the MCP client environment. An explicit path must name a readable regular JSON file no larger than 1 MiB; missing or invalid explicit files fail closed instead of selecting the default profile. Do not rely on a project-local `local-ydb.config.json` being discovered from the caller's repository.
 
@@ -441,7 +441,7 @@ Upstream YDB defaults to no password complexity requirements: even an empty pass
 
 The repo marketplace loads the full Agent Plugin from the repository root. `plugin.json` and `mcp.json` are the portable Agent Plugins 1.0 entry points; `.codex-plugin/plugin.json` and `.mcp.json` preserve compatibility with Codex clients that use the earlier layout. Contract tests keep both representations aligned.
 
-The plugin version is independent from the MCP npm package version. Plugin `0.1.5` pins `@astandrik/local-ydb-mcp@0.18.1`. Update that pin only in a follow-up change after the exact npm version has been published and read back successfully; do not make release-please point the plugin at an unpublished version.
+The plugin version is independent from the MCP npm package version. Plugin `0.1.6` pins `@astandrik/local-ydb-mcp@0.18.2`. Update that pin only in a follow-up change after the exact npm version has been published and read back successfully; do not make release-please point the plugin at an unpublished version.
 
 Build the OpenAI skills-only review artifact with:
 
@@ -449,7 +449,7 @@ Build the OpenAI skills-only review artifact with:
 npm run plugin:package
 ```
 
-This writes `dist/local-ydb-toolkit-0.1.5-skills.zip`. The generated compatibility manifest omits `mcpServers`, and the ZIP excludes both MCP config files. Submission copy, reviewer cases, and external approval gates are recorded in [`docs/openai-plugin-submission.md`](docs/openai-plugin-submission.md). Building the artifact does not authorize uploading or publishing it.
+This writes `dist/local-ydb-toolkit-0.1.6-skills.zip`. The generated compatibility manifest omits `mcpServers`, and the ZIP excludes both MCP config files. Submission copy, reviewer cases, and external approval gates are recorded in [`docs/openai-plugin-submission.md`](docs/openai-plugin-submission.md). Building the artifact does not authorize uploading or publishing it.
 
 ### MCP npm package
 
