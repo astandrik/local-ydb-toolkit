@@ -11,6 +11,7 @@ import { inventory, requireInventory } from "./checks.js";
 import {
   COMPOSITE_DUMP_CLEANUP_FAILURE,
   COMPOSITE_DUMP_SNAPSHOT_COMMAND,
+  PROFILE_COMPOSITE_REBUILD_SCOPE,
   createCompositeDumpSnapshot,
 } from "./composite-dump.js";
 import {
@@ -359,7 +360,7 @@ export async function upgradeVersion(
     rollback,
     verification,
   }, {
-    rotatingScope: authArtifactScope,
+    sharedRotatingScope: PROFILE_COMPOSITE_REBUILD_SCOPE,
   });
   if (!decision.execute) {
     return attachConfirmation({

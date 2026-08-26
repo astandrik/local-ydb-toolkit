@@ -1,4 +1,4 @@
-import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import { bash, type CommandResult, type CommandSpec } from "../api-client.js";
 import { withAuthorizedContentExecution } from "../confirmed-content.js";
 import {
   attachConfirmation,
@@ -148,7 +148,7 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
     results.push(result);
     if (!result.ok) {
       return attachConfirmation(
-        removeDynamicNodesResponse(ctx, publicTargets, nodeChecks, results, rollback, verification, completedNodes),
+        removeDynamicNodesResponse(ctx, publicTargets, specs, nodeChecks, results, rollback, verification, completedNodes),
         decision.confirmation,
       );
     }
@@ -158,7 +158,7 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
       nodeChecks.push(check);
       if (!check.ok) {
         return attachConfirmation(
-          removeDynamicNodesResponse(ctx, publicTargets, nodeChecks, results, rollback, verification, completedNodes),
+          removeDynamicNodesResponse(ctx, publicTargets, specs, nodeChecks, results, rollback, verification, completedNodes),
           decision.confirmation,
         );
       }
@@ -168,7 +168,7 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
 
   results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
   return attachConfirmation(
-    removeDynamicNodesResponse(ctx, publicTargets, nodeChecks, results, rollback, verification, completedNodes),
+    removeDynamicNodesResponse(ctx, publicTargets, specs, nodeChecks, results, rollback, verification, completedNodes),
     decision.confirmation,
   );
 }
@@ -373,6 +373,7 @@ function addDynamicNodesResponse(
 function removeDynamicNodesResponse(
   ctx: ToolkitContext,
   targets: DynamicNodeTarget[],
+  specs: readonly CommandSpec[],
   nodeChecks: DynamicNodeCheck[],
   results: CommandResult[],
   rollback: string[],
@@ -383,10 +384,7 @@ function removeDynamicNodesResponse(
     summary: `Remove ${targets.length} dynamic node${targets.length === 1 ? "" : "s"} from ${ctx.profile.tenantPath}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands; verified ${completedNodes}/${targets.length} nodes.`,
     executed: true,
     risk: "high",
-    plannedCommands: targets.map((target) => ctx.client.display(bash(`docker rm -f ${shellQuote(target.container)}`, {
-      timeoutMs: 60_000,
-      description: `Remove dynamic tenant node ${target.container}`
-    }))),
+    plannedCommands: specs.map((spec) => ctx.client.display(spec)),
     rollback,
     verification,
     results,

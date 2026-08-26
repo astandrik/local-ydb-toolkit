@@ -39,6 +39,7 @@ export interface ConfirmationReceipt {
 export interface ConfirmationAuthorizationOptions {
   contentInputs?: ConfirmationContentInput[];
   rotatingScope?: unknown;
+  sharedRotatingScope?: unknown;
 }
 
 export class ProcessConfirmationStore {
@@ -162,6 +163,13 @@ export async function authorizeMutation(
   executionIntent: unknown,
   authorization: ConfirmationAuthorizationOptions = {},
 ): Promise<ConfirmationDecision> {
+  if (
+    authorization.rotatingScope !== undefined
+    && authorization.sharedRotatingScope !== undefined
+  ) {
+    throw new Error("Confirmation authorization cannot use contextual and shared rotating scopes together");
+  }
+
   const runtime = ctx.confirmation;
   if (!runtime) {
     if (options.confirm !== true) {
@@ -186,26 +194,29 @@ export async function authorizeMutation(
     ...confirmationEnvelope(ctx, executionIntent),
     contentInputs,
   };
-  const contextualScope = authorization.rotatingScope === undefined
-    ? undefined
-    : confirmationEnvelope(ctx, {
-        kind: "rotating-scope",
-        scope: authorization.rotatingScope,
-      });
+  let rotatingScope: unknown;
+  if (authorization.sharedRotatingScope !== undefined) {
+    rotatingScope = sharedConfirmationScopeEnvelope(ctx, authorization.sharedRotatingScope);
+  } else if (authorization.rotatingScope !== undefined) {
+    rotatingScope = confirmationEnvelope(ctx, {
+      kind: "rotating-scope",
+      scope: authorization.rotatingScope,
+    });
+  }
 
   if (options.confirm !== true) {
     return {
       execute: false,
       confirmation: {
         status: "planned",
-        token: runtime.store.issue(intent, contextualScope),
+        token: runtime.store.issue(intent, rotatingScope),
       },
     };
   }
 
   if (
     typeof options.confirmationToken === "string"
-    && runtime.store.consume(options.confirmationToken, intent, contextualScope)
+    && runtime.store.consume(options.confirmationToken, intent, rotatingScope)
   ) {
     return {
       execute: true,
@@ -218,7 +229,7 @@ export async function authorizeMutation(
     execute: false,
     confirmation: {
       status: "rejected",
-      token: runtime.store.issue(intent, contextualScope),
+      token: runtime.store.issue(intent, rotatingScope),
     },
   };
 }
@@ -350,6 +361,24 @@ function confirmationEnvelope(ctx: ToolkitContext, execution: unknown): Record<s
     configSource: runtime.configSource,
     profile: ctx.profile,
     execution,
+  };
+}
+
+function sharedConfirmationScopeEnvelope(
+  ctx: ToolkitContext,
+  scope: unknown,
+): Record<string, unknown> {
+  const runtime = ctx.confirmation;
+  if (!runtime) {
+    throw new Error("Confirmation runtime is required for shared confirmation state");
+  }
+  return {
+    configSource: runtime.configSource,
+    profile: ctx.profile,
+    execution: {
+      kind: "shared-rotating-scope",
+      scope,
+    },
   };
 }
 

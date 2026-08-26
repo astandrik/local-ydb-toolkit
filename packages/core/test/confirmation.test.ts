@@ -17,7 +17,7 @@ import {
   type ToolkitContext,
 } from "../src/index.js";
 import { runMutating } from "../src/operations/execution.js";
-import { confirmationSummarySuffix } from "../src/confirmation.js";
+import { authorizeMutation, confirmationSummarySuffix } from "../src/confirmation.js";
 import { MAX_CONFIRMATION_FILE_BYTES } from "../src/confirmation-inputs.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -263,6 +263,105 @@ describe("process confirmation store", () => {
     expect(store.consume(firstToken, intent, rotatingScope)).toBe(true);
     expect(store.scopedId(rotatingScope)).not.toBe(scopedId);
     expect(store.consume(secondToken, intent, rotatingScope)).toBe(false);
+  });
+
+  it("shares a rotating generation across tools for the same resolved profile", async () => {
+    const store = new ProcessConfirmationStore();
+    const executor = new CountingExecutor();
+    const firstCtx = confirmationContext(store, executor, "local_ydb_upgrade_version");
+    const secondCtx = {
+      ...firstCtx,
+      confirmation: {
+        ...firstCtx.confirmation!,
+        toolName: "local_ydb_reduce_storage_groups",
+      },
+    };
+    const sharedRotatingScope = { kind: "profile-composite-rebuild" };
+    const firstIntent = { kind: "version-upgrade", dumpName: "first" };
+    const secondIntent = { kind: "storage-rebuild", dumpName: "second" };
+    const firstPlan = await authorizeMutation(firstCtx, {}, firstIntent, { sharedRotatingScope });
+    const secondPlan = await authorizeMutation(secondCtx, {}, secondIntent, { sharedRotatingScope });
+
+    const accepted = await authorizeMutation(firstCtx, {
+      confirm: true,
+      confirmationToken: firstPlan.confirmation?.token,
+    }, firstIntent, { sharedRotatingScope });
+    const rejected = await authorizeMutation(secondCtx, {
+      confirm: true,
+      confirmationToken: secondPlan.confirmation?.token,
+    }, secondIntent, { sharedRotatingScope });
+
+    expect(accepted).toMatchObject({ execute: true, confirmation: { status: "accepted" } });
+    expect(rejected).toMatchObject({ execute: false, confirmation: { status: "rejected" } });
+  });
+
+  it("keeps shared rotating generations independent across profiles", async () => {
+    const store = new ProcessConfirmationStore();
+    const executor = new CountingExecutor();
+    const defaultCtx = confirmationContext(store, executor, "local_ydb_upgrade_version");
+    const otherCtx = confirmationContext(store, executor, "local_ydb_reduce_storage_groups", "other");
+    const sharedRotatingScope = { kind: "profile-composite-rebuild" };
+    const intent = { kind: "composite-rebuild" };
+    const defaultPlan = await authorizeMutation(defaultCtx, {}, intent, { sharedRotatingScope });
+    const otherPlan = await authorizeMutation(otherCtx, {}, intent, { sharedRotatingScope });
+
+    expect(await authorizeMutation(defaultCtx, {
+      confirm: true,
+      confirmationToken: defaultPlan.confirmation?.token,
+    }, intent, { sharedRotatingScope })).toMatchObject({ execute: true });
+    expect(await authorizeMutation(otherCtx, {
+      confirm: true,
+      confirmationToken: otherPlan.confirmation?.token,
+    }, intent, { sharedRotatingScope })).toMatchObject({ execute: true });
+  });
+
+  it("rejects simultaneous contextual and shared rotating scopes", async () => {
+    const ctx = confirmationContext(new ProcessConfirmationStore(), new CountingExecutor());
+    await expect(authorizeMutation(ctx, {}, plan, {
+      rotatingScope: { kind: "contextual" },
+      sharedRotatingScope: { kind: "shared" },
+    })).rejects.toThrow("cannot use contextual and shared rotating scopes together");
+  });
+
+  it("retires submitted current-process tokens on zero-command mutating exits", async () => {
+    const executor = new CountingExecutor();
+    const ctx = confirmationContext(new ProcessConfirmationStore(), executor);
+    const planned = await runMutating(ctx, plan, {});
+    const emptyPlan = { ...plan, specs: [] };
+
+    const noOp = await runMutating(ctx, emptyPlan, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+    const replay = await runMutating(ctx, plan, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(noOp).toMatchObject({ executed: false, confirmation: { status: "not-required" } });
+    expect(replay).toMatchObject({ executed: false, confirmation: { status: "rejected" } });
+    expect(executor.calls).toBe(0);
+  });
+
+  it("does not retire malformed or foreign tokens on zero-command exits", async () => {
+    const executor = new CountingExecutor();
+    const store = new ProcessConfirmationStore();
+    const ctx = confirmationContext(store, executor);
+    const planned = await runMutating(ctx, plan, {});
+    const emptyPlan = { ...plan, specs: [] };
+    const foreign = new ProcessConfirmationStore().issue({ kind: "foreign" });
+
+    for (const confirmationToken of ["malformed", foreign]) {
+      expect(await runMutating(ctx, emptyPlan, {
+        confirm: true,
+        confirmationToken,
+      })).toMatchObject({ confirmation: { status: "not-required" } });
+    }
+    expect(await runMutating(ctx, plan, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    })).toMatchObject({ executed: true, confirmation: { status: "accepted" } });
+    expect(executor.calls).toBe(1);
   });
 
   it("keeps a token consumed when execution throws", async () => {

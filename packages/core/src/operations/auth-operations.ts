@@ -28,7 +28,7 @@ export async function applyAuthHardening(
 ): Promise<OperationResponse> {
   const configHostPath = options.configHostPath ?? ctx.profile.authConfigPath;
   if (!configHostPath) {
-    return planOnly(ctx, "Auth hardening requires configHostPath for the prepared YDB config.", "high", [], ["No changes."], ["Provide a reviewed configHostPath."]);
+    return planOnly(ctx, "Auth hardening requires configHostPath for the prepared YDB config.", "high", [], ["No changes."], ["Provide a reviewed configHostPath."], options);
   }
   const configInput: ConfirmationContentInput = {
     kind: "file",
@@ -251,7 +251,8 @@ export async function prepareAuthConfig(
       "medium",
       [],
       ["No changes."],
-      ["Provide configHostPath and rerun."]
+      ["Provide configHostPath and rerun."],
+      options,
     );
   }
 
@@ -324,7 +325,8 @@ export async function writeDynamicNodeAuthConfig(
       "medium",
       [],
       ["No changes."],
-      ["Provide sid and tokenHostPath directly or through the selected profile."]
+      ["Provide sid and tokenHostPath directly or through the selected profile."],
+      options,
     );
   }
 
@@ -362,7 +364,8 @@ export async function setRootPassword(
       "high",
       [],
       ["No changes."],
-      ["Provide password and rerun."]
+      ["Provide password and rerun."],
+      options,
     );
   }
   if (/[\r\n]/.test(password)) {
@@ -372,7 +375,8 @@ export async function setRootPassword(
       "high",
       [],
       ["No changes."],
-      ["Provide a password without carriage returns or newlines and rerun."]
+      ["Provide a password without carriage returns or newlines and rerun."],
+      options,
     );
   }
   if (!configHostPath || !rootPasswordFile) {
@@ -382,7 +386,8 @@ export async function setRootPassword(
       "high",
       [],
       ["No changes."],
-      ["Configure authConfigPath and rootPasswordFile on the selected profile."]
+      ["Configure authConfigPath and rootPasswordFile on the selected profile."],
+      options,
     );
   }
 

@@ -118,7 +118,7 @@ export async function restoreTenant(
 ): Promise<RestoreTenantResponse> {
   if (!options.dumpName) {
     return {
-      ...planOnly(ctx, "Restore requires dumpName.", "high", [], ["No changes."], ["Provide dumpName and rerun."]),
+      ...planOnly(ctx, "Restore requires dumpName.", "high", [], ["No changes."], ["Provide dumpName and rerun."], options),
       verificationHooks: []
     };
   }

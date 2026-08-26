@@ -11,6 +11,7 @@ import type { ToolkitContext } from "./types.js";
 export const COMPOSITE_DUMP_SNAPSHOT_COMMAND = "prepare private verified composite dump snapshot";
 export const COMPOSITE_DUMP_SNAPSHOT_FAILURE = "Private composite dump snapshot could not be created or verified.";
 export const COMPOSITE_DUMP_CLEANUP_FAILURE = "Private composite dump snapshot could not be removed.";
+export const PROFILE_COMPOSITE_REBUILD_SCOPE = { kind: "profile-composite-rebuild" } as const;
 
 const SNAPSHOT_ROOT_PREFIX = "/tmp/local-ydb-toolkit-composite-";
 

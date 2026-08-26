@@ -7,6 +7,7 @@ import {
   authorizeMutation,
   commandPlanIntent,
   confirmationSummarySuffix,
+  retireSubmittedConfirmation,
 } from "../confirmation.js";
 import type { MutatingOptions, OperationPlan, OperationResponse, ToolkitContext } from "./types.js";
 
@@ -25,6 +26,7 @@ export async function runMutating(
 ): Promise<OperationResponse> {
   const plannedCommands = plan.specs.map((spec) => ctx.client.display(spec));
   if (plan.specs.length === 0) {
+    retireSubmittedConfirmation(ctx, options);
     return attachNotRequiredConfirmation(ctx, {
       summary: plan.summary,
       executed: false,
@@ -117,8 +119,10 @@ export function planOnly(
   risk: OperationPlan["risk"],
   specs: CommandSpec[],
   rollback: string[],
-  verification: string[]
+  verification: string[],
+  options: MutatingOptions,
 ): OperationResponse {
+  retireSubmittedConfirmation(ctx, options);
   return attachNotRequiredConfirmation(ctx, {
     summary,
     executed: false,
