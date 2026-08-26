@@ -1,13 +1,13 @@
 {
   "name": "local-ydb-toolkit",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Operate Docker-based local YDB deployments with reusable safety guidance and an optional local stdio MCP server.",
   "mcpServers": {
     "local-ydb": {
       "command": "npx",
       "args": [
         "--yes",
-        "@astandrik/local-ydb-mcp@0.18.1"
+        "@astandrik/local-ydb-mcp@0.18.2"
       ],
       "cwd": "${extensionPath}"
     }
