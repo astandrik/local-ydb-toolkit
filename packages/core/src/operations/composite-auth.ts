@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   LocalYdbApiClient,
   bash,
@@ -33,6 +33,22 @@ export function createCompositeAuthArtifacts(
   executionContext: ToolkitContext,
   rotatingScope: unknown,
 ): CompositeAuthArtifacts {
+  const canonical = confirmationContext.profile;
+  const canonicalAuthConfigPath = canonical.authConfigPath;
+  const canonicalDynamicTokenPath = canonical.dynamicNodeAuthTokenFile;
+  const canonicalRootPasswordPath = canonical.rootPasswordFile;
+  if (!canonicalAuthConfigPath || !canonicalDynamicTokenPath || !canonicalRootPasswordPath) {
+    throw new Error("Composite auth artifacts require all configured auth paths.");
+  }
+  const canonicalDestinations = [
+    canonicalAuthConfigPath,
+    canonicalDynamicTokenPath,
+    canonicalRootPasswordPath,
+  ].map((path) => resolve(path));
+  if (new Set(canonicalDestinations).size !== canonicalDestinations.length) {
+    throw new Error("Composite auth artifact destinations must be distinct.");
+  }
+
   const scopedId = confirmationScopedId(confirmationContext, rotatingScope)
     ?? randomBytes(16).toString("base64url");
   const privateRoot = `${COMPOSITE_AUTH_PATH_PREFIX}${scopedId}`;
@@ -50,13 +66,6 @@ export function createCompositeAuthArtifacts(
     profile,
     client: new LocalYdbApiClient(profile, executionContext.client.executor),
   };
-  const canonical = confirmationContext.profile;
-  const canonicalAuthConfigPath = canonical.authConfigPath;
-  const canonicalDynamicTokenPath = canonical.dynamicNodeAuthTokenFile;
-  const canonicalRootPasswordPath = canonical.rootPasswordFile;
-  if (!canonicalAuthConfigPath || !canonicalDynamicTokenPath || !canonicalRootPasswordPath) {
-    throw new Error("Composite auth artifacts require all configured auth paths.");
-  }
   const redactions = pathRedactions(
     privateRoot,
     privateAuthConfigPath,

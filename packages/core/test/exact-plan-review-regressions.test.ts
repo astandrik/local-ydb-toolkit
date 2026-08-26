@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   applyAuthHardening,
@@ -8,6 +8,7 @@ import {
   createContext,
   prepareAuthConfig,
   ProcessConfirmationStore,
+  reduceStorageGroups,
   removeDynamicNodes,
   restoreTenant,
   setRootPassword,
@@ -20,6 +21,7 @@ import {
   type ResolvedLocalYdbProfile,
   type ToolkitContext,
 } from "../src/index.js";
+import { createCompositeAuthArtifacts } from "../src/operations/composite-auth.js";
 import { ConfigSchema } from "../src/validation.js";
 
 describe("exact-plan review regressions", () => {
@@ -68,6 +70,116 @@ describe("exact-plan review regressions", () => {
       ]);
       expect.soft(executor.dumpCalls).toBe(1);
       expect.soft(executor.maxConcurrentDumps).toBe(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("holds profile rebuild exclusion across plans created during accepted execution", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "local-ydb-rebuild-lease-"));
+    const dumpHostPath = join(directory, "dumps");
+    const configPath = join(directory, "local-ydb.config.json");
+    mkdirSync(dumpHostPath, { recursive: true });
+    const rawConfig = {
+      profiles: {
+        default: {
+          image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
+          dumpHostPath,
+        },
+      },
+    };
+    writeFileSync(configPath, `${JSON.stringify(rawConfig, null, 2)}\n`, "utf8");
+    const executor = new CompositeUpgradeExecutor();
+    const base = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
+    const ctx = confirmationContext(base, "local_ydb_upgrade_version");
+
+    try {
+      const firstRequest = { version: "26.1.2.0", dumpName: "lease-first" };
+      const firstPlan = await upgradeVersion(ctx, firstRequest);
+      const firstConfirm = upgradeVersion(ctx, {
+        ...firstRequest,
+        confirm: true,
+        confirmationToken: firstPlan.confirmation?.token,
+      });
+      await executor.firstDumpStarted;
+
+      const secondRequest = { version: "26.1.2.0", dumpName: "lease-second" };
+      const secondPlan = await upgradeVersion(ctx, secondRequest);
+      const secondConfirm = upgradeVersion(ctx, {
+        ...secondRequest,
+        confirm: true,
+        confirmationToken: secondPlan.confirmation?.token,
+      });
+      const responses = await Promise.all([firstConfirm, secondConfirm]);
+
+      expect.soft(responses.map((response) => response.confirmation?.status).sort()).toEqual([
+        "accepted",
+        "rejected",
+      ]);
+      expect.soft(executor.dumpCalls).toBe(1);
+      expect.soft(executor.maxConcurrentDumps).toBe(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects normalized aliases between composite auth destinations", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "local-ydb-auth-alias-"));
+    const sharedPath = join(directory, "auth", "shared");
+    const original = "BENIGN_AUTH_ALIAS_ORIGINAL\n";
+    mkdirSync(dirname(sharedPath), { recursive: true });
+    writeFileSync(sharedPath, original, { mode: 0o600 });
+    try {
+      for (const dynamicNodeAuthTokenFile of [
+        sharedPath,
+        join(directory, "auth", "nested", "..", "shared"),
+      ]) {
+        const ctx = createContext(undefined, new ShellCommandExecutor(), ConfigSchema.parse({
+          profiles: {
+            default: {
+              authConfigPath: sharedPath,
+              dynamicNodeAuthTokenFile,
+              rootPasswordFile: join(directory, "auth", "root.password"),
+            },
+          },
+        }));
+        expect(() => createCompositeAuthArtifacts(ctx, ctx, { kind: "auth-alias" }))
+          .toThrow("Composite auth artifact destinations must be distinct.");
+      }
+      expect(readFileSync(sharedPath, "utf8")).toBe(original);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects storage rebuild confirmation after a mutable image tag is retargeted", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "local-ydb-storage-image-"));
+    const executor = new StorageImageExecutor();
+    const rawConfig = {
+      profiles: {
+        default: {
+          image: "example.local/local-ydb:mutable",
+          dumpHostPath: join(directory, "dumps"),
+          storagePoolKind: "hdd",
+        },
+      },
+    };
+    const base = createContext(undefined, executor, ConfigSchema.parse(rawConfig));
+    const ctx = confirmationContext(base, "local_ydb_reduce_storage_groups");
+    const request = { count: 1, dumpName: "storage-image-review" };
+
+    try {
+      const planned = await reduceStorageGroups(ctx, request);
+      executor.imageId = "sha256:replacement-image";
+      const confirmed = await reduceStorageGroups(ctx, {
+        ...request,
+        confirm: true,
+        confirmationToken: planned.confirmation?.token,
+      });
+
+      expect.soft(confirmed.confirmation?.status).toBe("rejected");
+      expect.soft(executor.dumpCalls).toBe(0);
+      expect.soft(executor.imageInspectCalls).toBeGreaterThan(0);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -234,11 +346,19 @@ describe("exact-plan review regressions", () => {
 class CompositeUpgradeExecutor implements CommandExecutor {
   dumpCalls = 0;
   maxConcurrentDumps = 0;
+  readonly firstDumpStarted: Promise<void>;
   #activeDumps = 0;
+  #resolveFirstDumpStarted: (() => void) | undefined;
   #releaseDumps: (() => void) | undefined;
   #dumpsReady = new Promise<void>((resolve) => {
     this.#releaseDumps = resolve;
   });
+
+  constructor() {
+    this.firstDumpStarted = new Promise((resolve) => {
+      this.#resolveFirstDumpStarted = resolve;
+    });
+  }
 
   display(_profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
     return commandToShell(spec);
@@ -267,6 +387,7 @@ class CompositeUpgradeExecutor implements CommandExecutor {
       this.dumpCalls += 1;
       this.#activeDumps += 1;
       this.maxConcurrentDumps = Math.max(this.maxConcurrentDumps, this.#activeDumps);
+      this.#resolveFirstDumpStarted?.();
       if (this.dumpCalls === 2) {
         this.#releaseDumps?.();
       }
@@ -278,6 +399,50 @@ class CompositeUpgradeExecutor implements CommandExecutor {
       return result(command, {
         exitCode: 1,
         stderr: "BENIGN_G32_DUMP_STOP",
+        ok: false,
+      });
+    }
+    return result(command);
+  }
+}
+
+class StorageImageExecutor implements CommandExecutor {
+  imageId = "sha256:reviewed-image";
+  imageInspectCalls = 0;
+  dumpCalls = 0;
+
+  display(_profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
+    return commandToShell(spec);
+  }
+
+  async run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+    const command = this.display(profile, spec);
+    if (command.includes("ReadStoragePool")) {
+      return result(command, { stdout: storagePoolOutput(2) });
+    }
+    if (
+      spec.command === "docker"
+      && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+    ) {
+      this.imageInspectCalls += 1;
+      return result(command, { stdout: `${this.imageId}\n` });
+    }
+    if (spec.command === "docker" && spec.args?.[0] === "ps") {
+      return result(command, {
+        stdout: [
+          '{"Names":"ydb-local","Image":"example.local/local-ydb:mutable"}',
+          '{"Names":"ydb-dyn-example","Image":"example.local/local-ydb:mutable"}',
+        ].join("\n"),
+      });
+    }
+    if (command.includes("docker volume ls")) {
+      return result(command, { stdout: "ydb-local-data\n" });
+    }
+    if (command.includes(" tools dump ")) {
+      this.dumpCalls += 1;
+      return result(command, {
+        exitCode: 1,
+        stderr: "BENIGN_STORAGE_DUMP_STOP",
         ok: false,
       });
     }
@@ -387,4 +552,21 @@ function result(command: string, overrides: Partial<CommandResult> = {}): Comman
     timedOut: false,
     ...overrides,
   };
+}
+
+function storagePoolOutput(numGroups: number): string {
+  return `Status {
+  StoragePool {
+    BoxId: 1
+    StoragePoolId: 2
+    Name: "/local/example:hdd"
+    ErasureSpecies: "none"
+    VDiskKind: "Default"
+    Kind: "hdd"
+    NumGroups: ${numGroups}
+    PDiskFilter { Property { Type: ROT } }
+    ScopeId { X1: 72057594046678944 X2: 38 }
+    ItemConfigGeneration: 3
+  }
+}`;
 }

@@ -3,6 +3,7 @@ import {
   attachConfirmation,
   authorizeMutation,
   confirmationSummarySuffix,
+  withConfirmationLease,
   withoutConfirmation,
 } from "../confirmation.js";
 import { sanitizeTenantName, type ResolvedLocalYdbProfile } from "../validation.js";
@@ -21,6 +22,7 @@ import {
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
 import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
+import { appendOperationResultsAndCheckSuccess } from "./execution.js";
 import { assertPositiveInteger } from "./helpers.js";
 import { ensureImageIdSpec, ensureImagePresentSpec, inspectImageId } from "./images.js";
 import {
@@ -249,11 +251,12 @@ export async function upgradeVersion(
   if (ctx.profile.bindMountPath) {
     throw new Error("Automatic version upgrade does not support bindMountPath profiles because the upgrade must rebuild from empty storage.");
   }
-  if (!ctx.configPath) {
+  const configPath = ctx.configPath;
+  if (!configPath) {
     throw new Error("Automatic version upgrade requires a file-backed local-ydb config path so the reviewed source profile can be verified and updated manually after the upgrade.");
   }
   const profileConfigReceipt = captureProfileConfigReceipt(
-    ctx.configPath,
+    configPath,
     ctx.profile.name,
     sourceImage,
   );
@@ -261,7 +264,7 @@ export async function upgradeVersion(
 
   const authReapplyPlanned = requiresAuthReapply(ctx.profile);
   const dumpName = options.dumpName ?? buildUpgradeDumpName(ctx.profile, sourceImage, version);
-  const profileImageUpdate = plannedProfileImageUpdate(ctx.configPath, ctx.profile.name, sourceImage, targetImage);
+  const profileImageUpdate = plannedProfileImageUpdate(configPath, ctx.profile.name, sourceImage, targetImage);
   const inventoryState = await requireInventory(ctx);
   const extraDynamicNodes = await inspectExtraDynamicNodePlans(
     ctx,
@@ -329,7 +332,7 @@ export async function upgradeVersion(
   ].map((command) => authArtifacts?.redact(command) ?? command);
   const rollback = [
     `Pull ${sourceImage}, recreate the profile stack with the previous image, and restore dump ${dumpName}.`,
-    `If the config was manually updated to ${targetImage}, set profiles.${ctx.profile.name}.image in ${ctx.configPath} back to ${sourceImage} when rolling back.`,
+    `If the config was manually updated to ${targetImage}, set profiles.${ctx.profile.name}.image in ${configPath} back to ${sourceImage} when rolling back.`,
     "Auth artifacts are preserved; rerun local_ydb_prepare_auth_config, local_ydb_write_dynamic_auth_config, and local_ydb_apply_auth_hardening if auth reapply needs to be repeated."
   ];
   const verification = [
@@ -344,7 +347,7 @@ export async function upgradeVersion(
       ...extraDynamicNodes.map((node) => node.icPort)
     ].join(", ")}`,
     `profile containers use image ${targetImage}`,
-    `after independent image and data verification, manually set profiles.${ctx.profile.name}.image in ${ctx.configPath} to ${targetImage}`
+    `after independent image and data verification, manually set profiles.${ctx.profile.name}.image in ${configPath} to ${targetImage}`
   ];
 
   const summary = `Upgrade ${ctx.profile.name} from ${sourceImage} to ${targetImage} via dump, rebuild, and restore.`;
@@ -360,7 +363,7 @@ export async function upgradeVersion(
     rollback,
     verification,
   }, {
-    sharedRotatingScope: PROFILE_COMPOSITE_REBUILD_SCOPE,
+    sharedExclusiveScope: PROFILE_COMPOSITE_REBUILD_SCOPE,
   });
   if (!decision.execute) {
     return attachConfirmation({
@@ -383,94 +386,87 @@ export async function upgradeVersion(
     return attachConfirmation(response, decision.confirmation);
   };
 
+  return withConfirmationLease(decision.receipt, async () => {
   const results: CommandResult[] = [];
+  const acceptedResponse = (
+    imageVerification?: ImageVerificationData,
+    profileUpdate: ProfileImageUpdate | undefined = profileImageUpdate,
+  ) => confirmed(upgradeVersionResponse(
+    sourceImage,
+    targetImage,
+    dumpName,
+    authReapplyPlanned,
+    extraDynamicNodes,
+    imageVerification,
+    profileUpdate,
+    plannedCommands,
+    rollback,
+    verification,
+    results,
+  ));
   const sourceImageResult = await ctx.client.run(sourceImageSpec);
   results.push(sourceImageResult);
   if (!sourceImageResult.ok) {
-    return confirmed(upgradeVersionResponse(
-      sourceImage,
-      targetImage,
-      dumpName,
-      authReapplyPlanned,
-      extraDynamicNodes,
-      undefined,
-      profileImageUpdate,
-      plannedCommands,
-      rollback,
-      verification,
-      results
-    ));
+    return acceptedResponse();
   }
   const targetImageResult = await ctx.client.run(targetImageSpec);
   results.push(targetImageResult);
   if (!targetImageResult.ok) {
-    return confirmed(upgradeVersionResponse(
-      sourceImage,
-      targetImage,
-      dumpName,
-      authReapplyPlanned,
-      extraDynamicNodes,
-      undefined,
-      profileImageUpdate,
-      plannedCommands,
-      rollback,
-      verification,
-      results
-    ));
+    return acceptedResponse();
   }
 
-  if (!await runOperation(results, await dumpTenant(phaseCtx, { confirm: true, dumpName }))) {
-    return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+  if (!appendOperationResultsAndCheckSuccess(results, await dumpTenant(phaseCtx, { confirm: true, dumpName }))) {
+    return acceptedResponse();
   }
   const dumpSnapshot = await createCompositeDumpSnapshot(phaseCtx, dumpName);
   results.push(dumpSnapshot.result);
   try {
     if (!dumpSnapshot.result.ok || !dumpSnapshot.preparedRestore) {
-      return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+      return acceptedResponse();
     }
     const destructiveBoundaryImageResult = await ctx.client.run(targetImageSpec);
     results.push(destructiveBoundaryImageResult);
     if (!destructiveBoundaryImageResult.ok) {
-      return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+      return acceptedResponse();
     }
-    if (!await runOperation(results, await destroyStack(
+    if (!appendOperationResultsAndCheckSuccess(results, await destroyStack(
       phaseCtx,
       { confirm: true },
       preparedExtraDynamicNodes,
     ))) {
-      return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+      return acceptedResponse();
     }
-    if (!await runOperation(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: targetImageId }))) {
-      return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+    if (!appendOperationResultsAndCheckSuccess(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: targetImageId }))) {
+      return acceptedResponse();
     }
-    if (!await runOperation(results, await restoreTenant(
+    if (!appendOperationResultsAndCheckSuccess(results, await restoreTenant(
       rebuildCtx,
       { confirm: true, dumpName },
       dumpSnapshot.preparedRestore,
     ))) {
-      return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+      return acceptedResponse();
     }
 
     if (authReapplyPlanned) {
-      if (!await runOperation(results, await prepareAuthConfig(finalCtx, { confirm: true }))) {
-        return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+      if (!appendOperationResultsAndCheckSuccess(results, await prepareAuthConfig(finalCtx, { confirm: true }))) {
+        return acceptedResponse();
       }
-      if (!await runOperation(results, await writeDynamicNodeAuthConfig(finalCtx, {
+      if (!appendOperationResultsAndCheckSuccess(results, await writeDynamicNodeAuthConfig(finalCtx, {
         confirm: true,
         sid: finalCtx.profile.dynamicNodeAuthSid ?? "root@builtin"
       }))) {
-        return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+        return acceptedResponse();
       }
-      if (!await runOperation(results, await authArtifacts!.persist({ confirm: true }))) {
-        return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+      if (!appendOperationResultsAndCheckSuccess(results, await authArtifacts!.persist({ confirm: true }))) {
+        return acceptedResponse();
       }
-      if (!await runOperation(results, await applyAuthHardening(finalCtx, { confirm: true }))) {
-        return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+      if (!appendOperationResultsAndCheckSuccess(results, await applyAuthHardening(finalCtx, { confirm: true }))) {
+        return acceptedResponse();
       }
     }
 
     for (const node of extraDynamicNodes) {
-      if (!await runOperation(results, await addDynamicNodes(finalCtx, {
+      if (!appendOperationResultsAndCheckSuccess(results, await addDynamicNodes(finalCtx, {
         confirm: true,
         count: 1,
         startIndex: node.index,
@@ -478,7 +474,7 @@ export async function upgradeVersion(
         monitoringPortStart: node.monitoringPort,
         icPortStart: node.icPort
       }))) {
-        return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
+        return acceptedResponse();
       }
     }
 
@@ -490,63 +486,27 @@ export async function upgradeVersion(
     );
     results.push(imageVerification.result);
     if (imageVerification.kind === "mismatch") {
-      return confirmed(upgradeVersionResponse(
-        sourceImage,
-        targetImage,
-        dumpName,
-        authReapplyPlanned,
-        extraDynamicNodes,
-        imageVerification.verification,
-        profileImageUpdate,
-        plannedCommands,
-        rollback,
-        verification,
-        results
-      ));
+      return acceptedResponse(imageVerification.verification);
     }
 
     if (imageVerification.kind === "unavailable") {
       const manualProfileUpdate = manualProfileImageUpdate(
-        ctx.configPath,
+        configPath,
         ctx.profile.name,
         sourceImage,
         targetImage,
       );
-      return confirmed(upgradeVersionResponse(
-        sourceImage,
-        targetImage,
-        dumpName,
-        authReapplyPlanned,
-        extraDynamicNodes,
-        undefined,
-        manualProfileUpdate,
-        plannedCommands,
-        rollback,
-        verification,
-        results
-      ));
+      return acceptedResponse(undefined, manualProfileUpdate);
     }
 
     const manualProfileUpdate = manualProfileImageUpdate(
-      ctx.configPath,
+      configPath,
       ctx.profile.name,
       sourceImage,
       targetImage,
     );
 
-    return confirmed(upgradeVersionResponse(
-      sourceImage,
-      targetImage,
-      dumpName,
-      authReapplyPlanned,
-      extraDynamicNodes,
-      imageVerification.verification,
-      manualProfileUpdate,
-      plannedCommands,
-      rollback,
-      verification,
-      results
-    ));
+    return acceptedResponse(imageVerification.verification, manualProfileUpdate);
   } finally {
     const dumpRemoved = await dumpSnapshot.remove();
     const authRemoved = await authArtifacts?.remove() ?? true;
@@ -557,6 +517,7 @@ export async function upgradeVersion(
       throw new Error(COMPOSITE_AUTH_CLEANUP_FAILURE);
     }
   }
+  });
 }
 
 async function fetchRegistryTagsPage(
@@ -825,13 +786,6 @@ async function verifyProfileImages(
       timedOut: false
     }
   };
-}
-
-async function runOperation(results: CommandResult[], response: { results?: CommandResult[] }): Promise<boolean> {
-  if (response.results) {
-    results.push(...response.results);
-  }
-  return !response.results || response.results.every((result) => result.ok);
 }
 
 function upgradeVersionResponse(

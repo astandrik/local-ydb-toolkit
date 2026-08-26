@@ -17,7 +17,11 @@ import {
   type ToolkitContext,
 } from "../src/index.js";
 import { runMutating } from "../src/operations/execution.js";
-import { authorizeMutation, confirmationSummarySuffix } from "../src/confirmation.js";
+import {
+  authorizeMutation,
+  confirmationSummarySuffix,
+  withConfirmationLease,
+} from "../src/confirmation.js";
 import { MAX_CONFIRMATION_FILE_BYTES } from "../src/confirmation-inputs.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -265,7 +269,7 @@ describe("process confirmation store", () => {
     expect(store.consume(secondToken, intent, rotatingScope)).toBe(false);
   });
 
-  it("shares a rotating generation across tools for the same resolved profile", async () => {
+  it("shares an exclusive lease across tools for the same resolved profile", async () => {
     const store = new ProcessConfirmationStore();
     const executor = new CountingExecutor();
     const firstCtx = confirmationContext(store, executor, "local_ydb_upgrade_version");
@@ -276,51 +280,131 @@ describe("process confirmation store", () => {
         toolName: "local_ydb_reduce_storage_groups",
       },
     };
-    const sharedRotatingScope = { kind: "profile-composite-rebuild" };
+    const sharedExclusiveScope = { kind: "profile-composite-rebuild" };
     const firstIntent = { kind: "version-upgrade", dumpName: "first" };
     const secondIntent = { kind: "storage-rebuild", dumpName: "second" };
-    const firstPlan = await authorizeMutation(firstCtx, {}, firstIntent, { sharedRotatingScope });
-    const secondPlan = await authorizeMutation(secondCtx, {}, secondIntent, { sharedRotatingScope });
+    const firstPlan = await authorizeMutation(firstCtx, {}, firstIntent, { sharedExclusiveScope });
+    const secondPlan = await authorizeMutation(secondCtx, {}, secondIntent, { sharedExclusiveScope });
 
     const accepted = await authorizeMutation(firstCtx, {
       confirm: true,
       confirmationToken: firstPlan.confirmation?.token,
-    }, firstIntent, { sharedRotatingScope });
+    }, firstIntent, { sharedExclusiveScope });
     const rejected = await authorizeMutation(secondCtx, {
       confirm: true,
       confirmationToken: secondPlan.confirmation?.token,
-    }, secondIntent, { sharedRotatingScope });
+    }, secondIntent, { sharedExclusiveScope });
 
     expect(accepted).toMatchObject({ execute: true, confirmation: { status: "accepted" } });
     expect(rejected).toMatchObject({ execute: false, confirmation: { status: "rejected" } });
   });
 
-  it("keeps shared rotating generations independent across profiles", async () => {
+  it("keeps shared exclusive leases independent across profiles", async () => {
     const store = new ProcessConfirmationStore();
     const executor = new CountingExecutor();
     const defaultCtx = confirmationContext(store, executor, "local_ydb_upgrade_version");
     const otherCtx = confirmationContext(store, executor, "local_ydb_reduce_storage_groups", "other");
-    const sharedRotatingScope = { kind: "profile-composite-rebuild" };
+    const sharedExclusiveScope = { kind: "profile-composite-rebuild" };
     const intent = { kind: "composite-rebuild" };
-    const defaultPlan = await authorizeMutation(defaultCtx, {}, intent, { sharedRotatingScope });
-    const otherPlan = await authorizeMutation(otherCtx, {}, intent, { sharedRotatingScope });
+    const defaultPlan = await authorizeMutation(defaultCtx, {}, intent, { sharedExclusiveScope });
+    const otherPlan = await authorizeMutation(otherCtx, {}, intent, { sharedExclusiveScope });
 
     expect(await authorizeMutation(defaultCtx, {
       confirm: true,
       confirmationToken: defaultPlan.confirmation?.token,
-    }, intent, { sharedRotatingScope })).toMatchObject({ execute: true });
+    }, intent, { sharedExclusiveScope })).toMatchObject({ execute: true });
     expect(await authorizeMutation(otherCtx, {
       confirm: true,
       confirmationToken: otherPlan.confirmation?.token,
-    }, intent, { sharedRotatingScope })).toMatchObject({ execute: true });
+    }, intent, { sharedExclusiveScope })).toMatchObject({ execute: true });
   });
 
-  it("rejects simultaneous contextual and shared rotating scopes", async () => {
+  it("invalidates plans issued during an exclusive lease after release", async () => {
+    const store = new ProcessConfirmationStore();
+    const executor = new CountingExecutor();
+    const ctx = confirmationContext(store, executor, "local_ydb_upgrade_version");
+    const sharedExclusiveScope = { kind: "profile-composite-rebuild" };
+    const firstIntent = { kind: "version-upgrade", dumpName: "first" };
+    const secondIntent = { kind: "version-upgrade", dumpName: "second" };
+    const firstPlan = await authorizeMutation(ctx, {}, firstIntent, { sharedExclusiveScope });
+    const accepted = await authorizeMutation(ctx, {
+      confirm: true,
+      confirmationToken: firstPlan.confirmation?.token,
+    }, firstIntent, { sharedExclusiveScope });
+    const duringExecutionPlan = await authorizeMutation(
+      ctx,
+      {},
+      secondIntent,
+      { sharedExclusiveScope },
+    );
+
+    const busy = await authorizeMutation(ctx, {
+      confirm: true,
+      confirmationToken: duringExecutionPlan.confirmation?.token,
+    }, secondIntent, { sharedExclusiveScope });
+    expect(accepted).toMatchObject({ execute: true, confirmation: { status: "accepted" } });
+    expect(busy).toMatchObject({ execute: false, confirmation: { status: "rejected" } });
+
+    accepted.receipt?.release?.();
+    accepted.receipt?.release?.();
+
+    expect(await authorizeMutation(ctx, {
+      confirm: true,
+      confirmationToken: duringExecutionPlan.confirmation?.token,
+    }, secondIntent, { sharedExclusiveScope })).toMatchObject({
+      execute: false,
+      confirmation: { status: "rejected" },
+    });
+
+    const freshPlan = await authorizeMutation(ctx, {}, secondIntent, { sharedExclusiveScope });
+    const freshAccepted = await authorizeMutation(ctx, {
+      confirm: true,
+      confirmationToken: freshPlan.confirmation?.token,
+    }, secondIntent, { sharedExclusiveScope });
+    expect(freshAccepted).toMatchObject({
+      execute: true,
+      confirmation: { status: "accepted" },
+    });
+    freshAccepted.receipt?.release?.();
+  });
+
+  it("releases an exclusive lease when accepted execution fails", async () => {
+    const store = new ProcessConfirmationStore();
+    const ctx = confirmationContext(
+      store,
+      new CountingExecutor(),
+      "local_ydb_upgrade_version",
+    );
+    const sharedExclusiveScope = { kind: "profile-composite-rebuild" };
+    const intent = { kind: "version-upgrade", dumpName: "failure" };
+    const planBeforeFailure = await authorizeMutation(ctx, {}, intent, { sharedExclusiveScope });
+    const accepted = await authorizeMutation(ctx, {
+      confirm: true,
+      confirmationToken: planBeforeFailure.confirmation?.token,
+    }, intent, { sharedExclusiveScope });
+
+    await expect(withConfirmationLease(accepted.receipt, async () => {
+      throw new Error("synthetic lease failure");
+    })).rejects.toThrow("synthetic lease failure");
+
+    const freshPlan = await authorizeMutation(ctx, {}, intent, { sharedExclusiveScope });
+    const freshAccepted = await authorizeMutation(ctx, {
+      confirm: true,
+      confirmationToken: freshPlan.confirmation?.token,
+    }, intent, { sharedExclusiveScope });
+    expect(freshAccepted).toMatchObject({
+      execute: true,
+      confirmation: { status: "accepted" },
+    });
+    freshAccepted.receipt?.release?.();
+  });
+
+  it("rejects simultaneous rotating and shared exclusive scopes", async () => {
     const ctx = confirmationContext(new ProcessConfirmationStore(), new CountingExecutor());
     await expect(authorizeMutation(ctx, {}, plan, {
       rotatingScope: { kind: "contextual" },
-      sharedRotatingScope: { kind: "shared" },
-    })).rejects.toThrow("cannot use contextual and shared rotating scopes together");
+      sharedExclusiveScope: { kind: "shared" },
+    })).rejects.toThrow("cannot use rotating and shared exclusive scopes together");
   });
 
   it("retires submitted current-process tokens on zero-command mutating exits", async () => {

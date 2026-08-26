@@ -3475,6 +3475,12 @@ describe("mutating operations", () => {
     executor.run = async (_profile, spec) => {
       const command = executor.display(_profile, spec);
       executor.commands.push(command);
+      if (
+        spec.command === "docker"
+        && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+      ) {
+        return commandResult(command, { stdout: "sha256:reviewed-storage-image\n" });
+      }
       if (command.includes("ReadStoragePool")) {
         return {
           command,
@@ -3592,6 +3598,12 @@ describe("mutating operations", () => {
     executor.run = async (_profile, spec) => {
       const command = executor.display(_profile, spec);
       executor.commands.push(command);
+      if (
+        spec.command === "docker"
+        && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+      ) {
+        return commandResult(command, { stdout: "sha256:reviewed-storage-image\n" });
+      }
       if (command.includes("ReadStoragePool")) {
         return commandResult(command, {
           stdout: `Status {
@@ -3671,6 +3683,13 @@ describe("mutating operations", () => {
       const command = executor.display(_profile, spec);
       const rawScript = spec.args?.[1] ?? "";
       const authRoot = /\/tmp\/local-ydb-toolkit-composite-auth-[A-Za-z0-9_-]+/.exec(rawScript)?.[0];
+      if (
+        spec.command === "docker"
+        && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+      ) {
+        executor.commands.push(command);
+        return commandResult(command, { stdout: "sha256:reviewed-storage-image\n" });
+      }
       if (spec.description?.startsWith("Fingerprint ")) {
         return commandResult(command, {
           stdout: `directory:${"a".repeat(64)}\n`,
@@ -3789,6 +3808,20 @@ describe("mutating operations", () => {
           command,
           exitCode: 0,
           stdout: STABLE_DYNAMIC_CONTAINER_STATE,
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+
+      if (spec.command === "docker" && spec.args?.[0] === "inspect" && spec.args.length > 2) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: JSON.stringify(spec.args.slice(1).map((name) => ({
+            Name: `/${name}`,
+            Image: "sha256:reviewed-storage-image"
+          }))),
           stderr: "",
           ok: true,
           timedOut: false

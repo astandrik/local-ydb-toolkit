@@ -59,13 +59,18 @@ equal to the full dump size. Composite storage reduction and version upgrade
 make the same kind of private verified copy immediately after generating their
 dump and before teardown, then restore only from that copy. Their teardown
 container set is frozen from the reviewed inventory instead of expanding to
-late arrivals. Pre-issued upgrade and storage-reduction confirmations share a
-profile-scoped rebuild generation, so accepting either invalidates the others
-before a second dump or teardown starts; different resolved profiles remain
-independent. Auth-enabled composite rebuilds generate config, dynamic token,
-and root credential in a separate private workspace, persist those bytes to the
-configured host files, and keep using only the private copies through auth
-reapply and dynamic-node recreation. Dynamic-node removal binds both the token
+late arrivals. Upgrade and storage-reduction confirmations share a
+profile-scoped execution lease held through mutation and cleanup. A second
+confirm is rejected while the lease is active, and plans issued during that
+execution become stale when it finishes; different resolved profiles remain
+independent. Auth-enabled composite rebuilds require the three configured auth
+destinations to remain distinct after path normalization, generate config,
+dynamic token, and root credential in a separate private workspace, persist
+those bytes to the configured host files, and keep using only the private
+copies through auth reapply and dynamic-node recreation. Storage reduction
+binds the configured image tag to its exact Docker image ID, rechecks it before
+dump and destructive teardown, enforces it during bootstrap, and verifies final
+container IDs. Dynamic-node removal binds both the token
 and the final remove command to the inspected Docker container ID, so a
 same-name replacement survives. Version upgrade never rewrites the profile config automatically.
 After independently verifying container images and restored data, update

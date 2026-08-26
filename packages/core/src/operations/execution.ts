@@ -86,6 +86,17 @@ export async function runCommandSpecs(ctx: ToolkitContext, specs: CommandSpec[])
   return results;
 }
 
+export function appendOperationResultsAndCheckSuccess(
+  results: CommandResult[],
+  response: { results?: CommandResult[] },
+): boolean {
+  if (!response.results) {
+    return true;
+  }
+  results.push(...response.results);
+  return response.results.every((result) => result.ok);
+}
+
 export function normalizeExpectedYdbResult(spec: CommandSpec, result: CommandResult): CommandResult {
   if (result.ok || result.timedOut) {
     return result;

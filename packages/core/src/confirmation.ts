@@ -34,18 +34,20 @@ export interface ConfirmationDecision {
 
 export interface ConfirmationReceipt {
   contentInputs: readonly ConfirmationContentFingerprint[];
+  release?: () => void;
 }
 
 export interface ConfirmationAuthorizationOptions {
   contentInputs?: ConfirmationContentInput[];
   rotatingScope?: unknown;
-  sharedRotatingScope?: unknown;
+  sharedExclusiveScope?: unknown;
 }
 
 export class ProcessConfirmationStore {
   readonly #key = randomBytes(PROCESS_KEY_BYTES);
   readonly #consumedTokens = new Set<string>();
   readonly #scopeGenerations = new Map<string, number>();
+  readonly #activeExclusiveScopes = new Set<string>();
 
   issue(intent: unknown, rotatingScope?: unknown): string {
     const nonce = randomBytes(NONCE_BYTES);
@@ -60,22 +62,9 @@ export class ProcessConfirmationStore {
   }
 
   consume(token: string, intent: unknown, rotatingScope?: unknown): boolean {
-    if (this.#consumedTokens.has(token)) {
+    if (!this.#validateAndConsume(token, intent, rotatingScope)) {
       return false;
     }
-    const parsed = parseToken(token);
-    if (!parsed) {
-      return false;
-    }
-    const expectedCapability = this.#signCapability(parsed.nonce, parsed.intentMac);
-    if (!timingSafeEqual(parsed.capabilityMac, expectedCapability)) {
-      return false;
-    }
-    const expected = this.#signIntent(parsed.nonce, intent, rotatingScope);
-    if (!timingSafeEqual(parsed.intentMac, expected)) {
-      return false;
-    }
-    this.#consumedTokens.add(token);
     if (rotatingScope !== undefined) {
       // Rotate synchronously with consumption so concurrent confirms cannot reuse
       // an auto-resolved execution value before the first caller mutates state.
@@ -86,6 +75,32 @@ export class ProcessConfirmationStore {
       );
     }
     return true;
+  }
+
+  acquire(token: string, intent: unknown, exclusiveScope: unknown): (() => void) | undefined {
+    // Consume before checking the active lease so a valid submitted capability
+    // cannot be replayed after the in-flight execution releases the scope.
+    if (!this.#validateAndConsume(token, intent, exclusiveScope)) {
+      return undefined;
+    }
+    const scopeKey = this.#scopeKey(exclusiveScope);
+    if (this.#activeExclusiveScopes.has(scopeKey)) {
+      return undefined;
+    }
+    this.#activeExclusiveScopes.add(scopeKey);
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      if (this.#activeExclusiveScopes.delete(scopeKey)) {
+        this.#scopeGenerations.set(
+          scopeKey,
+          (this.#scopeGenerations.get(scopeKey) ?? 0) + 1,
+        );
+      }
+    };
   }
 
   retire(token: string): boolean {
@@ -115,6 +130,26 @@ export class ProcessConfirmationStore {
       .digest()
       .subarray(0, NONCE_BYTES)
       .toString("base64url");
+  }
+
+  #validateAndConsume(token: string, intent: unknown, scope?: unknown): boolean {
+    if (this.#consumedTokens.has(token)) {
+      return false;
+    }
+    const parsed = parseToken(token);
+    if (!parsed) {
+      return false;
+    }
+    const expectedCapability = this.#signCapability(parsed.nonce, parsed.intentMac);
+    if (!timingSafeEqual(parsed.capabilityMac, expectedCapability)) {
+      return false;
+    }
+    const expected = this.#signIntent(parsed.nonce, intent, scope);
+    if (!timingSafeEqual(parsed.intentMac, expected)) {
+      return false;
+    }
+    this.#consumedTokens.add(token);
+    return true;
   }
 
   #sign(nonce: Buffer, intent: unknown): Buffer {
@@ -165,9 +200,9 @@ export async function authorizeMutation(
 ): Promise<ConfirmationDecision> {
   if (
     authorization.rotatingScope !== undefined
-    && authorization.sharedRotatingScope !== undefined
+    && authorization.sharedExclusiveScope !== undefined
   ) {
-    throw new Error("Confirmation authorization cannot use contextual and shared rotating scopes together");
+    throw new Error("Confirmation authorization cannot use rotating and shared exclusive scopes together");
   }
 
   const runtime = ctx.confirmation;
@@ -194,11 +229,11 @@ export async function authorizeMutation(
     ...confirmationEnvelope(ctx, executionIntent),
     contentInputs,
   };
-  let rotatingScope: unknown;
-  if (authorization.sharedRotatingScope !== undefined) {
-    rotatingScope = sharedConfirmationScopeEnvelope(ctx, authorization.sharedRotatingScope);
+  let confirmationScope: unknown;
+  if (authorization.sharedExclusiveScope !== undefined) {
+    confirmationScope = sharedConfirmationScopeEnvelope(ctx, authorization.sharedExclusiveScope);
   } else if (authorization.rotatingScope !== undefined) {
-    rotatingScope = confirmationEnvelope(ctx, {
+    confirmationScope = confirmationEnvelope(ctx, {
       kind: "rotating-scope",
       scope: authorization.rotatingScope,
     });
@@ -209,19 +244,25 @@ export async function authorizeMutation(
       execute: false,
       confirmation: {
         status: "planned",
-        token: runtime.store.issue(intent, rotatingScope),
+        token: runtime.store.issue(intent, confirmationScope),
       },
     };
   }
 
-  if (
-    typeof options.confirmationToken === "string"
-    && runtime.store.consume(options.confirmationToken, intent, rotatingScope)
-  ) {
+  const release = typeof options.confirmationToken === "string"
+    && authorization.sharedExclusiveScope !== undefined
+    ? runtime.store.acquire(options.confirmationToken, intent, confirmationScope)
+    : undefined;
+  const accepted = release !== undefined || (
+    authorization.sharedExclusiveScope === undefined
+    && typeof options.confirmationToken === "string"
+    && runtime.store.consume(options.confirmationToken, intent, confirmationScope)
+  );
+  if (accepted) {
     return {
       execute: true,
       confirmation: { status: "accepted" },
-      receipt: { contentInputs },
+      receipt: { contentInputs, release },
     };
   }
 
@@ -229,7 +270,7 @@ export async function authorizeMutation(
     execute: false,
     confirmation: {
       status: "rejected",
-      token: runtime.store.issue(intent, rotatingScope),
+      token: runtime.store.issue(intent, confirmationScope),
     },
   };
 }
@@ -239,6 +280,17 @@ export function confirmationScopedId(ctx: ToolkitContext, scope: unknown): strin
   return runtime?.store.scopedId(
     confirmationEnvelope(ctx, { kind: "rotating-scope", scope }),
   );
+}
+
+export async function withConfirmationLease<T>(
+  receipt: ConfirmationReceipt | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } finally {
+    receipt?.release?.();
+  }
 }
 
 export function retireSubmittedConfirmation(
@@ -376,7 +428,7 @@ function sharedConfirmationScopeEnvelope(
     configSource: runtime.configSource,
     profile: ctx.profile,
     execution: {
-      kind: "shared-rotating-scope",
+      kind: "shared-exclusive-scope",
       scope,
     },
   };
