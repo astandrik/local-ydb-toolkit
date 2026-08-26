@@ -194,7 +194,7 @@ export const toolDefinitions = [
     group: "checks",
     name: "local_ydb_healthcheck",
     description:
-      "Read-only YDB monitoring healthcheck for the configured tenant or root database. Uses the official YDB CLI SelfCheck path, returns selfCheckResult, issue counts, issue types, capped raw output, and whether the database is healthy; use after local_ydb_status_report for database-level diagnostics.",
+      "Read-only YDB monitoring healthcheck for the configured tenant or root database. Uses the official YDB CLI SelfCheck path, returns selfCheckResult, issue counts, issue types, capped raw output, and whether the database is healthy; a requested noCache/noMerge option rejected with the exact recognized two-line legacy parser signature is reported through optionResolution and warnings, while compatibilityFallback says whether a retry actually started. Use after local_ydb_status_report for database-level diagnostics.",
     inputSchema: healthcheckSchema(),
     annotations: readOnlyAnnotations(),
     handler: withContext(HealthcheckArgs, (context, parsed) =>

@@ -548,6 +548,64 @@ describe("mcp tools", () => {
     }
   });
 
+  it("round-trips healthcheck option resolution losslessly in JSON and TOON", async () => {
+    for (const responseContentFormat of ["json", "toon"] as const) {
+      const executor = new RecordingExecutor();
+      executor.run = async (profile, spec) => {
+        const command = executor.display(profile, spec);
+        executor.commands.push(command);
+        return {
+          command,
+          exitCode: 0,
+          stdout: JSON.stringify({ self_check_result: "GOOD" }),
+          stderr: "",
+          ok: true,
+          timedOut: false,
+        };
+      };
+      const server = createLocalYdbMcpServer({
+        config: ConfigSchema.parse({}),
+        executor,
+        responseContentFormat,
+      }) as unknown as {
+        _requestHandlers: Map<string, (
+          request: unknown,
+          extra: { signal: AbortSignal },
+        ) => Promise<ToolResultForTest>>;
+      };
+      const handler = server._requestHandlers.get("tools/call");
+      if (!handler) {
+        throw new Error("Expected tools/call handler to be registered");
+      }
+
+      const result = await handler({
+        method: "tools/call",
+        params: {
+          name: "local_ydb_healthcheck",
+          arguments: { noCache: true, noMerge: true },
+        },
+      }, { signal: new AbortController().signal });
+      const jsonModel = JSON.parse(JSON.stringify(result.structuredContent)) as unknown;
+      const formatted = result.content[1]?.text ?? "";
+
+      expect(result.structuredContent).toMatchObject({
+        selfCheckResult: "GOOD",
+        optionResolution: {
+          requested: ["noCache", "noMerge"],
+          effective: ["noCache", "noMerge"],
+          unsupported: [],
+        },
+        compatibilityFallback: false,
+        warnings: [],
+      });
+      expect(
+        responseContentFormat === "json"
+          ? JSON.parse(formatted)
+          : decode(formatted),
+      ).toEqual(jsonModel);
+    }
+  });
+
   it("round-trips structured Docker inventory failure losslessly in JSON and TOON", async () => {
     for (const responseContentFormat of ["json", "toon"] as const) {
       const executor = new RecordingExecutor();
@@ -695,6 +753,11 @@ describe("mcp tools", () => {
     expect(localYdbInstructions).toContain("untrusted data");
   });
 
+  it("teaches agents to verify effective healthcheck options", () => {
+    expect(localYdbInstructions).toContain("optionResolution.effective");
+    expect(localYdbInstructions).toContain("warnings");
+  });
+
   it("defaults response text content formatting to JSON", () => {
     expect(normalizeResponseContentFormat(undefined)).toBe("json");
   });
@@ -799,6 +862,23 @@ describe("mcp tools", () => {
         expect((schema as { description?: string }).description?.trim().length).toBeGreaterThan(0);
       }
     }
+
+    const healthcheckTool = localYdbTools.find((tool) => tool.name === "local_ydb_healthcheck");
+    expect(healthcheckTool?.description).toContain("exact recognized two-line legacy parser signature");
+    expect(healthcheckTool?.inputSchema.properties?.noCache).toMatchObject({
+      description: expect.stringContaining("exact recognized two-line legacy parser signature"),
+    });
+    expect(healthcheckTool?.inputSchema.properties?.noMerge).toMatchObject({
+      description: expect.stringContaining("exact recognized two-line legacy parser signature"),
+    });
+    const noCacheSchema = healthcheckTool?.inputSchema.properties?.noCache as { description?: string } | undefined;
+    const noMergeSchema = healthcheckTool?.inputSchema.properties?.noMerge as { description?: string } | undefined;
+    expect(noCacheSchema?.description).toContain(
+      "when the shared deadline permits an actual retry",
+    );
+    expect(noMergeSchema?.description).toContain(
+      "compatibilityFallback is true",
+    );
   });
 
   it("annotates tools with behavioral hints", () => {
@@ -965,6 +1045,11 @@ describe("mcp tools", () => {
 
     expect(result.description).toContain("database diagnostics");
     expect(text).toContain("local_ydb_healthcheck");
+    expect(text).toContain("compatibilityFallback");
+    expect(text).toContain("optionResolution.effective");
+    expect(text).toContain("warnings");
+    expect(text).toContain("exact recognized two-line legacy parser signature");
+    expect(text).toContain("do not call the result fresh or unmerged");
     expect(text).toContain("Then route by healthcheck issue type");
     expect(text).toContain("STORAGE");
     expect(text).toContain("COMPUTE");
