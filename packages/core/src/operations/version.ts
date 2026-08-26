@@ -282,11 +282,11 @@ export async function upgradeVersion(
   const sourceImageSpec = ensureImagePresentSpec(sourceImage);
   const targetImageSpec = ensureImagePresentSpec(targetImage);
   const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
-  const preparedExtraDynamicContainers = extraDynamicNodes.map((node) => node.container);
+  const preparedExtraDynamicNodes = extraDynamicNodes;
   const destroyPlan = await destroyStack(
     phaseCtx,
     { confirm: false },
-    preparedExtraDynamicContainers,
+    preparedExtraDynamicNodes,
   );
   const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
@@ -428,7 +428,7 @@ export async function upgradeVersion(
     if (!await runOperation(results, await destroyStack(
       phaseCtx,
       { confirm: true },
-      preparedExtraDynamicContainers,
+      preparedExtraDynamicNodes,
     ))) {
       return confirmed(upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results));
     }

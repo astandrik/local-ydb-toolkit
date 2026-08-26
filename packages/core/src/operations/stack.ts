@@ -29,6 +29,10 @@ import {
 import { normalizeExpectedYdbResult, runCommandSpecs, runMutating } from "./execution.js";
 import { findExtraDynamicContainers } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
+import {
+  exactDynamicNodeRemovalSpec,
+  type InspectedDynamicNodePlan,
+} from "./dynamic-node-inspect.js";
 import type {
   DestroyStackOptions,
   DestroyStackResponse,
@@ -168,20 +172,20 @@ export async function startDynamicNode(ctx: ToolkitContext, options: MutatingOpt
 export async function destroyStack(
   ctx: ToolkitContext,
   options: DestroyStackOptions = {},
-  preparedExtraDynamicNodes?: readonly string[],
+  preparedExtraDynamicNodes?: readonly (string | Pick<InspectedDynamicNodePlan, "container" | "containerId">)[],
 ): Promise<DestroyStackResponse> {
-  const extraDynamicNodes = preparedExtraDynamicNodes
+  const preparedTargets = preparedExtraDynamicNodes
     ? [...preparedExtraDynamicNodes]
     : findExtraDynamicContainers(
         ctx.profile,
         (await requireInventory(ctx)).containers.map((container) => container.names),
       );
+  const extraDynamicNodes = preparedTargets.map((target) =>
+    typeof target === "string" ? target : target.container
+  );
   const specs: CommandSpec[] = [
     removeTenantIfPresentSpec(ctx.profile),
-    ...extraDynamicNodes.map((container) => bash(`docker rm -f ${shellQuote(container)} 2>/dev/null || true`, {
-      timeoutMs: 60_000,
-      description: `Remove extra dynamic tenant node ${container}`
-    })),
+    ...preparedTargets.map(removeExtraDynamicNodeSpec),
     bash(`docker rm -f ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`, {
       timeoutMs: 60_000,
       description: `Remove main dynamic tenant node ${ctx.profile.dynamicContainer}`
@@ -289,6 +293,21 @@ export async function destroyStack(
     removesAuthArtifacts: Boolean(options.removeAuthArtifacts),
     removesDumpHostPath: Boolean(options.removeDumpHostPath)
   }, decision.confirmation);
+}
+
+function removeExtraDynamicNodeSpec(
+  target: string | Pick<InspectedDynamicNodePlan, "container" | "containerId">,
+): CommandSpec {
+  if (typeof target === "string") {
+    return bash(`docker rm -f ${shellQuote(target)} 2>/dev/null || true`, {
+      timeoutMs: 60_000,
+      description: `Remove extra dynamic tenant node ${target}`,
+    });
+  }
+  return exactDynamicNodeRemovalSpec(
+    target,
+    `Remove exact extra dynamic tenant node ${target.container}`,
+  );
 }
 
 function canContinueAfterTenantRemoveFailureDuringTeardown(

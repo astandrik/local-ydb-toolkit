@@ -7,6 +7,8 @@ const guidanceFiles = [
   ["packages/mcp-server/README.md", "../../packages/mcp-server/README.md"],
   ["packages/mcp-server/src/prompts.ts", "../../packages/mcp-server/src/prompts.ts"],
   ["packages/mcp-server/src/tools/instructions.ts", "../../packages/mcp-server/src/tools/instructions.ts"],
+  ["packages/mcp-server/src/tools/input-schemas.ts", "../../packages/mcp-server/src/tools/input-schemas.ts"],
+  ["packages/core/src/confirmation.ts", "../../packages/core/src/confirmation.ts"],
   ["skills/local-ydb/SKILL.md", "../../skills/local-ydb/SKILL.md"],
   ["MCP_TOOL_TEST_SCENARIOS.md", "../../MCP_TOOL_TEST_SCENARIOS.md"],
   [

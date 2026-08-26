@@ -1133,6 +1133,17 @@ describe("mcp tools", () => {
     expect(readOnly).toHaveLength(16);
     for (const tool of mutating) {
       expect(tool.inputSchema.properties).toHaveProperty("confirmationToken");
+      const properties = tool.inputSchema.properties as Record<
+        string,
+        { description?: string }
+      > | undefined;
+      const confirmDescription = properties?.confirm?.description;
+      const tokenDescription = properties?.confirmationToken?.description;
+      expect(confirmDescription, `${tool.name}.confirm`).toContain("confirmation.token");
+      expect(confirmDescription, `${tool.name}.confirm`).toContain("confirmationToken request argument");
+      expect(confirmDescription, `${tool.name}.confirm`).not.toContain("plan's confirmationToken");
+      expect(tokenDescription, `${tool.name}.confirmationToken`).toContain("confirmation.token");
+      expect(tokenDescription, `${tool.name}.confirmationToken`).toContain("confirmationToken request argument");
     }
     for (const tool of readOnly) {
       expect(tool.inputSchema.properties).not.toHaveProperty("confirmationToken");

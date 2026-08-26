@@ -13,7 +13,11 @@ import {
   configuredDynamicNodePlans,
   startDynamicNodePlans
 } from "./dynamic-node-topology.js";
-import { inspectDynamicNodePorts } from "./dynamic-node-inspect.js";
+import {
+  exactDynamicNodeRemovalSpec,
+  inspectDynamicNodePorts,
+  type ExactDynamicNodeTarget,
+} from "./dynamic-node-inspect.js";
 import {
   assertPositiveInteger,
   delay,
@@ -98,7 +102,10 @@ export async function addDynamicNodes(ctx: ToolkitContext, options: AddDynamicNo
 export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDynamicNodesOptions = {}): Promise<RemoveDynamicNodesResponse> {
   const targets = await removableDynamicNodeTargets(ctx, options);
   const publicTargets = targets.map(publicDynamicNodeTarget);
-  const specs = targets.map(removeDynamicNodeSpec);
+  const specs = targets.map((target) => exactDynamicNodeRemovalSpec(
+    target,
+    `Remove exact dynamic tenant node ${target.container}`,
+  ));
   const rollback = [
     ...(targets.some((target) => target.index <= ctx.profile.dynamicNodeCount)
       ? ["Restore configured nodes with local_ydb_restart_stack or local_ydb_bootstrap."]
@@ -166,7 +173,7 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
   );
 }
 
-type PreparedDynamicNodeTarget = DynamicNodeTarget & { containerId: string };
+type PreparedDynamicNodeTarget = DynamicNodeTarget & ExactDynamicNodeTarget;
 
 async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveDynamicNodesOptions): Promise<PreparedDynamicNodeTarget[]> {
   const hasExplicitTargets = Boolean(options.nodeIds?.length || options.containers?.length);
@@ -244,19 +251,6 @@ function publicDynamicNodeTarget({
   ...target
 }: PreparedDynamicNodeTarget): DynamicNodeTarget {
   return target;
-}
-
-function removeDynamicNodeSpec(target: PreparedDynamicNodeTarget): CommandSpec {
-  return bash([
-    "set -euo pipefail",
-    `expected_id=${shellQuote(target.containerId)}`,
-    `actual_id=$(docker inspect --format '{{.Id}}' ${shellQuote(target.container)})`,
-    `[ "$actual_id" = "$expected_id" ]`,
-    "docker rm -f \"$expected_id\"",
-  ].join("\n"), {
-    timeoutMs: 60_000,
-    description: `Remove exact dynamic tenant node ${target.container}`,
-  });
 }
 
 function validateNodeIds(nodeIds: number[]): number[] {

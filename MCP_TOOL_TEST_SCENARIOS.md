@@ -127,7 +127,7 @@ On POSIX, create the FIFO without a writer and require the MCP call to return wi
 - Removal rollback restores configured nodes through restart or bootstrap and recreates one-off nodes through add; a mixed selection returns both instructions.
 - Auth hardening runs the full static compatibility preflight before any config or container mutation, then recreates and verifies every configured node in index order, including profiles without a dynamic-node token file; rollback also uses restart or bootstrap reconciliation.
 - Partial primary starts and one-off additions repeat the full static compatibility preflight after checking image presence and immediately before every dynamic container launch. Each container is created but not started until its resolved immutable image ID matches the static container; a concurrent named-tag refresh removes the never-started container and fails closed before later nodes, while a preflight mismatch requires destroy followed by bootstrap.
-- Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy; an incomplete container definition aborts the rebuild before destructive work. The reviewed one-off container set is frozen for teardown, and a late container must not be added to deletion.
+- Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy, plus each container's exact Docker ID; an incomplete container definition aborts the rebuild before destructive work. The reviewed one-off set and IDs are frozen for teardown: a late container is not added to deletion, and replacing a reviewed node under the same name after acceptance makes teardown fail without removing the replacement.
 - Both composite rebuilds make a private verified copy of the generated dump before teardown and restore only from that copy. The copy is removed after success, failure, or abort and can require temporary space up to the full dump size when copy-on-write is unavailable.
 - Auth-enabled composite rebuilds generate config, dynamic token, and root credential in a private workspace, persist those exact bytes to the configured host paths, and continue auth reapply and node recreation only from the private copies. Replacing a canonical artifact after persistence must not change the applied bytes, and cleanup removes the private workspace.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
@@ -943,8 +943,8 @@ Expected:
   `local_ydb_apply_auth_hardening`
 - those three artifacts are generated in a private workspace, persisted to their configured paths, and consumed only from the private copies through auth reapply and extra-node recreation
 - extra dynamic-node suffixes are re-added after restore/auth reapply
-- every one-off node keeps its inspected gRPC, monitoring, and IC ports; an incomplete inspect aborts before dump or destroy
-- a one-off container appearing after token acceptance is not added to teardown
+- every one-off node keeps its inspected Docker ID plus gRPC, monitoring, and IC ports; an incomplete inspect aborts before dump or destroy
+- a one-off container appearing after token acceptance is not added to teardown, and a same-name replacement is preserved because its ID does not match the reviewed target
 
 Avoid:
 
@@ -977,7 +977,7 @@ Expected:
 - if either image is missing, run `local_ydb_pull_image` first and retry after `local_ydb_pull_status` reports completion
 - after image preflight, the upgrade path performs dump, destroy, bootstrap, restore, auth reapply, and extra dynamic-node recreation in that order
 - immediately after dump, the upgrade creates a private verified copy and restores only from it; replacing the canonical dump before restore must not change restored bytes
-- before dump or destroy, every one-off node's exact gRPC, monitoring, and IC ports are inspected and retained; an incomplete definition aborts the rebuild
+- before dump or destroy, every one-off node's exact Docker ID plus gRPC, monitoring, and IC ports are inspected and retained; an incomplete definition aborts the rebuild
 - auth-enabled profiles re-run:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
@@ -985,7 +985,7 @@ Expected:
 - those three artifacts are generated in a private workspace, persisted to their configured paths, and consumed only from the private copies through auth reapply and extra-node recreation
 - successful final inventory verifies the recreated containers' image tags and returns a manual `profileImageUpdate`; it does not write the config
 - after independent image and data readback, manually set `profiles.<name>.image` to the target tag; ordinary files, symlinks, and concurrent edits must remain untouched by the tool
-- a container appearing after token acceptance is not added to teardown
+- a container appearing after token acceptance is not added to teardown, and a same-name replacement is preserved because its ID does not match the reviewed target
 - a verified image mismatch returns the accumulated history and leaves the profile image unchanged
 - if final inventory is unavailable only after dump/rebuild/restore/auth/node phases succeed, the response appends a safe failed verification result, omits `imageVerification`, preserves the full history, and requires independent verification before the manual profile update
 

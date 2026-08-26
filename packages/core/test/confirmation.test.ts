@@ -17,6 +17,7 @@ import {
   type ToolkitContext,
 } from "../src/index.js";
 import { runMutating } from "../src/operations/execution.js";
+import { confirmationSummarySuffix } from "../src/confirmation.js";
 import { MAX_CONFIRMATION_FILE_BYTES } from "../src/confirmation-inputs.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -76,6 +77,18 @@ const plan = {
 };
 
 describe("process confirmation store", () => {
+  it("maps response confirmation.token to the confirmationToken request argument in summaries", () => {
+    for (const confirmation of [
+      { status: "planned" as const, token: "planned-token" },
+      { status: "rejected" as const, token: "refreshed-token" },
+    ]) {
+      const summary = confirmationSummarySuffix(confirmation);
+      expect(summary).toContain("confirmation.token");
+      expect(summary).toContain("confirmationToken request argument");
+      expect(summary).not.toContain("plan's confirmationToken");
+    }
+  });
+
   it("accepts an exact plan once without exposing secret-bearing intent", async () => {
     const executor = new CountingExecutor();
     const ctx = confirmationContext(new ProcessConfirmationStore(), executor);
@@ -237,6 +250,19 @@ describe("process confirmation store", () => {
       "rejected",
     ]);
     expect(executor.calls).toBe(1);
+  });
+
+  it("rejects distinct tokens issued for a stale rotating-scope generation", () => {
+    const store = new ProcessConfirmationStore();
+    const rotatingScope = { kind: "auto-dump-name", profile: "default" };
+    const scopedId = store.scopedId(rotatingScope);
+    const intent = { kind: "dump", dumpName: `tenant-auto-${scopedId}` };
+    const firstToken = store.issue(intent, rotatingScope);
+    const secondToken = store.issue(intent, rotatingScope);
+
+    expect(store.consume(firstToken, intent, rotatingScope)).toBe(true);
+    expect(store.scopedId(rotatingScope)).not.toBe(scopedId);
+    expect(store.consume(secondToken, intent, rotatingScope)).toBe(false);
   });
 
   it("keeps a token consumed when execution throws", async () => {

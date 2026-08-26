@@ -3192,6 +3192,7 @@ describe("mutating operations", () => {
           command,
           exitCode: 0,
           stdout: JSON.stringify([{
+            Id: "reviewed-ydb-dyn-example-4-id",
             Name: "/ydb-dyn-example-4",
             Args: ["--grpc-port", "32004", "--mon-port", "9204", "--ic-port", "19204"]
           }]),
@@ -3220,6 +3221,8 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("/dump/shrink-smoke/tenant");
     expect(response.plannedCommands).toContain("prepare private verified composite dump snapshot");
     expect(response.plannedCommands.join("\n")).toContain("admin database /local/example create hdd:1");
+    expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-ydb-dyn-example-4-id");
+    expect(response.plannedCommands.join("\n")).toContain('docker rm -f "$expected_id"');
     expect(response.plannedCommands.join("\n")).not.toContain("/tmp/local-ydb-auth/config.auth.yaml");
     expect(response.plannedCommands.join("\n")).not.toContain("/tmp/local-ydb-toolkit-composite-auth-");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
@@ -3298,7 +3301,7 @@ describe("mutating operations", () => {
     };
 
     await expect(reduceStorageGroups(ctx, { confirm: true, dumpName: "shrink-smoke" }))
-      .rejects.toThrow(/inspect exact gRPC, monitoring, and IC ports.*before destructive rebuild/i);
+      .rejects.toThrow(/inspect exact Docker identity and gRPC, monitoring, and IC ports.*before destructive rebuild/i);
     expect(executor.commands.some((command) => command.includes("/dump/shrink-smoke"))).toBe(false);
     expect(executor.commands.some((command) => command.includes("docker rm -f"))).toBe(false);
   });
@@ -3460,6 +3463,7 @@ describe("mutating operations", () => {
           command,
           exitCode: 0,
           stdout: JSON.stringify([{
+            Id: "reviewed-ydb-dyn-example-4-id",
             Name: "/ydb-dyn-example-4",
             Args: ["--grpc-port", "2140", "--mon-port", "8769", "--ic-port", "19005"]
           }]),
@@ -3585,6 +3589,44 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("docker volume rm ydb-local-data");
     expect(response.removesAuthArtifacts).toBe(false);
     expect(response.removesDumpHostPath).toBe(false);
+  });
+
+  it("fails closed when a prepared composite extra-node identity changes", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "review-dynamic",
+          staticContainer: "review-static",
+          network: "review-network",
+          volume: "review-volume",
+        },
+      },
+    }));
+    let laterTeardownReached = false;
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (spec.description === "Remove exact extra dynamic tenant node review-dynamic-2") {
+        const script = spec.args?.[1] ?? "";
+        expect(script).toContain("expected_id=reviewed-container-id");
+        expect(script).toContain("docker inspect --format '{{.Id}}' review-dynamic-2");
+        expect(script).toContain('docker rm -f "$expected_id"');
+        return commandResult(command, { exitCode: 1, ok: false });
+      }
+      laterTeardownReached ||= command.includes("docker rm -f review-dynamic");
+      return commandResult(command);
+    };
+
+    const response = await destroyStack(ctx, { confirm: true }, [{
+      container: "review-dynamic-2",
+      containerId: "reviewed-container-id",
+    }]);
+
+    expect(response.executed).toBe(true);
+    expect(response.extraDynamicNodes).toEqual(["review-dynamic-2"]);
+    expect(response.results?.at(-1)?.ok).toBe(false);
+    expect(laterTeardownReached).toBe(false);
   });
 
   it("redacts auth artifact cleanup paths without malformed shell quotes", async () => {

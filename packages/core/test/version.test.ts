@@ -310,8 +310,8 @@ function stubUpgradeExecutor(
         command,
         exitCode: 0,
         stdout: JSON.stringify(options.inspectedNodes ?? [
-          { Name: "/ydb-dyn-example-2", Args: ["--grpc-port", "2138", "--mon-port", "8767", "--ic-port", "19003"] },
-          { Name: "/ydb-dyn-example-4", Args: ["--grpc-port", "2140", "--mon-port", "8769", "--ic-port", "19005"] }
+          { Id: "reviewed-ydb-dyn-example-2-id", Name: "/ydb-dyn-example-2", Args: ["--grpc-port", "2138", "--mon-port", "8767", "--ic-port", "19003"] },
+          { Id: "reviewed-ydb-dyn-example-4-id", Name: "/ydb-dyn-example-4", Args: ["--grpc-port", "2140", "--mon-port", "8769", "--ic-port", "19005"] }
         ]),
         stderr: "",
         ok: true,
@@ -556,6 +556,8 @@ describe("version operations", () => {
       expect(response.plannedCommands[1]).toContain("docker image inspect ghcr.io/ydb-platform/local-ydb:26.1.2.0");
       expect(response.plannedCommands.join("\n")).toContain("/dump/");
       expect(response.plannedCommands.join("\n")).toContain("ghcr.io/ydb-platform/local-ydb:26.1.2.0");
+      expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-ydb-dyn-example-2-id");
+      expect(response.plannedCommands.join("\n")).toContain('docker rm -f "$expected_id"');
       expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
       expect(response.plannedCommands.join("\n")).not.toContain("profiles.default.image");
       expect(response.verification.join("\n")).toContain(`manually set profiles.default.image in ${configPath}`);
@@ -579,6 +581,7 @@ describe("version operations", () => {
           "ydb-local"
         ],
         inspectedNodes: [{
+          Id: "reviewed-ydb-dyn-example-4-id",
           Name: "/ydb-dyn-example-4",
           Args: ["--grpc-port", "32004", "--mon-port", "9204", "--ic-port", "19204"]
         }]
@@ -606,7 +609,7 @@ describe("version operations", () => {
     }
   });
 
-  it("rejects version upgrade before dump or destroy when one-off ports cannot be inspected", async () => {
+  it("rejects version upgrade before dump or destroy when one-off identity cannot be inspected", async () => {
     const executor = new RecordingExecutor();
     const rawConfig = upgradeConfig({ dynamicNodeCount: 3 });
     const { configPath, cleanup } = writeTempConfig(rawConfig);
@@ -620,14 +623,17 @@ describe("version operations", () => {
           "ydb-dyn-example",
           "ydb-local"
         ],
-        inspectedNodes: []
+        inspectedNodes: [{
+          Name: "/ydb-dyn-example-4",
+          Args: ["--grpc-port", "32004", "--mon-port", "9204", "--ic-port", "19204"],
+        }]
       });
 
       await expect(upgradeVersion(ctx, {
         confirm: true,
         version: "26.1.2.0",
         dumpName: "upgrade-smoke"
-      })).rejects.toThrow(/inspect exact gRPC, monitoring, and IC ports.*before destructive rebuild/i);
+      })).rejects.toThrow(/inspect exact Docker identity and gRPC, monitoring, and IC ports.*before destructive rebuild/i);
       expect(executor.commands.some((command) => command.includes("/dump/upgrade-smoke"))).toBe(false);
       expect(executor.commands.some((command) => command.includes("docker rm -f"))).toBe(false);
     } finally {

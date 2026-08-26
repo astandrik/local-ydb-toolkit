@@ -210,11 +210,11 @@ export async function reduceStorageGroups(
   const finalCtx = authArtifacts?.context ?? finalBaseCtx;
 
   const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
-  const preparedExtraDynamicContainers = extraDynamicNodes.map((node) => node.container);
+  const preparedExtraDynamicNodes = extraDynamicNodes;
   const destroyPlan = await destroyStack(
     phaseCtx,
     { confirm: false },
-    preparedExtraDynamicContainers,
+    preparedExtraDynamicNodes,
   );
   const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
@@ -317,7 +317,7 @@ export async function reduceStorageGroups(
     if (!await runOperation(results, await destroyStack(
       phaseCtx,
       { confirm: true },
-      preparedExtraDynamicContainers,
+      preparedExtraDynamicNodes,
     ))) {
       return confirmed(reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results));
     }

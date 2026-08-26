@@ -46,9 +46,9 @@ export class ProcessConfirmationStore {
   readonly #consumedTokens = new Set<string>();
   readonly #scopeGenerations = new Map<string, number>();
 
-  issue(intent: unknown): string {
+  issue(intent: unknown, rotatingScope?: unknown): string {
     const nonce = randomBytes(NONCE_BYTES);
-    const intentMac = this.#sign(nonce, intent);
+    const intentMac = this.#signIntent(nonce, intent, rotatingScope);
     const capabilityMac = this.#signCapability(nonce, intentMac);
     return [
       TOKEN_VERSION,
@@ -70,7 +70,7 @@ export class ProcessConfirmationStore {
     if (!timingSafeEqual(parsed.capabilityMac, expectedCapability)) {
       return false;
     }
-    const expected = this.#sign(parsed.nonce, intent);
+    const expected = this.#signIntent(parsed.nonce, intent, rotatingScope);
     if (!timingSafeEqual(parsed.intentMac, expected)) {
       return false;
     }
@@ -124,6 +124,20 @@ export class ProcessConfirmationStore {
       .update("\0")
       .update(canonicalJson(intent), "utf8")
       .digest();
+  }
+
+  #signIntent(nonce: Buffer, intent: unknown, rotatingScope?: unknown): Buffer {
+    if (rotatingScope === undefined) {
+      return this.#sign(nonce, intent);
+    }
+    const scopeKey = this.#scopeKey(rotatingScope);
+    return this.#sign(nonce, {
+      intent,
+      rotatingScope: {
+        key: scopeKey,
+        generation: this.#scopeGenerations.get(scopeKey) ?? 0,
+      },
+    });
   }
 
   #signCapability(nonce: Buffer, intentMac: Buffer): Buffer {
@@ -184,7 +198,7 @@ export async function authorizeMutation(
       execute: false,
       confirmation: {
         status: "planned",
-        token: runtime.store.issue(intent),
+        token: runtime.store.issue(intent, contextualScope),
       },
     };
   }
@@ -204,7 +218,7 @@ export async function authorizeMutation(
     execute: false,
     confirmation: {
       status: "rejected",
-      token: runtime.store.issue(intent),
+      token: runtime.store.issue(intent, contextualScope),
     },
   };
 }
@@ -275,10 +289,10 @@ export function confirmationSummarySuffix(
   confirmation: MutationConfirmation | undefined,
 ): string {
   if (confirmation?.status === "planned") {
-    return " Not executed; review this exact plan, then repeat the request with confirm=true and confirmationToken.";
+    return " Not executed; review this exact plan, then repeat the request with confirm=true and set the confirmationToken request argument to confirmation.token from this plan response.";
   }
   if (confirmation?.status === "rejected") {
-    return " Not executed because the confirmation token did not match this exact plan; review the refreshed plan and token.";
+    return " Not executed because the confirmation token did not match this exact plan; review the refreshed plan, then repeat the request with confirm=true and set the confirmationToken request argument to confirmation.token from the refreshed plan response.";
   }
   return " Not executed because confirm=true was not provided.";
 }

@@ -24,7 +24,7 @@ function confirmProperty(action = "execute planned commands"): {
   return {
     type: "boolean",
     description:
-      `Must be true together with the current plan's confirmationToken to ${action}. Omit or false for plan-only output.`,
+      `To ${action}, set confirm=true and set the confirmationToken request argument to confirmation.token from the current plan response. Omit or false for plan-only output.`,
   };
 }
 
@@ -39,7 +39,7 @@ function confirmationTokenProperty(): {
     minLength: 1,
     maxLength: 256,
     description:
-      "Ephemeral one-time token returned by the immediately preceding exact plan. Allowed only together with confirm=true; do not log or persist it.",
+      "Ephemeral confirmationToken request argument. Set it to confirmation.token returned by the immediately preceding exact plan response; allowed only together with confirm=true. Do not log or persist it.",
   };
 }
 
@@ -194,7 +194,7 @@ export function applySchemaSchema(): Tool["inputSchema"] {
       confirm: {
         type: "boolean",
         description:
-          "Must be true together with the current plan's confirmationToken to execute action=apply after SDK validation succeeds. Omit or false for validation plus plan-only output.",
+          "For action=apply after SDK validation succeeds, set confirm=true and set the confirmationToken request argument to confirmation.token from the current plan response. Omit or false for validation plus plan-only output.",
       },
       confirmationToken: confirmationTokenProperty(),
       timeoutMs: {
@@ -315,7 +315,7 @@ export function sqlSchema(): Tool["inputSchema"] {
       confirm: {
         type: "boolean",
         description:
-          "Considered only for action=execute. Must be true together with the current plan's confirmationToken to send one NoTx execution after successful EXPLAIN; query remains SnapshotRO even when true.",
+          "Considered only for action=execute. To send one NoTx execution after successful EXPLAIN, set confirm=true and set the confirmationToken request argument to confirmation.token from the current plan response; query remains SnapshotRO even when true.",
       },
       confirmationToken: confirmationTokenProperty(),
     },
@@ -851,7 +851,7 @@ export function permissionsSchema(): Tool["inputSchema"] {
       confirm: {
         type: "boolean",
         description:
-          "Must be true together with the current plan's confirmationToken to execute mutating actions. Omit or false for plan-only output. Not required for action=list.",
+          "To execute mutating actions, set confirm=true and set the confirmationToken request argument to confirmation.token from the current plan response. Omit or false for plan-only output. Not required for action=list.",
       },
       confirmationToken: confirmationTokenProperty(),
     },
