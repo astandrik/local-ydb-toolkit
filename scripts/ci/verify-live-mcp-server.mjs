@@ -327,9 +327,23 @@ async function verifyLiveTools(client) {
   const databaseStatus = await callTool(client, "local_ydb_database_status", { profile });
   assert(databaseStatus.ok === true, databaseStatus.stderr || "database status failed");
 
-  const healthcheck = await callTool(client, "local_ydb_healthcheck", { profile });
+  const healthcheck = await callTool(client, "local_ydb_healthcheck", {
+    profile,
+    noCache: true,
+    noMerge: true,
+  });
   assert(healthcheck.ok === true, healthcheck.stderr || healthcheck.parseError || "healthcheck failed");
   assert(typeof healthcheck.selfCheckResult === "string", "healthcheck did not return a selfCheckResult.");
+  assert(
+    JSON.stringify(healthcheck.optionResolution) === JSON.stringify({
+      requested: ["noCache", "noMerge"],
+      effective: ["noCache", "noMerge"],
+      unsupported: [],
+    }),
+    "healthcheck did not preserve requested modern CLI semantics.",
+  );
+  assert(healthcheck.compatibilityFallback === false, "modern live healthcheck unexpectedly used fallback.");
+  assert(Array.isArray(healthcheck.warnings) && healthcheck.warnings.length === 0, "modern live healthcheck returned warnings.");
 
   const tenantCheck = await callTool(client, "local_ydb_tenant_check", { profile });
   assert(tenantCheck.ok === true, tenantCheck.stderr || "tenant check failed");
@@ -745,6 +759,16 @@ async function verifyStoppedStaticRestart(client) {
         healthcheck.ok === true && healthcheck.healthy === true,
         healthcheck.stderr || healthcheck.summary || "disposable root healthcheck failed",
       );
+      assert(
+        JSON.stringify(healthcheck.optionResolution) === JSON.stringify({
+          requested: [],
+          effective: [],
+          unsupported: [],
+        }),
+        "option-free root healthcheck returned unexpected compatibility metadata.",
+      );
+      assert(healthcheck.compatibilityFallback === false, "option-free root healthcheck used fallback.");
+      assert(Array.isArray(healthcheck.warnings) && healthcheck.warnings.length === 0, "option-free root healthcheck returned warnings.");
     } catch (error) {
       failures.push(error);
     }

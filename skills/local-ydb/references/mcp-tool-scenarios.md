@@ -223,6 +223,7 @@ Expected:
 - `status_report` contains every component independently: inventory, auth, tenant, nodes, or health rejection produces the existing component-shaped safe fallback and does not prevent later checks.
 - fallback diagnostics contain fixed summaries and empty command/output fields rather than raw exceptions, SSH/Docker stderr, credential paths, or `ENOENT` details.
 - `healthcheck` returns the YDB `selfCheckResult`, issue counts, issue types, capped raw output, and truncated `issue_log` entries when present.
+- a healthcheck called without `noCache` or `noMerge` returns empty requested/effective/unsupported arrays, `compatibilityFallback=false`, and `warnings=[]`; `status_report` uses this path and must not add compatibility probe commands.
 - `scheme` and `permissions` default to the tenant root for read-only schema and ACL inspection.
 
 Avoid:
@@ -469,7 +470,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_database_status", "arguments": { "profile": "ghcr261-clean" } }
-{ "tool": "local_ydb_healthcheck", "arguments": { "profile": "ghcr261-clean", "noCache": true } }
+{ "tool": "local_ydb_healthcheck", "arguments": { "profile": "ghcr261-clean", "noCache": true, "noMerge": true } }
 { "tool": "local_ydb_container_logs", "arguments": { "profile": "ghcr261-clean", "target": "static", "lines": 120 } }
 { "tool": "local_ydb_container_logs", "arguments": { "profile": "ghcr261-clean", "target": "dynamic", "lines": 120 } }
 { "tool": "local_ydb_nodes_check", "arguments": { "profile": "ghcr261-clean" } }
@@ -480,6 +481,11 @@ Calls:
 Expected:
 
 - `healthcheck` gives the official YDB self-check status and issue hierarchy before falling back to narrower local heuristics.
+- `noCache` and `noMerge` request desired semantics. A modern CLI keeps both in `optionResolution.effective`, returns `unsupported=[]`, `compatibilityFallback=false`, and `warnings=[]` in one command.
+- an older CLI may reject a requested option with the exact `NLastGetopt::TUsageException`/`healthcheck --help` signature. The tool removes one rejected flag per immediate retry, uses at most three total calls for both options, and returns the final health result with the dropped names in `optionResolution.unsupported`, `compatibilityFallback=true`, warnings, and the summary suffix `Compatibility fallback applied; inspect warnings.`
+- an exact rejection is recorded before the retry deadline check. If the shared deadline expires before a retry can start, the tool makes one call, reports the rejected option as unsupported with its warning, keeps `compatibilityFallback=false`, and does not add the compatibility summary suffix.
+- if `noCache` is unsupported, cache bypass was not guaranteed; if `noMerge` is unsupported, issue entries may have been merged. Do not describe the result as fresh or unmerged unless the corresponding option remains in `optionResolution.effective`.
+- only final-attempt command/stdout/stderr and byte metadata are returned. Timeout, auth, transport, invalid JSON, `DEGRADED`, unrelated parser failures, unexpected stderr lines, and errors for flags that were not requested are never compatibility retries.
 - `container_logs(dynamic)` shows whether the node:
   registered,
   fetched config,

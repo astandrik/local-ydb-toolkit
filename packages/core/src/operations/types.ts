@@ -160,6 +160,14 @@ export interface HealthcheckOptions {
   maxIssues?: number;
 }
 
+export type HealthcheckOption = "noCache" | "noMerge";
+
+export interface HealthcheckOptionResolution {
+  requested: HealthcheckOption[];
+  effective: HealthcheckOption[];
+  unsupported: HealthcheckOption[];
+}
+
 export type SchemaAction = "validate" | "apply";
 
 export type SchemaStatementKind = "PRAGMA" | "CREATE TABLE" | "ALTER TABLE" | "DROP TABLE";
@@ -534,6 +542,9 @@ export interface HealthcheckResponse {
   stderrTruncated: boolean;
   maxOutputBytes: number;
   maxIssues: number;
+  optionResolution: HealthcheckOptionResolution;
+  compatibilityFallback: boolean;
+  warnings: string[];
 }
 
 export interface PermissionsListResponse {

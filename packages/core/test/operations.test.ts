@@ -526,7 +526,7 @@ describe("read-only checks", () => {
       };
     };
 
-    const response = await healthcheck(ctx);
+    const response = await healthcheck(ctx, { noCache: true, noMerge: true });
 
     expect(response).toMatchObject({
       summary: "YDB healthcheck for /local/example returned GOOD.",
@@ -540,9 +540,209 @@ describe("read-only checks", () => {
       issueTypes: [],
       issues: [],
       issuesTruncated: false,
+      optionResolution: {
+        requested: ["noCache", "noMerge"],
+        effective: ["noCache", "noMerge"],
+        unsupported: [],
+      },
+      compatibilityFallback: false,
+      warnings: [],
     });
+    expect(executor.commands).toHaveLength(1);
     expect(executor.commands[0]).toContain("monitoring healthcheck --format json");
+    expect(executor.commands[0]).toContain("--no-cache");
+    expect(executor.commands[0]).toContain("--no-merge");
     expect(executor.commands[0]).toContain("grpc://localhost:2137");
+  });
+
+  it("retries a legacy healthcheck after removing one unsupported requested option per attempt", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const finalStdout = JSON.stringify({ self_check_result: "GOOD", detail: "final-output-only" });
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      if (command.includes("--no-cache")) {
+        return commandResult(command, {
+          exitCode: 1,
+          ok: false,
+          stderr: "(NLastGetopt::TUsageException) unknown option 'no-cache' in '--no-cache'\nTry 'healthcheck --help' for more information.\n",
+        });
+      }
+      if (command.includes("--no-merge")) {
+        return commandResult(command, {
+          exitCode: 1,
+          ok: false,
+          stderr: "(NLastGetopt::TUsageException) unknown option 'no-merge' in '--no-merge'\nTry 'healthcheck --help' for more information.\n",
+        });
+      }
+      return commandResult(command, { stdout: finalStdout });
+    };
+
+    const response = await healthcheck(ctx, {
+      noCache: true,
+      noMerge: true,
+      maxOutputBytes: 32,
+    });
+
+    expect(executor.commands).toHaveLength(3);
+    expect(executor.commands[0]).toContain("--no-cache");
+    expect(executor.commands[0]).toContain("--no-merge");
+    expect(executor.commands[1]).not.toContain("--no-cache");
+    expect(executor.commands[1]).toContain("--no-merge");
+    expect(executor.commands[2]).not.toContain("--no-cache");
+    expect(executor.commands[2]).not.toContain("--no-merge");
+    expect(response).toMatchObject({
+      summary: "YDB healthcheck for /local/example returned GOOD. Compatibility fallback applied; inspect warnings.",
+      ok: true,
+      healthy: true,
+      command: executor.commands[2],
+      selfCheckResult: "GOOD",
+      optionResolution: {
+        requested: ["noCache", "noMerge"],
+        effective: [],
+        unsupported: ["noCache", "noMerge"],
+      },
+      compatibilityFallback: true,
+      warnings: [
+        "The requested noCache option is unsupported by this YDB CLI; cache bypass was not guaranteed.",
+        "The requested noMerge option is unsupported by this YDB CLI; healthcheck issue entries may have been merged.",
+      ],
+      stdoutBytes: Buffer.byteLength(finalStdout),
+      stderr: "",
+      stderrBytes: 0,
+    });
+    expect(response.stdout).toBe(Buffer.from(finalStdout).subarray(0, 32).toString("utf8"));
+    expect(response.stdoutTruncated).toBe(true);
+    expect(JSON.stringify(response)).not.toContain("NLastGetopt");
+  });
+
+  it("does not retry an unsupported option that was not requested", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return commandResult(command, {
+        exitCode: 1,
+        ok: false,
+        stderr: "(NLastGetopt::TUsageException) unknown option 'no-merge' in '--no-merge'\nTry 'healthcheck --help' for more information.\n",
+      });
+    };
+
+    const response = await healthcheck(ctx, { noCache: true });
+
+    expect(executor.commands).toHaveLength(1);
+    expect(response.compatibilityFallback).toBe(false);
+    expect(response.optionResolution).toEqual({
+      requested: ["noCache"],
+      effective: ["noCache"],
+      unsupported: [],
+    });
+  });
+
+  it.each([
+    ["generic parser", "", "(NLastGetopt::TUsageException) bad value\nTry 'healthcheck --help' for more information.\n", false],
+    ["auth", "", "CLIENT_UNAUTHENTICATED", false],
+    ["transport", "", "TRANSPORT_UNAVAILABLE", false],
+    ["timeout", "", "(NLastGetopt::TUsageException) unknown option 'no-cache' in '--no-cache'\nTry 'healthcheck --help' for more information.\n", true],
+    ["non-empty stdout", " ", "(NLastGetopt::TUsageException) unknown option 'no-cache' in '--no-cache'\nTry 'healthcheck --help' for more information.\n", false],
+    ["extra parser stderr", "", "(NLastGetopt::TUsageException) unknown option 'no-cache' in '--no-cache'\nTry 'healthcheck --help' for more information.\nunexpected detail\n", false],
+  ])("does not retry %s healthcheck failures", async (_label, stdout, stderr, timedOut) => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      return commandResult(command, { exitCode: 1, ok: false, stdout, stderr, timedOut });
+    };
+
+    await healthcheck(ctx, { noCache: true });
+
+    expect(executor.commands).toHaveLength(1);
+  });
+
+  it("shares one process deadline across compatibility attempts", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const timeouts: Array<number | undefined> = [];
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      timeouts.push(spec.timeoutMs);
+      now += 1_000;
+      if (command.includes("--no-cache")) {
+        return commandResult(command, {
+          exitCode: 1,
+          ok: false,
+          stderr: "(NLastGetopt::TUsageException) unknown option 'no-cache' in '--no-cache'\nTry 'healthcheck --help' for more information.\n",
+        });
+      }
+      if (command.includes("--no-merge")) {
+        return commandResult(command, {
+          exitCode: 1,
+          ok: false,
+          stderr: "(NLastGetopt::TUsageException) unknown option 'no-merge' in '--no-merge'\nTry 'healthcheck --help' for more information.\n",
+        });
+      }
+      return commandResult(command, { stdout: JSON.stringify({ self_check_result: "GOOD" }) });
+    };
+
+    try {
+      await healthcheck(ctx, { noCache: true, noMerge: true, timeoutMs: 1_000 });
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(executor.commands).toHaveLength(3);
+    expect(timeouts).toEqual([6_000, 5_000, 4_000]);
+  });
+
+  it("does not start a compatibility retry after the shared deadline", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    executor.run = async (_profile, spec) => {
+      const command = executor.display(_profile, spec);
+      executor.commands.push(command);
+      now += 6_000;
+      return commandResult(command, {
+        exitCode: 1,
+        ok: false,
+        stderr: "(NLastGetopt::TUsageException) unknown option 'no-cache' in '--no-cache'\nTry 'healthcheck --help' for more information.\n",
+      });
+    };
+
+    const response = await (async () => {
+      try {
+        return await healthcheck(ctx, { noCache: true, timeoutMs: 1_000 });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    })();
+
+    expect(executor.commands).toHaveLength(1);
+    expect(response).toMatchObject({
+      summary: "YDB healthcheck for /local/example failed.",
+      ok: false,
+      commandOk: false,
+      healthy: false,
+      optionResolution: {
+        requested: ["noCache"],
+        effective: [],
+        unsupported: ["noCache"],
+      },
+      compatibilityFallback: false,
+      warnings: [
+        "The requested noCache option is unsupported by this YDB CLI; cache bypass was not guaranteed.",
+      ],
+    });
+    expect(response.command).toContain("--no-cache");
+    expect(response.stderr).toContain("NLastGetopt::TUsageException");
+    expect(response.summary).not.toContain("Compatibility fallback applied");
   });
 
   it("parses a degraded YDB healthcheck with issue counts and types", async () => {
@@ -568,7 +768,7 @@ describe("read-only checks", () => {
       };
     };
 
-    const response = await healthcheck(ctx);
+    const response = await healthcheck(ctx, { noCache: true });
 
     expect(response).toMatchObject({
       summary: "YDB healthcheck for /local/example returned DEGRADED with 3 issue(s).",
@@ -582,6 +782,7 @@ describe("read-only checks", () => {
       issuesTruncated: false,
     });
     expect(response.issues).toHaveLength(3);
+    expect(executor.commands).toHaveLength(1);
   });
 
   it("routes healthcheck through dynamic CLI for tenant and static CLI for root database", async () => {
@@ -609,8 +810,10 @@ describe("read-only checks", () => {
     expect(executor.commands[0]).toContain("-d /local/example");
     expect(executor.commands[1]).toContain("grpc://localhost:2136");
     expect(executor.commands[1]).toContain("-d /local");
-    expect(specs[0]?.timeoutMs).toBe(125_000);
-    expect(specs[1]?.timeoutMs).toBe(125_000);
+    expect(specs[0]?.timeoutMs).toBeLessThanOrEqual(125_000);
+    expect(specs[0]?.timeoutMs).toBeGreaterThan(124_000);
+    expect(specs[1]?.timeoutMs).toBeLessThanOrEqual(125_000);
+    expect(specs[1]?.timeoutMs).toBeGreaterThan(124_000);
   });
 
   it("honors custom healthcheck timeouts in the command executor", async () => {
@@ -634,7 +837,8 @@ describe("read-only checks", () => {
     await healthcheck(ctx, { timeoutMs: 240_000 });
 
     expect(executor.commands[0]).toContain("--timeout 240000");
-    expect(specTimeoutMs).toBe(245_000);
+    expect(specTimeoutMs).toBeLessThanOrEqual(245_000);
+    expect(specTimeoutMs).toBeGreaterThan(244_000);
   });
 
   it("reports invalid JSON from YDB healthcheck without treating it as ok", async () => {
@@ -653,7 +857,7 @@ describe("read-only checks", () => {
       };
     };
 
-    const response = await healthcheck(ctx, { maxOutputBytes: 4 });
+    const response = await healthcheck(ctx, { maxOutputBytes: 4, noCache: true });
 
     expect(response).toMatchObject({
       summary: "YDB healthcheck for /local/example returned invalid JSON.",
@@ -666,6 +870,7 @@ describe("read-only checks", () => {
       issueCount: 0,
     });
     expect(response.parseError).toContain("JSON");
+    expect(executor.commands).toHaveLength(1);
   });
 
   it("reports failed YDB healthcheck commands with capped output", async () => {
@@ -843,6 +1048,15 @@ describe("read-only checks", () => {
     expect(response.tenant.ok).toBe(true);
     expect(response.nodes.ok).toBe(true);
     expect(response.healthcheck.healthy).toBe(true);
+    expect(response.healthcheck).toMatchObject({
+      optionResolution: { requested: [], effective: [], unsupported: [] },
+      compatibilityFallback: false,
+      warnings: [],
+    });
+    const healthcheckCommands = executor.commands.filter((command) => command.includes("monitoring healthcheck"));
+    expect(healthcheckCommands).toHaveLength(1);
+    expect(healthcheckCommands[0]).not.toContain("--no-cache");
+    expect(healthcheckCommands[0]).not.toContain("--no-merge");
     expect(JSON.stringify(response.inventory)).not.toContain("private daemon error");
   });
 

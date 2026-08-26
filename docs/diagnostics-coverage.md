@@ -34,7 +34,7 @@ Start broad and read-only:
 
 1. `local_ydb_check_prerequisites` on a new host or profile.
 2. `local_ydb_status_report` to capture Docker, auth, tenant, nodes, and health context.
-3. `local_ydb_healthcheck` with `noCache: true` only when the user needs a fresh server-side self-check.
+3. `local_ydb_healthcheck` with `noCache: true` when the user needs a fresh server-side self-check. Inspect `optionResolution.effective`, `warnings`, and `compatibilityFallback`; describe the result as fresh only when `noCache` remains effective.
 
 Then route by healthcheck issue type:
 
