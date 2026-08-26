@@ -753,6 +753,11 @@ describe("mcp tools", () => {
     expect(localYdbInstructions).toContain("untrusted data");
   });
 
+  it("teaches agents to verify effective healthcheck options", () => {
+    expect(localYdbInstructions).toContain("optionResolution.effective");
+    expect(localYdbInstructions).toContain("warnings");
+  });
+
   it("defaults response text content formatting to JSON", () => {
     expect(normalizeResponseContentFormat(undefined)).toBe("json");
   });
@@ -859,11 +864,12 @@ describe("mcp tools", () => {
     }
 
     const healthcheckTool = localYdbTools.find((tool) => tool.name === "local_ydb_healthcheck");
+    expect(healthcheckTool?.description).toContain("exact recognized two-line legacy parser signature");
     expect(healthcheckTool?.inputSchema.properties?.noCache).toMatchObject({
-      description: expect.stringContaining("always recorded in optionResolution and warnings"),
+      description: expect.stringContaining("exact recognized two-line legacy parser signature"),
     });
     expect(healthcheckTool?.inputSchema.properties?.noMerge).toMatchObject({
-      description: expect.stringContaining("always recorded in optionResolution and warnings"),
+      description: expect.stringContaining("exact recognized two-line legacy parser signature"),
     });
     const noCacheSchema = healthcheckTool?.inputSchema.properties?.noCache as { description?: string } | undefined;
     const noMergeSchema = healthcheckTool?.inputSchema.properties?.noMerge as { description?: string } | undefined;
@@ -1040,8 +1046,9 @@ describe("mcp tools", () => {
     expect(result.description).toContain("database diagnostics");
     expect(text).toContain("local_ydb_healthcheck");
     expect(text).toContain("compatibilityFallback");
-    expect(text).toContain("optionResolution");
+    expect(text).toContain("optionResolution.effective");
     expect(text).toContain("warnings");
+    expect(text).toContain("exact recognized two-line legacy parser signature");
     expect(text).toContain("do not call the result fresh or unmerged");
     expect(text).toContain("Then route by healthcheck issue type");
     expect(text).toContain("STORAGE");

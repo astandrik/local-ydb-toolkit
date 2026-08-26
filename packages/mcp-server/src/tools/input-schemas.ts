@@ -75,12 +75,12 @@ export function healthcheckSchema(): Tool["inputSchema"] {
       noCache: {
         type: "boolean",
         description:
-          "Request cache-bypass semantics for this healthcheck. Newer YDB CLIs receive --no-cache. An exact rejection is always recorded in optionResolution and warnings; when the shared deadline permits an actual retry without that option, compatibilityFallback is true.",
+          "Request cache-bypass semantics for this healthcheck. Newer YDB CLIs receive --no-cache. A rejection matching the exact recognized two-line legacy parser signature is recorded in optionResolution and warnings; when the shared deadline permits an actual retry without that option, compatibilityFallback is true.",
       },
       noMerge: {
         type: "boolean",
         description:
-          "Request unmerged healthcheck issue entries. Newer YDB CLIs receive --no-merge. An exact rejection is always recorded in optionResolution and warnings; when the shared deadline permits an actual retry without that option, compatibilityFallback is true.",
+          "Request unmerged healthcheck issue entries. Newer YDB CLIs receive --no-merge. A rejection matching the exact recognized two-line legacy parser signature is recorded in optionResolution and warnings; when the shared deadline permits an actual retry without that option, compatibilityFallback is true.",
       },
       timeoutMs: {
         type: "integer",
