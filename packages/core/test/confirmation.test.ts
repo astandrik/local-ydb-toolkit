@@ -299,11 +299,12 @@ describe("process confirmation store", () => {
     expect(rejected).toMatchObject({ execute: false, confirmation: { status: "rejected" } });
   });
 
-  it("keeps shared exclusive leases independent across profiles", async () => {
+  it("keeps shared exclusive leases independent across distinct stack targets", async () => {
     const store = new ProcessConfirmationStore();
     const executor = new CountingExecutor();
     const defaultCtx = confirmationContext(store, executor, "local_ydb_upgrade_version");
     const otherCtx = confirmationContext(store, executor, "local_ydb_reduce_storage_groups", "other");
+    otherCtx.profile = { ...otherCtx.profile, staticContainer: "other-static" };
     const sharedExclusiveScope = { kind: "profile-composite-rebuild" };
     const intent = { kind: "composite-rebuild" };
     const defaultPlan = await authorizeMutation(defaultCtx, {}, intent, { sharedExclusiveScope });
@@ -317,6 +318,70 @@ describe("process confirmation store", () => {
       confirm: true,
       confirmationToken: otherPlan.confirmation?.token,
     }, intent, { sharedExclusiveScope })).toMatchObject({ execute: true });
+  });
+
+  it.each(["provenance", "profile", "image", "ssh-credentials", "ssh-host-case"])(
+    "shares a target lease despite different %s while preserving exact token binding",
+    async (variation) => {
+      const store = new ProcessConfirmationStore();
+      const first = confirmationContext(store, new CountingExecutor(), "local_ydb_upgrade_version");
+      const second: ToolkitContext = {
+        ...first,
+        profile: { ...first.profile },
+        confirmation: { ...first.confirmation! },
+      };
+      if (variation === "provenance") second.confirmation!.configSource = { kind: "argument", path: "/config.json" };
+      if (variation === "profile") second.profile.name = "alias";
+      if (variation === "image") second.profile.image = "example.local/ydb:other";
+      if (variation === "ssh-credentials") {
+        first.profile = { ...first.profile, mode: "ssh", ssh: { host: "test.invalid", user: "first" } };
+        second.profile = { ...second.profile, mode: "ssh", ssh: { host: "test.invalid", port: 22, user: "second" } };
+      }
+      if (variation === "ssh-host-case") {
+        first.profile = { ...first.profile, mode: "ssh", ssh: { host: "TEST.INVALID" } };
+        second.profile = { ...second.profile, mode: "ssh", ssh: { host: "test.invalid" } };
+      }
+      const authorization = { sharedExclusiveScope: { kind: "profile-composite-rebuild" } };
+      const intent = { kind: "test-composite" };
+      const firstPlan = await authorizeMutation(first, {}, intent, authorization);
+      const secondPlan = await authorizeMutation(second, {}, intent, authorization);
+      expect(await authorizeMutation(second, {
+        confirm: true, confirmationToken: firstPlan.confirmation?.token,
+      }, intent, authorization)).toMatchObject({ execute: false, confirmation: { status: "rejected" } });
+      const accepted = await authorizeMutation(first, {
+        confirm: true, confirmationToken: firstPlan.confirmation?.token,
+      }, intent, authorization);
+      expect(accepted.execute).toBe(true);
+      try {
+        expect(await authorizeMutation(second, {
+          confirm: true, confirmationToken: secondPlan.confirmation?.token,
+        }, intent, authorization)).toMatchObject({ execute: false, confirmation: { status: "rejected" } });
+      } finally {
+        accepted.receipt?.release?.();
+      }
+    },
+  );
+
+  it.each(["transport", "host", "port"])("keeps different execution %s leases independent", async (variation) => {
+    const store = new ProcessConfirmationStore();
+    const first = confirmationContext(store, new CountingExecutor());
+    first.profile = { ...first.profile, mode: "ssh", ssh: { host: "first.invalid" } };
+    const second = { ...first, profile: { ...first.profile } };
+    if (variation === "transport") second.profile = { ...second.profile, mode: "local", ssh: undefined };
+    if (variation === "host") second.profile.ssh = { host: "second.invalid" };
+    if (variation === "port") second.profile.ssh = { host: "first.invalid", port: 2222 };
+    const authorization = { sharedExclusiveScope: { kind: "profile-composite-rebuild" } };
+    const firstPlan = await authorizeMutation(first, {}, {}, authorization);
+    const secondPlan = await authorizeMutation(second, {}, {}, authorization);
+    const a = await authorizeMutation(first, { confirm: true, confirmationToken: firstPlan.confirmation?.token }, {}, authorization);
+    const b = await authorizeMutation(second, { confirm: true, confirmationToken: secondPlan.confirmation?.token }, {}, authorization);
+    try {
+      expect(a.execute).toBe(true);
+      expect(b.execute).toBe(true);
+    } finally {
+      a.receipt?.release?.();
+      b.receipt?.release?.();
+    }
   });
 
   it("invalidates plans issued during an exclusive lease after release", async () => {

@@ -282,6 +282,7 @@ export async function upgradeVersion(
   const authArtifacts = authArtifactScope
     ? createCompositeAuthArtifacts(ctx, finalBaseCtx, authArtifactScope)
     : undefined;
+  await authArtifacts?.validateDestinations();
   const finalCtx = authArtifacts?.context ?? finalBaseCtx;
 
   const sourceImageSpec = ensureImagePresentSpec(sourceImage);

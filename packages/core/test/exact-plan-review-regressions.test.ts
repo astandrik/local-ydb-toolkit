@@ -75,19 +75,13 @@ describe("exact-plan review regressions", () => {
     }
   });
 
-  it("holds profile rebuild exclusion across plans created during accepted execution", async () => {
+  it.each(["same profile", "config provenance", "profile alias"])("holds target rebuild exclusion across an active execution with %s", async (variation) => {
     const directory = mkdtempSync(join(tmpdir(), "local-ydb-rebuild-lease-"));
     const dumpHostPath = join(directory, "dumps");
     const configPath = join(directory, "local-ydb.config.json");
     mkdirSync(dumpHostPath, { recursive: true });
-    const rawConfig = {
-      profiles: {
-        default: {
-          image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6",
-          dumpHostPath,
-        },
-      },
-    };
+    const profile = { image: "ghcr.io/ydb-platform/local-ydb:26.1.1.6", dumpHostPath };
+    const rawConfig = { profiles: { default: profile, alias: profile } };
     writeFileSync(configPath, `${JSON.stringify(rawConfig, null, 2)}\n`, "utf8");
     const executor = new CompositeUpgradeExecutor();
     const base = createContext(undefined, executor, ConfigSchema.parse(rawConfig), configPath);
@@ -104,8 +98,15 @@ describe("exact-plan review regressions", () => {
       await executor.firstDumpStarted;
 
       const secondRequest = { version: "26.1.2.0", dumpName: "lease-second" };
-      const secondPlan = await upgradeVersion(ctx, secondRequest);
-      const secondConfirm = upgradeVersion(ctx, {
+      const secondContext: ToolkitContext = {
+        ...ctx,
+        profile: variation === "profile alias" ? { ...ctx.profile, name: "alias" } : ctx.profile,
+        confirmation: variation === "config provenance"
+          ? { ...ctx.confirmation!, configSource: { kind: "argument", path: configPath } }
+          : ctx.confirmation,
+      };
+      const secondPlan = await upgradeVersion(secondContext, secondRequest);
+      const secondConfirm = upgradeVersion(secondContext, {
         ...secondRequest,
         confirm: true,
         confirmationToken: secondPlan.confirmation?.token,
@@ -180,6 +181,42 @@ describe("exact-plan review regressions", () => {
       expect.soft(confirmed.confirmation?.status).toBe("rejected");
       expect.soft(executor.dumpCalls).toBe(0);
       expect.soft(executor.imageInspectCalls).toBeGreaterThan(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("includes the exact image-bound executed bootstrap command in storage response plans", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "local-ydb-storage-plan-"));
+    class BootstrapRecorder extends StorageImageExecutor {
+      staticCommand?: string;
+      override async run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+        const command = this.display(profile, spec);
+        if (command.includes(" tools dump ")) return result(command);
+        if (spec.description === "Prepare private verified composite dump snapshot") {
+          return result(command, { stdout: `${"a".repeat(64)}\n` });
+        }
+        if (spec.description === "Start static local-ydb node") {
+          this.staticCommand = command;
+          return result(command, { ok: false, exitCode: 1, stderr: "Synthetic bootstrap stop" });
+        }
+        return super.run(profile, spec);
+      }
+    }
+    const executor = new BootstrapRecorder();
+    const ctx = confirmationContext(createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { image: "example.local/local-ydb:mutable", dumpHostPath: directory } },
+    })), "local_ydb_reduce_storage_groups");
+    try {
+      const request = { count: 1, dumpName: "reviewed" };
+      const plan = await reduceStorageGroups(ctx, request);
+      const response = await reduceStorageGroups(ctx, {
+        ...request, confirm: true, confirmationToken: plan.confirmation?.token,
+      });
+      expect(response.confirmation?.status).toBe("accepted");
+      expect(executor.staticCommand).toContain(executor.imageId);
+      expect(plan.plannedCommands).toContain(executor.staticCommand);
+      expect(response.plannedCommands).toContain(executor.staticCommand);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

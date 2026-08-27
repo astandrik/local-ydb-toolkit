@@ -212,6 +212,7 @@ export async function reduceStorageGroups(
   const authArtifacts = authArtifactScope
     ? createCompositeAuthArtifacts(ctx, finalBaseCtx, authArtifactScope)
     : undefined;
+  await authArtifacts?.validateDestinations();
   const finalCtx = authArtifacts?.context ?? finalBaseCtx;
 
   const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
@@ -221,7 +222,7 @@ export async function reduceStorageGroups(
     { confirm: false },
     preparedExtraDynamicNodes,
   );
-  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false });
+  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false }, { expectedImageId: imageId });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
     ? [

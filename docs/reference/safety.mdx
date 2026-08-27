@@ -59,12 +59,15 @@ equal to the full dump size. Composite storage reduction and version upgrade
 make the same kind of private verified copy immediately after generating their
 dump and before teardown, then restore only from that copy. Their teardown
 container set is frozen from the reviewed inventory instead of expanding to
-late arrivals. Upgrade and storage-reduction confirmations share a
-profile-scoped execution lease held through mutation and cleanup. A second
+late arrivals. Upgrade and storage-reduction confirmations for the same execution
+host and static container share a target-scoped lease held through mutation and cleanup,
+regardless of profile name or config source. A second
 confirm is rejected while the lease is active, and plans issued during that
-execution become stale when it finishes; different resolved profiles remain
+execution become stale when it finishes; distinct stack targets remain
 independent. Auth-enabled composite rebuilds require the three configured auth
-destinations to remain distinct after path normalization, generate config,
+destinations to remain distinct after path normalization and target-side filesystem
+identity checks, including symlink/hardlink aliases. Checks run before rebuild and
+again immediately before persistence. Rebuilds generate config,
 dynamic token, and root credential in a separate private workspace, persist
 those bytes to the configured host files, and keep using only the private
 copies through auth reapply and dynamic-node recreation. Storage reduction

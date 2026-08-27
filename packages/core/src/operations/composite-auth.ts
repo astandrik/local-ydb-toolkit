@@ -19,9 +19,11 @@ import type {
 const COMPOSITE_AUTH_PATH_PREFIX = "/tmp/local-ydb-toolkit-composite-auth-";
 
 export const COMPOSITE_AUTH_CLEANUP_FAILURE = "Private composite auth artifacts could not be removed.";
+const DESTINATION_VALIDATION_FAILURE = "Composite auth artifact destinations must be distinct and accessible.";
 
 export interface CompositeAuthArtifacts {
   context: ToolkitContext;
+  validateDestinations(): Promise<void>;
   persist(options: MutatingOptions): Promise<OperationResponse>;
   redact(text: string): string;
   redactResults(results: CommandResult[]): void;
@@ -76,15 +78,64 @@ export function createCompositeAuthArtifacts(
     canonicalRootPasswordPath,
   );
   const redact = (text: string) => redactText(text, redactions);
+  // Run on the execution host: lexical paths alone miss symlink/hardlink aliases.
+  // Ruby is already required by composite auth generation. No file bytes are read.
+  const destinationCheck = `ruby -e ${shellQuote(`
+def destination(path, remaining = 64)
+  raise if remaining == 0
+  File.realpath(path)
+rescue Errno::ENOENT
+  if File.symlink?(path)
+    link = File.readlink(path)
+    return destination(link.start_with?("/") ? link : File.join(File.dirname(path), link), remaining - 1)
+  end
+  parent = File.dirname(path)
+  raise if parent == path
+  File.expand_path(File.basename(path), destination(parent, remaining - 1))
+end
+begin
+  paths = ARGV.map { |path| destination(path) }
+  raise unless paths.uniq.length == paths.length
+  identities = paths.map do |path|
+    begin
+      stat = File.stat(path)
+      raise unless stat.file?
+      [stat.dev, stat.ino]
+    rescue Errno::ENOENT
+      nil
+    end
+  end.compact
+  raise unless identities.uniq.length == identities.length
+rescue StandardError
+  warn ${JSON.stringify(DESTINATION_VALIDATION_FAILURE)}
+  exit 1
+end
+`)} -- ${[canonicalAuthConfigPath, canonicalDynamicTokenPath, canonicalRootPasswordPath].map(shellQuote).join(" ")}`;
 
   return {
     context,
+    async validateDestinations() {
+      try {
+        const result = await executionContext.client.run(bash(destinationCheck, {
+          timeoutMs: 10_000,
+          description: "Validate distinct composite auth destinations",
+          redactions,
+        }));
+        if (result.ok) {
+          return;
+        }
+      } catch {
+        // Filesystem and transport details are not part of the public error.
+      }
+      throw new Error(DESTINATION_VALIDATION_FAILURE);
+    },
     persist: (options) => runMutating(context, {
       summary: "Persist generated auth artifacts after private preparation.",
       risk: "high",
       specs: [bash([
         "set -euo pipefail",
         "umask 077",
+        destinationCheck,
         `[ -f ${shellQuote(privateAuthConfigPath)} ]`,
         `[ -f ${shellQuote(privateDynamicTokenPath)} ]`,
         `[ -f ${shellQuote(privateRootPasswordPath)} ]`,

@@ -424,9 +424,16 @@ function sharedConfirmationScopeEnvelope(
   if (!runtime) {
     throw new Error("Confirmation runtime is required for shared confirmation state");
   }
+  // A stack is addressed by its static container on the execution host, not by
+  // profile labels, config provenance or credentials. Exact intent still binds all of them.
+  const profile = ctx.profile;
   return {
-    configSource: runtime.configSource,
-    profile: ctx.profile,
+    target: {
+      mode: profile.mode,
+      host: profile.mode === "ssh" ? profile.ssh?.host.toLowerCase() : undefined,
+      port: profile.mode === "ssh" ? profile.ssh?.port ?? 22 : undefined,
+      staticContainer: profile.staticContainer,
+    },
     execution: {
       kind: "shared-exclusive-scope",
       scope,
