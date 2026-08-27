@@ -8,15 +8,35 @@ import {
   type StoragePoolSummary
 } from "../api-client.js";
 import { sanitizeTenantName } from "../validation.js";
+import {
+  attachConfirmation,
+  authorizeMutation,
+  commandPlanIntent,
+  confirmationSummarySuffix,
+  withConfirmationLease,
+  withoutConfirmation,
+} from "../confirmation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
 import { inventory, requireInventory } from "./checks.js";
+import {
+  COMPOSITE_DUMP_CLEANUP_FAILURE,
+  COMPOSITE_DUMP_SNAPSHOT_COMMAND,
+  PROFILE_COMPOSITE_REBUILD_SCOPE,
+  createCompositeDumpSnapshot,
+} from "./composite-dump.js";
+import {
+  COMPOSITE_AUTH_CLEANUP_FAILURE,
+  createCompositeAuthArtifacts,
+} from "./composite-auth.js";
 import { waitForYdbCli, ydbCli, ydbdAdmin } from "./commands.js";
 import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
 import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
-import { runMutating } from "./execution.js";
+import { appendOperationResultsAndCheckSuccess, runMutating } from "./execution.js";
 import { assertPositiveInteger, assertSafeCleanupTarget } from "./helpers.js";
+import { ensureImageIdSpec, inspectImageId } from "./images.js";
 import { bootstrap, destroyStack } from "./stack.js";
+import { prepareStackTargets } from "./stack-targets.js";
 import { dumpTenant, restoreTenant } from "./tenant.js";
 import type {
   AddStorageGroupsOptions,
@@ -96,9 +116,17 @@ export async function addStorageGroups(ctx: ToolkitContext, options: AddStorageG
     `scheme ls ${ctx.profile.tenantPath}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Add ${groupsToAdd} storage group${groupsToAdd === 1 ? "" : "s"} to ${pool.name}. Not executed because confirm=true was not provided.`,
+  const summary = `Add ${groupsToAdd} storage group${groupsToAdd === 1 ? "" : "s"} to ${pool.name}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs: [defineSpec],
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands,
@@ -112,14 +140,16 @@ export async function addStorageGroups(ctx: ToolkitContext, options: AddStorageG
         targetNumGroups,
         itemConfigGeneration: pool.itemConfigGeneration
       }
-    };
+    }, decision.confirmation);
   }
+  const confirmed = (response: AddStorageGroupsResponse) =>
+    attachConfirmation(response, decision.confirmation);
 
   const results: CommandResult[] = [];
   const invokeResult = await ctx.client.run(defineSpec);
   results.push(invokeResult);
   if (!invokeResult.ok) {
-    return addStorageGroupsResponse(ctx, pool, targetNumGroups, undefined, results, rollback, verification);
+    return confirmed(addStorageGroupsResponse(ctx, pool, targetNumGroups, undefined, results, rollback, verification));
   }
 
   const refreshedPool = await readTargetStoragePool(ctx, pool.name);
@@ -133,12 +163,12 @@ export async function addStorageGroups(ctx: ToolkitContext, options: AddStorageG
     timedOut: false
   });
   if (observedNumGroups !== targetNumGroups) {
-    return addStorageGroupsResponse(ctx, pool, targetNumGroups, observedNumGroups, results, rollback, verification);
+    return confirmed(addStorageGroupsResponse(ctx, pool, targetNumGroups, observedNumGroups, results, rollback, verification));
   }
   const tenantResult = await ctx.client.run(ydbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata"));
   results.push(tenantResult);
 
-  return addStorageGroupsResponse(ctx, pool, targetNumGroups, observedNumGroups, results, rollback, verification);
+  return confirmed(addStorageGroupsResponse(ctx, pool, targetNumGroups, observedNumGroups, results, rollback, verification));
 }
 
 export async function reduceStorageGroups(
@@ -156,26 +186,55 @@ export async function reduceStorageGroups(
   if (targetNumGroups < 1) {
     throw new Error(`Cannot reduce ${pool.name} below 1 storage group`);
   }
+  const imageId = await inspectImageId(ctx, ctx.profile.image);
+  const imageSpec = ensureImageIdSpec(ctx.profile.image, imageId);
 
   const authReapplyPlanned = requiresAuthReapply(ctx);
   const dumpName = options.dumpName ?? `shrink-${sanitizeTenantName(ctx.profile.tenantPath)}-${pool.numGroups}-to-${targetNumGroups}`;
   const rebuildCtx = rebuildContext(ctx, targetNumGroups);
   const inventoryState = await requireInventory(ctx);
+  const preparedStackTargets = await prepareStackTargets(
+    ctx, inventoryState, configuredDynamicNodePlans(ctx.profile).map((plan) => plan.container),
+  );
   const extraDynamicNodes = await inspectExtraDynamicNodePlans(
     ctx,
     inventoryState.containers.map((container) => container.names)
   );
-  const finalCtx = authReapplyPlanned ? ctx : rebuildCtx;
+  const phaseCtx = withoutConfirmation(ctx);
+  const finalBaseCtx = authReapplyPlanned ? phaseCtx : rebuildCtx;
+  const authArtifactScope = authReapplyPlanned
+    ? {
+        kind: "storage-rebuild-generated-auth",
+        request: {
+          count: groupsToRemove,
+          dumpName,
+          poolName: pool.name,
+          targetNumGroups,
+        },
+      }
+    : undefined;
+  const authArtifacts = authArtifactScope
+    ? createCompositeAuthArtifacts(ctx, finalBaseCtx, authArtifactScope)
+    : undefined;
+  await authArtifacts?.validateDestinations();
+  const finalCtx = authArtifacts?.context ?? finalBaseCtx;
 
-  const dumpPlan = await dumpTenant(ctx, { confirm: false, dumpName });
-  const destroyPlan = await destroyStack(ctx, { confirm: false });
-  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false });
+  const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
+  const preparedExtraDynamicNodes = extraDynamicNodes;
+  const destroyPlan = await destroyStack(
+    phaseCtx,
+    { confirm: false },
+    preparedExtraDynamicNodes,
+    preparedStackTargets,
+  );
+  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false }, { expectedImageId: imageId, requireAbsent: true });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
     ? [
-        await prepareAuthConfig(ctx, { confirm: false }),
-        await writeDynamicNodeAuthConfig(ctx, { confirm: false, sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin" }),
-        await applyAuthHardening(ctx, { confirm: false })
+        await prepareAuthConfig(finalCtx, { confirm: false }),
+        await writeDynamicNodeAuthConfig(finalCtx, { confirm: false, sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin" }),
+        await authArtifacts!.persist({ confirm: false }),
+        await applyAuthHardening(finalCtx, { confirm: false })
       ]
     : [];
   const extraDynamicPlans = [];
@@ -191,13 +250,16 @@ export async function reduceStorageGroups(
   }
 
   const plannedCommands = [
+    ctx.client.display(imageSpec),
     ...dumpPlan.plannedCommands,
+    COMPOSITE_DUMP_SNAPSHOT_COMMAND,
+    ctx.client.display(imageSpec),
     ...destroyPlan.plannedCommands,
     ...bootstrapPlan.plannedCommands,
     ...restorePlan.plannedCommands,
     ...reapplyPlans.flatMap((plan) => plan.plannedCommands),
     ...extraDynamicPlans.flatMap((plan) => plan.plannedCommands)
-  ];
+  ].map((command) => authArtifacts?.redact(command) ?? command);
   const rollback = [
     `Restore ${ctx.profile.tenantPath} from dump ${dumpName} onto the previous storage layout if the rebuild stops mid-flight.`,
     "Auth artifacts are preserved; rerun local_ydb_prepare_auth_config, local_ydb_write_dynamic_auth_config, and local_ydb_apply_auth_hardening if auth reapply needs to be repeated."
@@ -206,13 +268,33 @@ export async function reduceStorageGroups(
     `ReadStoragePool for ${pool.name} reports NumGroups: ${targetNumGroups}`,
     `scheme ls ${ctx.profile.tenantPath}`,
     authReapplyPlanned ? "anonymous viewer/json returns 401 again after auth reapply" : "viewer/json/whoami remains reachable anonymously",
+    `profile containers resolve ${ctx.profile.image} to image ID ${imageId}`,
     `configured and restored one-off containers are present with image ${finalCtx.profile.image}: ${expectedProfileContainerNames(finalCtx, extraDynamicNodes).join(", ")}`,
     `authenticated nodelist includes configured and restored one-off IC ports: ${expectedDynamicNodePorts(finalCtx, extraDynamicNodes).join(", ")}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Reduce storage groups for ${pool.name} from ${pool.numGroups} to ${targetNumGroups} via dump, rebuild, and restore. Not executed because confirm=true was not provided.`,
+  const summary = `Reduce storage groups for ${pool.name} from ${pool.numGroups} to ${targetNumGroups} via dump, rebuild, and restore.`;
+  const decision = await authorizeMutation(ctx, options, {
+    kind: "storage-rebuild",
+    request: {
+      count: groupsToRemove,
+      dumpName,
+      poolName: pool.name,
+    },
+    pool,
+    image: { reference: ctx.profile.image, imageId },
+    extraDynamicNodes,
+    authReapplyPlanned,
+    plannedCommands,
+    risk: "high",
+    rollback,
+    verification,
+  }, {
+    sharedExclusiveScope: PROFILE_COMPOSITE_REBUILD_SCOPE,
+  });
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands,
@@ -229,77 +311,134 @@ export async function reduceStorageGroups(
       dumpName,
       authReapplyPlanned,
       extraDynamicNodes: extraDynamicNodes.map((node) => node.container)
-    };
+    }, decision.confirmation);
   }
+  const confirmed = (response: ReduceStorageGroupsResponse) => {
+    authArtifacts?.redactResults(response.results ?? []);
+    return attachConfirmation(response, decision.confirmation);
+  };
 
+  return withConfirmationLease(decision.receipt, async () => {
   const results: CommandResult[] = [];
+  const acceptedResponse = (observedNumGroups?: number) => confirmed(reduceStorageGroupsResponse(
+    pool,
+    targetNumGroups,
+    dumpName,
+    authReapplyPlanned,
+    extraDynamicNodes,
+    observedNumGroups,
+    plannedCommands,
+    rollback,
+    verification,
+    results,
+  ));
 
-  if (!await runOperation(results, await dumpTenant(ctx, { confirm: true, dumpName }))) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
-  }
-  if (!await runOperation(results, await destroyStack(ctx, { confirm: true }))) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
-  }
-  if (!await runOperation(results, await bootstrap(rebuildCtx, { confirm: true }))) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
-  }
-  if (!await runOperation(results, await restoreTenant(rebuildCtx, { confirm: true, dumpName }))) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
-  }
-
-  if (authReapplyPlanned) {
-    if (!await runOperation(results, await prepareAuthConfig(ctx, { confirm: true }))) {
-      return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
-    }
-    if (!await runOperation(results, await writeDynamicNodeAuthConfig(ctx, {
-      confirm: true,
-      sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin"
-    }))) {
-      return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
-    }
-    if (!await runOperation(results, await applyAuthHardening(ctx, { confirm: true }))) {
-      return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
-    }
+  const initialImageResult = await ctx.client.run(imageSpec);
+  results.push(initialImageResult);
+  if (!initialImageResult.ok) {
+    return acceptedResponse();
   }
 
-  for (const node of extraDynamicNodes) {
-    if (!await runOperation(results, await addDynamicNodes(finalCtx, {
-      confirm: true,
-      count: 1,
-      startIndex: node.index,
-      grpcPortStart: node.grpcPort,
-      monitoringPortStart: node.monitoringPort,
-      icPortStart: node.icPort
-    }))) {
-      return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, plannedCommands, rollback, verification, results);
+  if (!appendOperationResultsAndCheckSuccess(results, await dumpTenant(phaseCtx, { confirm: true, dumpName }))) {
+    return acceptedResponse();
+  }
+  const dumpSnapshot = await createCompositeDumpSnapshot(phaseCtx, dumpName);
+  results.push(dumpSnapshot.result);
+  try {
+    if (!dumpSnapshot.result.ok || !dumpSnapshot.preparedRestore) {
+      return acceptedResponse();
+    }
+    const destructiveBoundaryImageResult = await ctx.client.run(imageSpec);
+    results.push(destructiveBoundaryImageResult);
+    if (!destructiveBoundaryImageResult.ok) {
+      return acceptedResponse();
+    }
+    if (!appendOperationResultsAndCheckSuccess(results, await destroyStack(
+      phaseCtx,
+      { confirm: true },
+      preparedExtraDynamicNodes,
+      preparedStackTargets,
+    ))) {
+      return acceptedResponse();
+    }
+    if (!appendOperationResultsAndCheckSuccess(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: imageId, requireAbsent: true }))) {
+      return acceptedResponse();
+    }
+    if (!appendOperationResultsAndCheckSuccess(results, await restoreTenant(
+      rebuildCtx,
+      { confirm: true, dumpName },
+      dumpSnapshot.preparedRestore,
+    ))) {
+      return acceptedResponse();
+    }
+
+    if (authReapplyPlanned) {
+      if (!appendOperationResultsAndCheckSuccess(results, await prepareAuthConfig(finalCtx, { confirm: true }))) {
+        return acceptedResponse();
+      }
+      if (!appendOperationResultsAndCheckSuccess(results, await writeDynamicNodeAuthConfig(finalCtx, {
+        confirm: true,
+        sid: ctx.profile.dynamicNodeAuthSid ?? "root@builtin"
+      }))) {
+        return acceptedResponse();
+      }
+      if (!appendOperationResultsAndCheckSuccess(results, await authArtifacts!.persist({ confirm: true }))) {
+        return acceptedResponse();
+      }
+      if (!appendOperationResultsAndCheckSuccess(results, await applyAuthHardening(finalCtx, { confirm: true }))) {
+        return acceptedResponse();
+      }
+    }
+
+    for (const node of extraDynamicNodes) {
+      if (!appendOperationResultsAndCheckSuccess(results, await addDynamicNodes(finalCtx, {
+        confirm: true,
+        count: 1,
+        startIndex: node.index,
+        grpcPortStart: node.grpcPort,
+        monitoringPortStart: node.monitoringPort,
+        icPortStart: node.icPort
+      }))) {
+        return acceptedResponse();
+      }
+    }
+
+    const observedPool = await readTargetStoragePool(finalCtx, pool.name);
+    const observedNumGroups = observedPool.numGroups;
+    results.push({
+      command: `verify storage pool ${pool.name} NumGroups`,
+      exitCode: observedNumGroups === targetNumGroups ? 0 : 1,
+      stdout: `Observed NumGroups: ${observedNumGroups}`,
+      stderr: observedNumGroups === targetNumGroups ? "" : `Expected NumGroups: ${targetNumGroups}`,
+      ok: observedNumGroups === targetNumGroups,
+      timedOut: false
+    });
+    if (observedNumGroups !== targetNumGroups) {
+      return acceptedResponse(observedNumGroups);
+    }
+
+    results.push(await finalCtx.client.run(waitForYdbCli(
+      finalCtx.profile,
+      ["scheme", "ls", finalCtx.profile.tenantPath],
+      finalCtx.profile.tenantPath,
+      "Wait for tenant metadata"
+    )));
+    if (results.at(-1)?.ok) {
+      results.push(await verifyRebuiltProfileContainers(finalCtx, extraDynamicNodes, imageId));
+    }
+
+    return acceptedResponse(observedNumGroups);
+  } finally {
+    const dumpRemoved = await dumpSnapshot.remove();
+    const authRemoved = await authArtifacts?.remove() ?? true;
+    if (!dumpRemoved) {
+      throw new Error(COMPOSITE_DUMP_CLEANUP_FAILURE);
+    }
+    if (!authRemoved) {
+      throw new Error(COMPOSITE_AUTH_CLEANUP_FAILURE);
     }
   }
-
-  const observedPool = await readTargetStoragePool(finalCtx, pool.name);
-  const observedNumGroups = observedPool.numGroups;
-  results.push({
-    command: `verify storage pool ${pool.name} NumGroups`,
-    exitCode: observedNumGroups === targetNumGroups ? 0 : 1,
-    stdout: `Observed NumGroups: ${observedNumGroups}`,
-    stderr: observedNumGroups === targetNumGroups ? "" : `Expected NumGroups: ${targetNumGroups}`,
-    ok: observedNumGroups === targetNumGroups,
-    timedOut: false
   });
-  if (observedNumGroups !== targetNumGroups) {
-    return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results);
-  }
-
-  results.push(await finalCtx.client.run(waitForYdbCli(
-    finalCtx.profile,
-    ["scheme", "ls", finalCtx.profile.tenantPath],
-    finalCtx.profile.tenantPath,
-    "Wait for tenant metadata"
-  )));
-  if (results.at(-1)?.ok) {
-    results.push(await verifyRebuiltProfileContainers(finalCtx, extraDynamicNodes));
-  }
-
-  return reduceStorageGroupsResponse(pool, targetNumGroups, dumpName, authReapplyPlanned, extraDynamicNodes, observedNumGroups, plannedCommands, rollback, verification, results);
 }
 
 function expectedProfileContainerNames(
@@ -325,7 +464,8 @@ function expectedDynamicNodePorts(
 
 async function verifyRebuiltProfileContainers(
   ctx: ToolkitContext,
-  extraDynamicNodes: Array<{ container: string }>
+  extraDynamicNodes: Array<{ container: string }>,
+  expectedImageId: string,
 ): Promise<CommandResult> {
   const expected = expectedProfileContainerNames(ctx, extraDynamicNodes);
   const result = await inventory(ctx);
@@ -345,19 +485,55 @@ async function verifyRebuiltProfileContainers(
       .map((container) => [container.names as string, container.image as string])
   );
   const missing = expected.filter((name) => !imageByName.has(name));
-  const mismatches = expected
+  const tagMismatches = expected
     .filter((name) => imageByName.has(name) && imageByName.get(name) !== ctx.profile.image)
     .map((name) => `${name} -> ${imageByName.get(name)}`);
-  const ok = missing.length === 0 && mismatches.length === 0;
+  const presentNames = expected.filter((name) => imageByName.has(name));
+  let imageIdByName: Map<string, string>;
+  try {
+    const inspected = await ctx.client.dockerInspect(presentNames);
+    imageIdByName = new Map(inspected.flatMap((item) => {
+      if (!item || typeof item !== "object") {
+        return [];
+      }
+      const value = item as Record<string, unknown>;
+      const name = typeof value.Name === "string" ? value.Name.replace(/^\//, "") : undefined;
+      const imageId = typeof value.Image === "string" ? value.Image : undefined;
+      return name && imageId ? [[name, imageId] as const] : [];
+    }));
+  } catch {
+    return {
+      command: `verify rebuilt profile containers use image ${ctx.profile.image}`,
+      exitCode: 1,
+      stdout: "",
+      stderr: "Exact Docker image identity was unavailable during final rebuild verification.",
+      ok: false,
+      timedOut: false,
+    };
+  }
+  const missingImageIds = presentNames.filter((name) => !imageIdByName.has(name));
+  const imageIdMismatches = presentNames
+    .filter((name) => imageIdByName.has(name) && imageIdByName.get(name) !== expectedImageId)
+    .map((name) => `${name} -> ${imageIdByName.get(name)}`);
+  const ok = missing.length === 0
+    && tagMismatches.length === 0
+    && missingImageIds.length === 0
+    && imageIdMismatches.length === 0;
   return {
     command: `verify rebuilt profile containers use image ${ctx.profile.image}`,
     exitCode: ok ? 0 : 1,
-    stdout: expected.map((name) => `${name}=${imageByName.get(name) ?? "<missing>"}`).join("\n"),
+    stdout: expected.map((name) => [
+      name,
+      imageByName.get(name) ?? "<missing>",
+      imageIdByName.get(name) ?? "<missing-id>",
+    ].join("=")).join("\n"),
     stderr: ok
       ? ""
       : [
           missing.length ? `Missing containers: ${missing.join(", ")}` : "",
-          mismatches.length ? `Image mismatches: ${mismatches.join(", ")}` : ""
+          tagMismatches.length ? `Tag mismatches: ${tagMismatches.join(", ")}` : "",
+          missingImageIds.length ? `Missing image IDs: ${missingImageIds.join(", ")}` : "",
+          imageIdMismatches.length ? `Image ID mismatches: ${imageIdMismatches.join(", ")}` : ""
         ].filter(Boolean).join("\n"),
     ok,
     timedOut: false
@@ -485,13 +661,6 @@ function requiresAuthReapply(ctx: ToolkitContext): boolean {
     throw new Error("Automatic storage reduction for auth-enabled profiles requires authConfigPath, dynamicNodeAuthTokenFile, and rootPasswordFile.");
   }
   return true;
-}
-
-async function runOperation(results: CommandResult[], response: { results?: CommandResult[] }): Promise<boolean> {
-  if (response.results) {
-    results.push(...response.results);
-  }
-  return !response.results || response.results.every((result) => result.ok);
 }
 
 function addStorageGroupsResponse(

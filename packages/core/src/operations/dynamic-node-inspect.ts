@@ -1,10 +1,59 @@
+import { bash, shellQuote, type CommandSpec } from "../api-client.js";
 import type { ToolkitContext, DynamicNodePlan } from "./types.js";
 import { assertPort, escapeRegExp, extraDynamicNodeTarget } from "./helpers.js";
 
 export interface InspectedDynamicNodePorts {
+  containerId?: string;
   grpcPort?: number;
   monitoringPort?: number;
   icPort?: number;
+}
+
+export interface ExactDynamicNodeTarget {
+  container: string;
+  containerId: string;
+}
+
+export interface InspectedDynamicNodePlan extends DynamicNodePlan, ExactDynamicNodeTarget {}
+
+export type ExactDynamicNodeAction = "remove" | "stop" | "start";
+
+export function exactDynamicNodeActionSpec(
+  target: ExactDynamicNodeTarget,
+  action: ExactDynamicNodeAction,
+  description: string,
+): CommandSpec {
+  const dockerCommand = exactDynamicNodeCommand(action);
+  return bash([
+    "set -euo pipefail",
+    `expected_id=${shellQuote(target.containerId)}`,
+    `actual_id=$(docker inspect --format '{{.Id}}' ${shellQuote(target.container)})`,
+    `[ "$actual_id" = "$expected_id" ]`,
+    dockerCommand,
+  ].join("\n"), {
+    timeoutMs: 60_000,
+    description,
+  });
+}
+
+function exactDynamicNodeCommand(action: ExactDynamicNodeAction): string {
+  switch (action) {
+    case "remove":
+      return "docker rm -f \"$expected_id\"";
+    case "stop":
+      return "docker stop \"$expected_id\"";
+    case "start":
+      return "docker start \"$expected_id\"";
+    default:
+      throw new Error("Unsupported exact dynamic-node action.");
+  }
+}
+
+export function exactDynamicNodeRemovalSpec(
+  target: ExactDynamicNodeTarget,
+  description: string,
+): CommandSpec {
+  return exactDynamicNodeActionSpec(target, "remove", description);
 }
 
 export async function inspectDynamicNodePorts(
@@ -23,6 +72,7 @@ export async function inspectDynamicNodePorts(
       continue;
     }
     byContainer.set(name, {
+      containerId: typeof obj.Id === "string" ? obj.Id : undefined,
       grpcPort: readCommandPort(obj, "--grpc-port"),
       monitoringPort: readCommandPort(obj, "--mon-port"),
       icPort: readCommandPort(obj, "--ic-port")
@@ -31,10 +81,27 @@ export async function inspectDynamicNodePorts(
   return byContainer;
 }
 
+export async function inspectExactDynamicNodeTargets(
+  ctx: ToolkitContext,
+  containers: string[],
+): Promise<ExactDynamicNodeTarget[]> {
+  if (containers.length === 0) {
+    return [];
+  }
+  const byContainer = await inspectDynamicNodePorts(ctx, containers);
+  return containers.map((container) => {
+    const containerId = byContainer.get(container)?.containerId;
+    if (!containerId) {
+      throw new Error("Could not inspect exact Docker identity for every extra dynamic node before destructive teardown.");
+    }
+    return { container, containerId };
+  });
+}
+
 export async function inspectExtraDynamicNodePlans(
   ctx: ToolkitContext,
   names: Array<string | undefined>
-): Promise<DynamicNodePlan[]> {
+): Promise<InspectedDynamicNodePlan[]> {
   const targets = names
     .map((name) => extraDynamicNodeTarget(ctx.profile, name))
     .filter((target): target is NonNullable<typeof target> => Boolean(target))
@@ -45,17 +112,19 @@ export async function inspectExtraDynamicNodePlans(
   return targets.map((target) => {
     const ports = byContainer.get(target.container);
     if (
-      typeof ports?.grpcPort !== "number"
+      !ports?.containerId
+      || typeof ports.grpcPort !== "number"
       || typeof ports.monitoringPort !== "number"
       || typeof ports.icPort !== "number"
     ) {
-      throw new Error(`Could not inspect exact gRPC, monitoring, and IC ports for one-off dynamic node ${target.container} before destructive rebuild.`);
+      throw new Error(`Could not inspect exact Docker identity and gRPC, monitoring, and IC ports for one-off dynamic node ${target.container} before destructive rebuild.`);
     }
     assertPort(ports.grpcPort);
     assertPort(ports.monitoringPort);
     assertPort(ports.icPort);
     return {
       ...target,
+      containerId: ports.containerId,
       grpcPort: ports.grpcPort,
       monitoringPort: ports.monitoringPort,
       icPort: ports.icPort

@@ -1,14 +1,39 @@
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { LocalYdbApiClient, type CommandResult } from "../api-client.js";
-import { ConfigSchema, sanitizeTenantName, type ResolvedLocalYdbProfile } from "../validation.js";
+import {
+  attachConfirmation,
+  authorizeMutation,
+  confirmationSummarySuffix,
+  withConfirmationLease,
+  withoutConfirmation,
+} from "../confirmation.js";
+import { sanitizeTenantName, type ResolvedLocalYdbProfile } from "../validation.js";
 import { applyAuthHardening, prepareAuthConfig, writeDynamicNodeAuthConfig } from "./auth-operations.js";
 import { inventory, requireInventory } from "./checks.js";
+import {
+  COMPOSITE_DUMP_CLEANUP_FAILURE,
+  COMPOSITE_DUMP_SNAPSHOT_COMMAND,
+  PROFILE_COMPOSITE_REBUILD_SCOPE,
+  createCompositeDumpSnapshot,
+} from "./composite-dump.js";
+import {
+  COMPOSITE_AUTH_CLEANUP_FAILURE,
+  createCompositeAuthArtifacts,
+} from "./composite-auth.js";
 import { addDynamicNodes } from "./dynamic-nodes.js";
 import { configuredDynamicNodePlans } from "./dynamic-node-topology.js";
 import { inspectExtraDynamicNodePlans } from "./dynamic-node-inspect.js";
+import { appendOperationResultsAndCheckSuccess } from "./execution.js";
 import { assertPositiveInteger } from "./helpers.js";
-import { ensureImagePresentSpec } from "./images.js";
+import { ensureImageIdSpec, ensureImagePresentSpec, inspectImageId } from "./images.js";
+import {
+  captureProfileConfigReceipt,
+  MANUAL_PROFILE_IMAGE_UPDATE_ERROR,
+  manualProfileImageUpdate,
+  plannedProfileImageUpdate,
+  type ProfileImageUpdate,
+} from "./profile-image-config.js";
 import { bootstrap, destroyStack } from "./stack.js";
+import { prepareStackTargets } from "./stack-targets.js";
 import { dumpTenant, restoreTenant } from "./tenant.js";
 import type {
   ListVersionsOptions,
@@ -48,7 +73,6 @@ interface RegistryChallenge {
   scope?: string;
 }
 
-type ProfileImageUpdate = NonNullable<UpgradeVersionResponse["profileImageUpdate"]>;
 type ImageVerificationData = NonNullable<UpgradeVersionResponse["imageVerification"]>;
 type ImageVerificationOutcome =
   | { kind: "verified"; verification: ImageVerificationData; result: CommandResult }
@@ -228,26 +252,54 @@ export async function upgradeVersion(
   if (ctx.profile.bindMountPath) {
     throw new Error("Automatic version upgrade does not support bindMountPath profiles because the upgrade must rebuild from empty storage.");
   }
-  if (!ctx.configPath) {
-    throw new Error("Automatic version upgrade requires a file-backed local-ydb config path so the upgraded profile image can be persisted.");
+  const configPath = ctx.configPath;
+  if (!configPath) {
+    throw new Error("Automatic version upgrade requires a file-backed local-ydb config path so the reviewed source profile can be verified and updated manually after the upgrade.");
   }
+  const profileConfigReceipt = captureProfileConfigReceipt(
+    configPath,
+    ctx.profile.name,
+    sourceImage,
+  );
+  const targetImageId = await inspectImageId(ctx, targetImage);
 
   const authReapplyPlanned = requiresAuthReapply(ctx.profile);
   const dumpName = options.dumpName ?? buildUpgradeDumpName(ctx.profile, sourceImage, version);
-  const profileImageUpdate = plannedProfileImageUpdate(ctx.configPath, ctx.profile.name, sourceImage, targetImage);
+  const profileImageUpdate = plannedProfileImageUpdate(configPath, ctx.profile.name, sourceImage, targetImage);
   const inventoryState = await requireInventory(ctx);
+  const preparedStackTargets = await prepareStackTargets(
+    ctx, inventoryState, configuredDynamicNodePlans(ctx.profile).map((plan) => plan.container),
+  );
   const extraDynamicNodes = await inspectExtraDynamicNodePlans(
     ctx,
     inventoryState.containers.map((container) => container.names)
   );
   const rebuildCtx = upgradeContext(ctx, targetImage, false);
-  const finalCtx = authReapplyPlanned ? upgradeContext(ctx, targetImage, true) : rebuildCtx;
+  const phaseCtx = withoutConfirmation(ctx);
+  const finalBaseCtx = authReapplyPlanned ? upgradeContext(ctx, targetImage, true) : rebuildCtx;
+  const authArtifactScope = authReapplyPlanned
+    ? {
+        kind: "version-upgrade-generated-auth",
+        request: { version, dumpName, sourceImage, targetImage, targetImageId },
+      }
+    : undefined;
+  const authArtifacts = authArtifactScope
+    ? createCompositeAuthArtifacts(ctx, finalBaseCtx, authArtifactScope)
+    : undefined;
+  await authArtifacts?.validateDestinations();
+  const finalCtx = authArtifacts?.context ?? finalBaseCtx;
 
   const sourceImageSpec = ensureImagePresentSpec(sourceImage);
-  const targetImageSpec = ensureImagePresentSpec(targetImage);
-  const dumpPlan = await dumpTenant(ctx, { confirm: false, dumpName });
-  const destroyPlan = await destroyStack(ctx, { confirm: false });
-  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false });
+  const targetImageSpec = ensureImageIdSpec(targetImage, targetImageId);
+  const dumpPlan = await dumpTenant(phaseCtx, { confirm: false, dumpName });
+  const preparedExtraDynamicNodes = extraDynamicNodes;
+  const destroyPlan = await destroyStack(
+    phaseCtx,
+    { confirm: false },
+    preparedExtraDynamicNodes,
+    preparedStackTargets,
+  );
+  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false }, { expectedImageId: targetImageId, requireAbsent: true });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
     ? [
@@ -256,6 +308,7 @@ export async function upgradeVersion(
           confirm: false,
           sid: finalCtx.profile.dynamicNodeAuthSid ?? "root@builtin"
         }),
+        await authArtifacts!.persist({ confirm: false }),
         await applyAuthHardening(finalCtx, { confirm: false })
       ]
     : [];
@@ -275,16 +328,17 @@ export async function upgradeVersion(
     ctx.client.display(sourceImageSpec),
     ctx.client.display(targetImageSpec),
     ...dumpPlan.plannedCommands,
+    COMPOSITE_DUMP_SNAPSHOT_COMMAND,
+    ctx.client.display(targetImageSpec),
     ...destroyPlan.plannedCommands,
     ...bootstrapPlan.plannedCommands,
     ...restorePlan.plannedCommands,
     ...reapplyPlans.flatMap((plan) => plan.plannedCommands),
-    ...extraDynamicPlans.flatMap((plan) => plan.plannedCommands),
-    profileImageUpdateCommand(ctx.configPath, ctx.profile.name, sourceImage, targetImage)
-  ];
+    ...extraDynamicPlans.flatMap((plan) => plan.plannedCommands)
+  ].map((command) => authArtifacts?.redact(command) ?? command);
   const rollback = [
     `Pull ${sourceImage}, recreate the profile stack with the previous image, and restore dump ${dumpName}.`,
-    `Set profiles.${ctx.profile.name}.image in ${ctx.configPath} back to ${sourceImage} if future profile operations should use the previous image.`,
+    `If the config was manually updated to ${targetImage}, set profiles.${ctx.profile.name}.image in ${configPath} back to ${sourceImage} when rolling back.`,
     "Auth artifacts are preserved; rerun local_ydb_prepare_auth_config, local_ydb_write_dynamic_auth_config, and local_ydb_apply_auth_hardening if auth reapply needs to be repeated."
   ];
   const verification = [
@@ -299,12 +353,27 @@ export async function upgradeVersion(
       ...extraDynamicNodes.map((node) => node.icPort)
     ].join(", ")}`,
     `profile containers use image ${targetImage}`,
-    `profiles.${ctx.profile.name}.image in ${ctx.configPath} is ${targetImage}`
+    `after independent image and data verification, manually set profiles.${ctx.profile.name}.image in ${configPath} to ${targetImage}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Upgrade ${ctx.profile.name} from ${sourceImage} to ${targetImage} via dump, rebuild, and restore. Not executed because confirm=true was not provided.`,
+  const summary = `Upgrade ${ctx.profile.name} from ${sourceImage} to ${targetImage} via dump, rebuild, and restore.`;
+  const decision = await authorizeMutation(ctx, options, {
+    kind: "version-upgrade",
+    request: { version, dumpName, sourceImage, targetImage, targetImageId },
+    profileConfigReceipt,
+    profileImageUpdate,
+    extraDynamicNodes,
+    authReapplyPlanned,
+    plannedCommands,
+    risk: "high",
+    rollback,
+    verification,
+  }, {
+    sharedExclusiveScope: PROFILE_COMPOSITE_REBUILD_SCOPE,
+  });
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands,
@@ -316,138 +385,146 @@ export async function upgradeVersion(
       authReapplyPlanned,
       extraDynamicNodes: extraDynamicNodes.map((node) => node.container),
       profileImageUpdate
-    };
+    }, decision.confirmation);
   }
+  const confirmed = (response: UpgradeVersionResponse) => {
+    authArtifacts?.redactResults(response.results ?? []);
+    return attachConfirmation(response, decision.confirmation);
+  };
 
+  return withConfirmationLease(decision.receipt, async () => {
   const results: CommandResult[] = [];
-  const sourceImageResult = await ctx.client.run(sourceImageSpec);
-  results.push(sourceImageResult);
-  if (!sourceImageResult.ok) {
-    return upgradeVersionResponse(
-      sourceImage,
-      targetImage,
-      dumpName,
-      authReapplyPlanned,
-      extraDynamicNodes,
-      undefined,
-      profileImageUpdate,
-      plannedCommands,
-      rollback,
-      verification,
-      results
-    );
-  }
-  const targetImageResult = await ctx.client.run(targetImageSpec);
-  results.push(targetImageResult);
-  if (!targetImageResult.ok) {
-    return upgradeVersionResponse(
-      sourceImage,
-      targetImage,
-      dumpName,
-      authReapplyPlanned,
-      extraDynamicNodes,
-      undefined,
-      profileImageUpdate,
-      plannedCommands,
-      rollback,
-      verification,
-      results
-    );
-  }
-
-  if (!await runOperation(results, await dumpTenant(ctx, { confirm: true, dumpName }))) {
-    return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
-  }
-  if (!await runOperation(results, await destroyStack(ctx, { confirm: true }))) {
-    return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
-  }
-  if (!await runOperation(results, await bootstrap(rebuildCtx, { confirm: true }))) {
-    return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
-  }
-  if (!await runOperation(results, await restoreTenant(rebuildCtx, { confirm: true, dumpName }))) {
-    return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
-  }
-
-  if (authReapplyPlanned) {
-    if (!await runOperation(results, await prepareAuthConfig(finalCtx, { confirm: true }))) {
-      return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
-    }
-    if (!await runOperation(results, await writeDynamicNodeAuthConfig(finalCtx, {
-      confirm: true,
-      sid: finalCtx.profile.dynamicNodeAuthSid ?? "root@builtin"
-    }))) {
-      return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
-    }
-    if (!await runOperation(results, await applyAuthHardening(finalCtx, { confirm: true }))) {
-      return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
-    }
-  }
-
-  for (const node of extraDynamicNodes) {
-    if (!await runOperation(results, await addDynamicNodes(finalCtx, {
-      confirm: true,
-      count: 1,
-      startIndex: node.index,
-      grpcPortStart: node.grpcPort,
-      monitoringPortStart: node.monitoringPort,
-      icPortStart: node.icPort
-    }))) {
-      return upgradeVersionResponse(sourceImage, targetImage, dumpName, authReapplyPlanned, extraDynamicNodes, undefined, profileImageUpdate, plannedCommands, rollback, verification, results);
-    }
-  }
-
-  const imageVerification = await verifyProfileImages(finalCtx, targetImage, extraDynamicNodes.map((node) => node.container));
-  results.push(imageVerification.result);
-  if (imageVerification.kind === "mismatch") {
-    return upgradeVersionResponse(
-      sourceImage,
-      targetImage,
-      dumpName,
-      authReapplyPlanned,
-      extraDynamicNodes,
-      imageVerification.verification,
-      profileImageUpdate,
-      plannedCommands,
-      rollback,
-      verification,
-      results
-    );
-  }
-
-  if (imageVerification.kind === "unavailable") {
-    const executedProfileImageUpdate = updateProfileImage(ctx.configPath, ctx.profile.name, sourceImage, targetImage);
-    results.push(profileImageUpdateResult(executedProfileImageUpdate));
-    return upgradeVersionResponse(
-      sourceImage,
-      targetImage,
-      dumpName,
-      authReapplyPlanned,
-      extraDynamicNodes,
-      undefined,
-      executedProfileImageUpdate,
-      plannedCommands,
-      rollback,
-      verification,
-      results
-    );
-  }
-
-  const executedProfileImageUpdate = updateProfileImage(ctx.configPath, ctx.profile.name, sourceImage, targetImage);
-  results.push(profileImageUpdateResult(executedProfileImageUpdate));
-
-  return upgradeVersionResponse(
+  const acceptedResponse = (
+    imageVerification?: ImageVerificationData,
+    profileUpdate: ProfileImageUpdate | undefined = profileImageUpdate,
+  ) => confirmed(upgradeVersionResponse(
     sourceImage,
     targetImage,
     dumpName,
     authReapplyPlanned,
     extraDynamicNodes,
-    imageVerification.verification,
-    executedProfileImageUpdate,
+    imageVerification,
+    profileUpdate,
     plannedCommands,
     rollback,
     verification,
-    results
-  );
+    results,
+  ));
+  const sourceImageResult = await ctx.client.run(sourceImageSpec);
+  results.push(sourceImageResult);
+  if (!sourceImageResult.ok) {
+    return acceptedResponse();
+  }
+  const targetImageResult = await ctx.client.run(targetImageSpec);
+  results.push(targetImageResult);
+  if (!targetImageResult.ok) {
+    return acceptedResponse();
+  }
+
+  if (!appendOperationResultsAndCheckSuccess(results, await dumpTenant(phaseCtx, { confirm: true, dumpName }))) {
+    return acceptedResponse();
+  }
+  const dumpSnapshot = await createCompositeDumpSnapshot(phaseCtx, dumpName);
+  results.push(dumpSnapshot.result);
+  try {
+    if (!dumpSnapshot.result.ok || !dumpSnapshot.preparedRestore) {
+      return acceptedResponse();
+    }
+    const destructiveBoundaryImageResult = await ctx.client.run(targetImageSpec);
+    results.push(destructiveBoundaryImageResult);
+    if (!destructiveBoundaryImageResult.ok) {
+      return acceptedResponse();
+    }
+    if (!appendOperationResultsAndCheckSuccess(results, await destroyStack(
+      phaseCtx,
+      { confirm: true },
+      preparedExtraDynamicNodes,
+      preparedStackTargets,
+    ))) {
+      return acceptedResponse();
+    }
+    if (!appendOperationResultsAndCheckSuccess(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: targetImageId, requireAbsent: true }))) {
+      return acceptedResponse();
+    }
+    if (!appendOperationResultsAndCheckSuccess(results, await restoreTenant(
+      rebuildCtx,
+      { confirm: true, dumpName },
+      dumpSnapshot.preparedRestore,
+    ))) {
+      return acceptedResponse();
+    }
+
+    if (authReapplyPlanned) {
+      if (!appendOperationResultsAndCheckSuccess(results, await prepareAuthConfig(finalCtx, { confirm: true }))) {
+        return acceptedResponse();
+      }
+      if (!appendOperationResultsAndCheckSuccess(results, await writeDynamicNodeAuthConfig(finalCtx, {
+        confirm: true,
+        sid: finalCtx.profile.dynamicNodeAuthSid ?? "root@builtin"
+      }))) {
+        return acceptedResponse();
+      }
+      if (!appendOperationResultsAndCheckSuccess(results, await authArtifacts!.persist({ confirm: true }))) {
+        return acceptedResponse();
+      }
+      if (!appendOperationResultsAndCheckSuccess(results, await applyAuthHardening(finalCtx, { confirm: true }))) {
+        return acceptedResponse();
+      }
+    }
+
+    for (const node of extraDynamicNodes) {
+      if (!appendOperationResultsAndCheckSuccess(results, await addDynamicNodes(finalCtx, {
+        confirm: true,
+        count: 1,
+        startIndex: node.index,
+        grpcPortStart: node.grpcPort,
+        monitoringPortStart: node.monitoringPort,
+        icPortStart: node.icPort
+      }))) {
+        return acceptedResponse();
+      }
+    }
+
+    const imageVerification = await verifyProfileImages(
+      finalCtx,
+      targetImage,
+      targetImageId,
+      extraDynamicNodes.map((node) => node.container),
+    );
+    results.push(imageVerification.result);
+    if (imageVerification.kind === "mismatch") {
+      return acceptedResponse(imageVerification.verification);
+    }
+
+    if (imageVerification.kind === "unavailable") {
+      const manualProfileUpdate = manualProfileImageUpdate(
+        configPath,
+        ctx.profile.name,
+        sourceImage,
+        targetImage,
+      );
+      return acceptedResponse(undefined, manualProfileUpdate);
+    }
+
+    const manualProfileUpdate = manualProfileImageUpdate(
+      configPath,
+      ctx.profile.name,
+      sourceImage,
+      targetImage,
+    );
+
+    return acceptedResponse(imageVerification.verification, manualProfileUpdate);
+  } finally {
+    const dumpRemoved = await dumpSnapshot.remove();
+    const authRemoved = await authArtifacts?.remove() ?? true;
+    if (!dumpRemoved) {
+      throw new Error(COMPOSITE_DUMP_CLEANUP_FAILURE);
+    }
+    if (!authRemoved) {
+      throw new Error(COMPOSITE_AUTH_CLEANUP_FAILURE);
+    }
+  }
+  });
 }
 
 async function fetchRegistryTagsPage(
@@ -625,122 +702,10 @@ function upgradeContext(ctx: ToolkitContext, targetImage: string, includeAuth: b
   };
 }
 
-function plannedProfileImageUpdate(configPath: string, profile: string, sourceImage: string, targetImage: string): ProfileImageUpdate {
-  return {
-    configPath,
-    profile,
-    sourceImage,
-    targetImage,
-    executed: false,
-    ok: false
-  };
-}
-
-function updateProfileImage(configPath: string, profileName: string, sourceImage: string, targetImage: string): ProfileImageUpdate {
-  try {
-    const rawConfig = readRawConfigForProfileUpdate(configPath, profileName);
-    let profiles = rawConfig.profiles;
-    if (profiles === undefined && profileName === "default") {
-      profiles = { default: {} };
-      rawConfig.profiles = profiles;
-    }
-    if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) {
-      throw new Error("config profiles must be an object");
-    }
-    const profileRecord = profiles as Record<string, unknown>;
-    let profile = profileRecord[profileName];
-    if (profile === undefined && profileName === "default") {
-      profile = {};
-      profileRecord[profileName] = profile;
-    }
-    if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
-      throw new Error(`profile ${profileName} is missing from config`);
-    }
-    (profile as Record<string, unknown>).image = targetImage;
-    ConfigSchema.parse(rawConfig);
-    writeJsonAtomic(configPath, rawConfig);
-    return {
-      configPath,
-      profile: profileName,
-      sourceImage,
-      targetImage,
-      executed: true,
-      ok: true
-    };
-  } catch (error) {
-    return {
-      configPath,
-      profile: profileName,
-      sourceImage,
-      targetImage,
-      executed: true,
-      ok: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
-}
-
-function readRawConfigForProfileUpdate(configPath: string, profileName: string): Record<string, unknown> {
-  if (!existsSync(configPath)) {
-    if (profileName !== "default") {
-      throw new Error(`Cannot create missing config ${configPath} for non-default profile ${profileName}`);
-    }
-    return {
-      profiles: {
-        default: {
-          image: ""
-        }
-      }
-    };
-  }
-
-  const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("config root must be a JSON object");
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function writeJsonAtomic(configPath: string, rawConfig: Record<string, unknown>): void {
-  const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    writeFileSync(tmpPath, `${JSON.stringify(rawConfig, null, 2)}\n`, "utf8");
-    renameSync(tmpPath, configPath);
-  } catch (error) {
-    removeFileIfPresent(tmpPath);
-    throw error;
-  }
-}
-
-function removeFileIfPresent(path: string): void {
-  if (!existsSync(path)) {
-    return;
-  }
-  try {
-    unlinkSync(path);
-  } catch {
-    return;
-  }
-}
-
-function profileImageUpdateCommand(configPath: string, profile: string, sourceImage: string, targetImage: string): string {
-  return `update ${configPath}: profiles.${profile}.image ${sourceImage} -> ${targetImage}`;
-}
-
-function profileImageUpdateResult(update: ProfileImageUpdate): CommandResult {
-  return {
-    command: profileImageUpdateCommand(update.configPath, update.profile, update.sourceImage, update.targetImage),
-    exitCode: update.ok ? 0 : 1,
-    stdout: update.ok ? `Updated profiles.${update.profile}.image to ${update.targetImage}` : "",
-    stderr: update.ok ? "" : update.error ?? "Profile image update failed",
-    ok: update.ok,
-    timedOut: false
-  };
-}
-
 async function verifyProfileImages(
   ctx: ToolkitContext,
   expectedImage: string,
+  expectedImageId: string,
   extraDynamicContainers: string[]
 ): Promise<ImageVerificationOutcome> {
   const inv = await inventory(ctx);
@@ -768,10 +733,44 @@ async function verifyProfileImages(
       .map((container) => [container.names as string, container.image as string])
   );
   const missing = targetNames.filter((name) => !imageByName.has(name));
-  const mismatches = targetNames
-    .map((name) => ({ name, image: imageByName.get(name) }))
-    .filter((item): item is { name: string; image: string } => typeof item.image === "string" && item.image !== expectedImage)
-    .map((item) => `${item.name} -> ${item.image}`);
+  const presentNames = targetNames.filter((name) => imageByName.has(name));
+  let exactImageByName: Map<string, string>;
+  try {
+    const inspected = await ctx.client.dockerInspect(presentNames);
+    exactImageByName = new Map(inspected.flatMap((item) => {
+      if (!item || typeof item !== "object") {
+        return [];
+      }
+      const value = item as Record<string, unknown>;
+      const name = typeof value.Name === "string" ? value.Name.replace(/^\//, "") : undefined;
+      const imageId = typeof value.Image === "string" ? value.Image : undefined;
+      return name && imageId ? [[name, imageId] as const] : [];
+    }));
+  } catch {
+    return {
+      kind: "unavailable",
+      result: {
+        command: `verify profile containers use image ${expectedImage}`,
+        exitCode: 1,
+        stdout: "",
+        stderr: "Docker image identity inspection was unavailable during final verification.",
+        ok: false,
+        timedOut: false,
+      },
+    };
+  }
+  const mismatches = targetNames.flatMap((name) => {
+    const image = imageByName.get(name);
+    if (!image) {
+      return [];
+    }
+    if (image !== expectedImage) {
+      return [`${name} -> ${image}`];
+    }
+    return exactImageByName.get(name) === expectedImageId
+      ? []
+      : [`${name} -> unexpected image ID`];
+  });
   const ok = missing.length === 0 && mismatches.length === 0;
 
   const verification = { expectedImage, missing, mismatches };
@@ -794,13 +793,6 @@ async function verifyProfileImages(
       timedOut: false
     }
   };
-}
-
-async function runOperation(results: CommandResult[], response: { results?: CommandResult[] }): Promise<boolean> {
-  if (response.results) {
-    results.push(...response.results);
-  }
-  return !response.results || response.results.every((result) => result.ok);
 }
 
 function upgradeVersionResponse(
@@ -850,10 +842,16 @@ function upgradeVersionSummary(
     if (imageVerification.missing.length > 0 || imageVerification.mismatches.length > 0) {
       return `${progress} Final image verification found a mismatch; the profile image was not updated.`;
     }
+    if (profileImageUpdate?.error === MANUAL_PROFILE_IMAGE_UPDATE_ERROR) {
+      return `${progress} Final image verification succeeded; profile config was not updated automatically and requires manual action.`;
+    }
     if (profileImageUpdate?.executed) {
       return `${progress} Final image verification succeeded; profile image update ${profileImageUpdate.ok ? "succeeded" : "failed"}.`;
     }
     return `${progress} Final image verification succeeded.`;
+  }
+  if (profileImageUpdate?.error === MANUAL_PROFILE_IMAGE_UPDATE_ERROR) {
+    return `${progress} Final container images could not be verified; profile config was not updated automatically and requires independent verification before manual action.`;
   }
   if (profileImageUpdate?.executed) {
     return `${progress} Final container images could not be verified; the target profile image update ${profileImageUpdate.ok ? "succeeded" : "failed"}.`;

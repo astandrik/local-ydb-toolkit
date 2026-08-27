@@ -1,4 +1,11 @@
 import { createHash } from "node:crypto";
+import {
+  attachConfirmation,
+  attachNotRequiredConfirmation,
+  authorizeMutation,
+  confirmationSummarySuffix,
+  retireSubmittedConfirmation,
+} from "../confirmation.js";
 import { redactText } from "../auth.js";
 import type { SqlParameter } from "../sql-parameter-types.js";
 import { prepareSqlParameters } from "../sql-parameters.js";
@@ -22,7 +29,7 @@ import {
   invalidSqlBackendResult,
   normalizeSqlBackendResult,
 } from "./sql-result.js";
-import type { ToolkitContext } from "./types.js";
+import type { MutationConfirmation, ToolkitContext } from "./types.js";
 
 const MAX_SCRIPT_CHARACTERS = 1_048_576;
 const DEFAULT_MAX_ROWS = 100;
@@ -40,6 +47,7 @@ export interface SqlOptions {
   maxOutputBytes?: number;
   parameters?: Record<string, SqlParameter>;
   confirm?: boolean;
+  confirmationToken?: string;
   signal?: AbortSignal;
 }
 
@@ -60,6 +68,7 @@ export interface SqlResponse {
   outcome: SqlOutcome;
   confirmationRequired: boolean;
   confirmationConsumed: boolean;
+  confirmation?: MutationConfirmation;
   preflight?: QueryServiceExecutionResult;
   execution?: QueryServiceExecutionResult;
   resultSets: QueryServiceResultSet[];
@@ -184,7 +193,8 @@ export async function sql(
 
   const { result: preflight } = await run("explain");
   if (preflight.completion !== "success") {
-    return responseWithResults({
+    retireSubmittedConfirmation(ctx, options);
+    return attachNotRequiredConfirmation(ctx, responseWithResults({
       ...common,
       summary: preflight.completion === "partial"
         ? `Managed YQL execution preflight returned partial output against ${databasePath}; execution was blocked.`
@@ -192,17 +202,35 @@ export async function sql(
       risk: "high",
       executed: false,
       outcome: preflight.completion === "partial" ? "partial" : "failed",
-      confirmationRequired: options.confirm !== true,
+      confirmationRequired: false,
       confirmationConsumed: false,
       preflight,
       resultSets: preflight.resultSets,
       calls: [preflight],
-    });
+    }));
   }
-  if (options.confirm !== true) {
-    return responseWithResults({
+
+  // NoTx executes this SQL request, not the diagnostic plan returned by EXPLAIN.
+  const decision = await authorizeMutation(ctx, options, {
+    kind: "managed-sql",
+    request: {
+      action,
+      databasePath,
+      timeoutMs,
+      maxRows,
+      maxOutputBytes,
+      script: effectiveScript,
+      parameters: options.parameters ?? {},
+      mode: "noTx",
+    },
+    risk: "high",
+    rollback: common.rollback,
+    verification: common.verification,
+  });
+  if (!decision.execute) {
+    return attachConfirmation(responseWithResults({
       ...common,
-      summary: `Planned managed YQL execution against ${databasePath}.`,
+      summary: `Planned managed YQL execution against ${databasePath}.${confirmationSummarySuffix(decision.confirmation)}`,
       risk: "high",
       executed: false,
       outcome: "planned",
@@ -211,7 +239,7 @@ export async function sql(
       preflight,
       resultSets: preflight.resultSets,
       calls: [preflight],
-    });
+    }), decision.confirmation);
   }
 
   const executionCall = await run(
@@ -219,7 +247,7 @@ export async function sql(
     Math.max(0, maxOutputBytes - preflight.capturedBytes),
   );
   if (!executionCall.backendCalled) {
-    return responseWithResults({
+    return attachConfirmation(responseWithResults({
       ...common,
       summary: executionCall.result.completion === "cancelled"
         ? `Managed YQL execution was cancelled after preflight against ${databasePath}.`
@@ -228,14 +256,14 @@ export async function sql(
       executed: false,
       outcome: "failed",
       confirmationRequired: false,
-      confirmationConsumed: false,
+      confirmationConsumed: decision.confirmation?.status === "accepted",
       preflight,
       resultSets: preflight.resultSets,
       calls: [preflight],
-    });
+    }), decision.confirmation);
   }
   const execution = executionCall.result;
-  return responseWithResults({
+  return attachConfirmation(responseWithResults({
     ...common,
     summary: mutationSummary(execution, databasePath),
     risk: "high",
@@ -247,7 +275,7 @@ export async function sql(
     execution,
     resultSets: execution.resultSets,
     calls: [preflight, execution],
-  });
+  }), decision.confirmation);
 }
 
 function normalizeAction(action: SqlAction | undefined): SqlAction {

@@ -275,7 +275,7 @@ export const toolDefinitions = [
     group: "sql",
     name: "local_ydb_sql",
     description:
-      "Run managed YQL v1 against the configured local-ydb target through Query Service. query uses SnapshotRO, explain returns plan/AST, and execute always runs EXPLAIN first and sends one NoTx execution only with confirm=true.",
+      "Run managed YQL v1 against the configured local-ydb target through Query Service. query uses SnapshotRO, explain returns plan/AST, and execute always runs EXPLAIN first and sends one NoTx execution only with confirm=true. A submitted token is retired when the repeated EXPLAIN fails.",
     inputSchema: sqlSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: async (args, options) => {
@@ -291,6 +291,7 @@ export const toolDefinitions = [
           maxOutputBytes: parsed.maxOutputBytes,
           parameters: parsed.parameters,
           confirm: parsed.confirm,
+          confirmationToken: parsed.confirmationToken,
           signal: options.signal,
         },
         options.sqlExecutor,
@@ -416,7 +417,7 @@ export const toolDefinitions = [
     instructionOrder: 6,
     name: "local_ydb_destroy_stack",
     description:
-      "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup.",
+      "Remove tenant metadata, local-ydb containers, network, and storage for a profile, with optional host-path cleanup. Before returning or executing a standalone plan, every discovered extra dynamic node is bound to its exact inspected Docker container ID; an unavailable identity aborts planning, while a same-name replacement after confirmation is rejected and preserved.",
     inputSchema: destroyStackSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: withContext(DestroyStackArgs, (context, parsed) =>
@@ -498,7 +499,7 @@ export const toolDefinitions = [
     group: "dynamic nodes",
     name: "local_ydb_remove_dynamic_nodes",
     description:
-      "Remove dynamic tenant suffix nodes one at a time and verify nodelist disappearance when the node IC port can be resolved. Without containers, nodeIds, or startIndex, only one-off suffixes above profile.dynamicNodeCount are eligible and the highest suffix is removed first. Explicit selectors or startIndex may remove a configured suffix and create drift that bootstrap or restart restores. Rollback guidance uses bootstrap/restart for configured nodes and add_dynamic_nodes with matching suffixes and ports for one-off nodes. The primary dynamicContainer is always protected.",
+      "Remove dynamic tenant suffix nodes one at a time, binding the plan and execution to each inspected Docker container ID, and verify nodelist disappearance when the node IC port can be resolved. A same-name replacement is rejected and is never removed by the old plan. Without containers, nodeIds, or startIndex, only one-off suffixes above profile.dynamicNodeCount are eligible and the highest suffix is removed first. Explicit selectors or startIndex may remove a configured suffix and create drift that bootstrap or restart restores. Rollback guidance uses bootstrap/restart for configured nodes and add_dynamic_nodes with matching suffixes and ports for one-off nodes. The primary dynamicContainer is always protected.",
     inputSchema: removeDynamicNodesSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: withContext(RemoveDynamicNodesArgs, (context, parsed) =>
@@ -510,7 +511,7 @@ export const toolDefinitions = [
     instructionOrder: 5,
     name: "local_ydb_restart_stack",
     description:
-      "Reconcile and restart the selected profile after inventory and a full check-only static compatibility preflight. Before stopping any container, require the existing static container to match the profile image, network, data mount, environment, restart policy, healthcheck, and exact loopback bindings for static gRPC, monitoring, and every configured dynamic gRPC port; configured binding changes require destroy followed by bootstrap. Then report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, unconditionally recreate every configured node in index order including containers observed restarting, require each exact Docker container to be stably running plus registered by IC port, and restore only previously running unexpected containers without removing them. Because removed configured definitions cannot be recovered from inventory, rollback uses restart or bootstrap reconciliation. Without confirm=true this returns the restart plan only.",
+      "Reconcile and restart the selected profile after inventory and a full check-only static compatibility preflight. Before stopping any container, require the existing static container to match the profile image, network, data mount, environment, restart policy, healthcheck, and exact loopback bindings for static gRPC, monitoring, and every configured dynamic gRPC port; configured binding changes require destroy followed by bootstrap. Then report missing configured and unexpected one-off dynamic containers, stop running dynamic containers before static, unconditionally recreate every configured node in index order including containers observed restarting, require each exact Docker container to be stably running plus registered by IC port, and restore only previously running unexpected containers without removing them. Each running unexpected container is bound to its full inspected Docker ID for both stop and recovery; a same-name replacement is rejected and left untouched. Because removed configured definitions cannot be recovered from inventory, rollback uses restart or bootstrap reconciliation. Without confirm=true this returns the restart plan only.",
     inputSchema: mutatingSchema(),
     annotations: mutatingAnnotations(),
     handler: withContext(MutatingArgs, (context, parsed) =>
@@ -522,7 +523,7 @@ export const toolDefinitions = [
     instructionOrder: 8,
     name: "local_ydb_upgrade_version",
     description:
-      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; before dump or destroy it inspects every one-off dynamic node and preserves its exact gRPC, monitoring, and IC ports, aborting on an incomplete definition. It then preflights source and target images, dumps, rebuilds, restores, reapplies auth when configured, recreates extra nodes, and performs final image verification. A verified mismatch leaves the profile unchanged; if final inventory is unavailable after successful rebuild phases, the response keeps command history, reports partial verification, and persists the target profile image.",
+      "Upgrade a file-backed, volume-backed local-ydb profile to a target image tag. Use only for version upgrades on profiles without bindMountPath; before dump or destroy it inspects every one-off dynamic node and preserves its exact gRPC, monitoring, and IC ports, aborting on an incomplete definition. The plan also binds the target tag to its resolved Docker image ID, rechecks it immediately before teardown, creates the replacement static container stopped and verifies its image ID before start, and verifies final container image IDs as well as tags. It then dumps, rebuilds, restores, regenerates auth artifacts in a private workspace when configured, and recreates extra nodes from those private bytes. The config is never updated automatically: after independent verification, set profiles.<name>.image manually. A verified mismatch leaves the profile unchanged; unavailable final inventory requires independent verification before that manual update.",
     inputSchema: upgradeVersionSchema(),
     annotations: mutatingAnnotations({ destructive: true }),
     handler: async (args, options) => {

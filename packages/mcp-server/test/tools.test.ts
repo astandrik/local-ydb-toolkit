@@ -102,6 +102,12 @@ class RecordingExecutor implements CommandExecutor {
     if (command.includes("docker volume ls")) {
       return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
     }
+    if (
+      spec.command === "docker"
+      && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+    ) {
+      return { command, exitCode: 0, stdout: "sha256:reviewed-target-image\n", stderr: "", ok: true, timedOut: false };
+    }
     if (command.includes("docker inspect")) {
       return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
     }
@@ -747,6 +753,9 @@ describe("mcp tools", () => {
     expect(localYdbInstructions).toContain("SnapshotRO");
     expect(localYdbInstructions).toContain("EXPLAIN");
     expect(localYdbInstructions).toContain("confirm=true");
+    expect(localYdbInstructions).toContain("response's confirmation.token");
+    expect(localYdbInstructions).toContain("confirmationToken request argument");
+    expect(localYdbInstructions).not.toMatch(/returned confirmationToken|its confirmationToken/);
     expect(localYdbInstructions).toContain("no retries");
     expect(localYdbInstructions).toContain("maxRows");
     expect(localYdbInstructions).toContain("maxOutputBytes");
@@ -1030,7 +1039,10 @@ describe("mcp tools", () => {
     expect(text).toContain("returned jobId");
     expect(text).toContain("local_ydb_upgrade_version");
     expect(text).toContain("Call mutating tools without confirm first");
-    expect(text).toContain("confirm=true only after the user explicitly approves");
+    expect(text).toContain("read its one-time token from confirmation.token");
+    expect(text).toContain("confirmationToken request argument");
+    expect(text).toContain("do not log or persist it");
+    expect(text).toContain("manual profile-image update required after independent verification");
     expect(text).toContain("\"profile\": \"demo\"");
   });
 
@@ -1065,8 +1077,9 @@ describe("mcp tools", () => {
       ? result.messages[0].content.text
       : "";
 
-    expect(text).toContain("local_ydb_prepare_auth_config with confirm=true");
-    expect(text).toContain("local_ydb_write_dynamic_auth_config with confirm=true");
+    expect(text).toContain("repeat each exact request with confirm=true");
+    expect(text).toContain("copying each plan response's confirmation.token");
+    expect(text).toContain("confirmationToken request argument");
     expect(text).toContain("Then call local_ydb_apply_auth_hardening without confirm");
     expect(text).toContain("\"sid\": \"root@builtin\"");
     expect(text).toContain("\"tokenHostPath\": \"/tmp/dynamic-auth.txt\"");
@@ -1102,8 +1115,9 @@ describe("mcp tools", () => {
     expect(text).toContain("local_ydb_status_report");
     expect(text).toContain("local_ydb_generate_schema with validate=true");
     expect(text).toContain("local_ydb_apply_schema action=validate");
-    expect(text).toContain("action=apply with confirm=false");
-    expect(text).toContain("confirm=true only after");
+    expect(text).toContain("action=apply without confirm first");
+    expect(text).toContain("plan response's confirmation.token");
+    expect(text).toContain("confirmationToken request argument");
     expect(text).toContain("with.STORE");
     expect(text).toContain("partitionByHash only with store: \"column\" and primaryKey columns");
     expect(text).toContain("vector_kmeans_tree");
@@ -1202,13 +1216,39 @@ describe("mcp tools", () => {
     expect(result.plannedCommands.length).toBeGreaterThan(0);
   });
 
+  it("exposes confirmationToken on all 23 mutating tools and no read-only tools", () => {
+    const mutating = localYdbTools.filter((tool) => tool.annotations?.readOnlyHint === false);
+    const readOnly = localYdbTools.filter((tool) => tool.annotations?.readOnlyHint === true);
+
+    expect(mutating).toHaveLength(23);
+    expect(readOnly).toHaveLength(16);
+    for (const tool of mutating) {
+      expect(tool.inputSchema.properties).toHaveProperty("confirmationToken");
+      const properties = tool.inputSchema.properties as Record<
+        string,
+        { description?: string }
+      > | undefined;
+      const confirmDescription = properties?.confirm?.description;
+      const tokenDescription = properties?.confirmationToken?.description;
+      expect(confirmDescription, `${tool.name}.confirm`).toContain("confirmation.token");
+      expect(confirmDescription, `${tool.name}.confirm`).toContain("confirmationToken request argument");
+      expect(confirmDescription, `${tool.name}.confirm`).not.toContain("plan's confirmationToken");
+      expect(tokenDescription, `${tool.name}.confirmationToken`).toContain("confirmation.token");
+      expect(tokenDescription, `${tool.name}.confirmationToken`).toContain("confirmationToken request argument");
+    }
+    for (const tool of readOnly) {
+      expect(tool.inputSchema.properties).not.toHaveProperty("confirmationToken");
+    }
+  });
+
   it("keeps topology tool input keys stable while documenting dynamic-node defaults", () => {
     const expectedSchemas: Record<string, string[]> = {
-      local_ydb_bootstrap: ["configPath", "confirm", "profile"],
-      local_ydb_restart_stack: ["configPath", "confirm", "profile"],
+      local_ydb_bootstrap: ["configPath", "confirm", "confirmationToken", "profile"],
+      local_ydb_restart_stack: ["configPath", "confirm", "confirmationToken", "profile"],
       local_ydb_add_dynamic_nodes: [
         "configPath",
         "confirm",
+        "confirmationToken",
         "count",
         "grpcPortStart",
         "icPortStart",
@@ -1219,6 +1259,7 @@ describe("mcp tools", () => {
       local_ydb_remove_dynamic_nodes: [
         "configPath",
         "confirm",
+        "confirmationToken",
         "containers",
         "count",
         "nodeIds",
@@ -1248,6 +1289,7 @@ describe("mcp tools", () => {
     const startTool = localYdbTools.find((tool) => tool.name === "local_ydb_start_dynamic_node");
     const reduceTool = localYdbTools.find((tool) => tool.name === "local_ydb_reduce_storage_groups");
     const upgradeTool = localYdbTools.find((tool) => tool.name === "local_ydb_upgrade_version");
+    const destroyTool = localYdbTools.find((tool) => tool.name === "local_ydb_destroy_stack");
     expect(bootstrapTool?.description).toContain("stable by container ID and RestartCount across two checks");
     expect(bootstrapTool?.description).toContain("every configured dynamic gRPC port");
     expect(bootstrapTool?.description).toContain("configured container names must be distinct from the static container");
@@ -1261,12 +1303,21 @@ describe("mcp tools", () => {
     expect(restartTool?.description).toContain("configured binding changes require destroy followed by bootstrap");
     expect(restartTool?.description).toContain("exact Docker container to be stably running plus registered by IC port");
     expect(restartTool?.description).toContain("including containers observed restarting");
+    expect(restartTool?.description).toContain("bound to its full inspected Docker ID for both stop and recovery");
+    expect(restartTool?.description).toContain("same-name replacement is rejected and left untouched");
     expect(restartTool?.description).toContain("rollback uses restart or bootstrap reconciliation");
+    expect(destroyTool?.description).toContain("bound to its exact inspected Docker container ID");
+    expect(destroyTool?.description).toContain("same-name replacement after confirmation is rejected and preserved");
     expect(authTool?.description).toContain("before any config or container mutation");
     expect(authTool?.description).toContain("even when no dynamic-node token file is configured");
     expect(authTool?.description).toContain("rollback uses restart or bootstrap reconciliation");
     expect(reduceTool?.description).toContain("preserves its exact gRPC, monitoring, and IC ports");
+    expect(upgradeTool?.description).toContain("binds the target tag to its resolved Docker image ID");
+    expect(upgradeTool?.description).toContain("rechecks it immediately before teardown");
+    expect(upgradeTool?.description).toContain("creates the replacement static container stopped");
+    expect(upgradeTool?.description).toContain("verifies final container image IDs as well as tags");
     expect(upgradeTool?.description).toContain("preserves its exact gRPC, monitoring, and IC ports");
+    expect(upgradeTool?.description).toContain("never updated automatically");
 
     const removeTool = localYdbTools.find((tool) => tool.name === "local_ydb_remove_dynamic_nodes");
     const removeStartIndex = removeTool?.inputSchema.properties?.startIndex as { description?: string } | undefined;
@@ -1501,14 +1552,20 @@ describe("mcp tools", () => {
         version: "26.1.2.0"
       }, {
         executor: new RecordingExecutor()
-      }) as { executed: boolean; profileImageUpdate?: { configPath: string; ok: boolean }; plannedCommands: string[] };
+      }) as {
+        executed: boolean;
+        profileImageUpdate?: { configPath: string; ok: boolean };
+        plannedCommands: string[];
+        verification: string[];
+      };
 
       expect(result.executed).toBe(false);
       expect(result.profileImageUpdate).toMatchObject({
         configPath,
         ok: false
       });
-      expect(result.plannedCommands.join("\n")).toContain(`update ${configPath}: profiles.default.image`);
+      expect(result.plannedCommands.join("\n")).not.toContain("profiles.default.image");
+      expect(result.verification.join("\n")).toContain(`manually set profiles.default.image in ${configPath}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2567,6 +2624,7 @@ describe("mcp tools", () => {
     expect(server._instructions).toContain("local_ydb_check_prerequisites");
     expect(server._instructions).toContain("local_ydb_status_report");
     expect(server._instructions).toContain("PENDING_RESOURCES");
+    expect(server._instructions).toContain("never updates the config automatically");
   });
 
   it("declares tools and list-change-aware prompts capabilities", () => {

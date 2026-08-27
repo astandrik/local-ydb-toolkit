@@ -17,7 +17,9 @@ describe("security policy", () => {
     expect(securityPolicy).toContain("Docker daemon");
     expect(securityPolicy).toContain("SSH");
     expect(securityPolicy).toContain("YDB CLI");
-    expect(securityPolicy).toContain("application-level approval gate");
+    expect(securityPolicy).toContain("process-bound, one-time HMAC token");
+    expect(securityPolicy).toContain("must not log or persist tokens");
+    expect(securityPolicy).toContain("application-level gate");
     expect(securityPolicy).toContain("not an operating-system sandbox");
     expect(securityPolicy).toContain("local, development, and test environments");
   });

@@ -1,5 +1,16 @@
 import { bash, shellQuote } from "../api-client.js";
-import { createTenantSpec, helperContainer, ydbAuthArgs, ydbCli } from "./commands.js";
+import { redactText } from "../auth.js";
+import type { ConfirmationContentInput } from "../confirmation-inputs.js";
+import { confirmationScopedId } from "../confirmation.js";
+import {
+  createTenantSpec,
+  helperContainer,
+  restoreContainerFromConfirmedSnapshot,
+  restoreContainerFromPreparedSnapshot,
+  type PreparedRestoreSnapshot,
+  ydbAuthArgs,
+  ydbCli,
+} from "./commands.js";
 import { planOnly, runMutating } from "./execution.js";
 import type {
   DumpTenantOptions,
@@ -63,8 +74,20 @@ export async function listDumps(ctx: ToolkitContext): Promise<ListDumpsResponse>
 }
 
 export async function dumpTenant(ctx: ToolkitContext, options: DumpTenantOptions = {}): Promise<DumpTenantResponse> {
-  const dumpName = normalizeDumpName(options.dumpName ?? defaultDumpName(ctx));
   const path = normalizeYdbRelativePath(options.path ?? DEFAULT_YDB_DUMP_PATH);
+  // Keep an omitted name stable across plan/confirm, then rotate it as soon as
+  // that plan token is consumed so retries cannot target the previous dump.
+  const confirmationScope = !options.dumpName && ctx.confirmation
+    ? { kind: "auto-dump-name", path }
+    : undefined;
+  const scopedId = confirmationScope
+    ? confirmationScopedId(ctx, confirmationScope)
+    : undefined;
+  const dumpName = normalizeDumpName(options.dumpName ?? (
+    scopedId
+      ? confirmedDefaultDumpName(ctx, scopedId)
+      : defaultDumpName(ctx)
+  ));
   const sourcePath = resolveTenantRelativePath(ctx.profile.tenantPath, path);
   const dumpPath = `${ctx.profile.dumpHostPath}/${dumpName}`;
   const specs = [
@@ -76,7 +99,8 @@ export async function dumpTenant(ctx: ToolkitContext, options: DumpTenantOptions
     risk: "medium",
     specs,
     rollback: [`rm -rf ${shellQuote(dumpPath)}`],
-    verification: [`test -d ${shellQuote(`${dumpPath}/tenant`)}`]
+    verification: [`test -d ${shellQuote(`${dumpPath}/tenant`)}`],
+    confirmationScope,
   }, options);
   return {
     ...response,
@@ -87,10 +111,14 @@ export async function dumpTenant(ctx: ToolkitContext, options: DumpTenantOptions
   };
 }
 
-export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantOptions = {}): Promise<RestoreTenantResponse> {
+export async function restoreTenant(
+  ctx: ToolkitContext,
+  options: RestoreTenantOptions = {},
+  preparedSnapshot?: PreparedRestoreSnapshot,
+): Promise<RestoreTenantResponse> {
   if (!options.dumpName) {
     return {
-      ...planOnly(ctx, "Restore requires dumpName.", "high", [], ["No changes."], ["Provide dumpName and rerun."]),
+      ...planOnly(ctx, "Restore requires dumpName.", "high", [], ["No changes."], ["Provide dumpName and rerun."], options),
       verificationHooks: []
     };
   }
@@ -98,11 +126,26 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
   const path = normalizeYdbRelativePath(options.path ?? DEFAULT_YDB_DUMP_PATH);
   const targetPath = resolveTenantRelativePath(ctx.profile.tenantPath, path);
   const verificationHooks = restoreVerificationHooks(ctx, options);
+  const restoreInput: ConfirmationContentInput = {
+    kind: "directory",
+    path: `${ctx.profile.dumpHostPath}/${dumpName}/tenant`,
+    role: "restore-dump",
+  };
   const response = await runMutating(ctx, {
     summary: `Restore ${targetPath} from ${ctx.profile.dumpHostPath}/${dumpName}.`,
     risk: "high",
     specs: [
-      helperContainer(ctx.profile, `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools restore -p ${shellQuote(path)} -i ${shellQuote(`/dump/${dumpName}/tenant`)}`),
+      preparedSnapshot
+        ? restoreContainerFromPreparedSnapshot(
+            ctx.profile,
+            preparedSnapshot,
+            `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools restore -p ${shellQuote(path)} -i /dump/confirmed`,
+          )
+        : restoreContainerFromConfirmedSnapshot(
+            ctx.profile,
+            restoreInput,
+            `/ydb -e grpc://localhost:${ctx.profile.ports.dynamicGrpc} -d ${shellQuote(ctx.profile.tenantPath)} ${ydbAuthArgs(ctx.profile)} tools restore -p ${shellQuote(path)} -i /dump/confirmed`,
+          ),
       ...verificationHooks.map((hook) => hook.spec)
     ],
     rollback: ["Restore from a previous dump or restart the previous volume/container set."],
@@ -110,10 +153,22 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
       `scheme ls ${ctx.profile.tenantPath}`,
       "small table reads succeed",
       ...verificationHooks.map((hook) => hook.description)
-    ]
+    ],
+    confirmationInputs: preparedSnapshot ? [] : [restoreInput],
   }, options);
+  const safeResponse = preparedSnapshot && response.results
+    ? {
+        ...response,
+        results: response.results.map((result) => ({
+          ...result,
+          command: redactText(result.command, [preparedSnapshot.path, preparedSnapshot.sha256]),
+          stdout: redactText(result.stdout, [preparedSnapshot.path, preparedSnapshot.sha256]),
+          stderr: redactText(result.stderr, [preparedSnapshot.path, preparedSnapshot.sha256]),
+        })),
+      }
+    : response;
   return {
-    ...response,
+    ...safeResponse,
     dumpName,
     path,
     targetPath,
@@ -128,6 +183,11 @@ export async function restoreTenant(ctx: ToolkitContext, options: RestoreTenantO
 
 function defaultDumpName(ctx: ToolkitContext): string {
   return `${ctx.profile.tenantPath.split("/").pop() ?? "tenant"}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+}
+
+function confirmedDefaultDumpName(ctx: ToolkitContext, scopedId: string): string {
+  const tenant = ctx.profile.tenantPath.split("/").pop() ?? "tenant";
+  return `${tenant}-auto-${scopedId}`;
 }
 
 function parseDumpNames(stdout: string): string[] {

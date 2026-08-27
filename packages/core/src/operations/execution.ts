@@ -1,32 +1,77 @@
 import type { CommandResult, CommandSpec } from "../api-client.js";
+import { withAuthorizedContentExecution } from "../confirmed-content.js";
+import type { ConfirmationContentInput } from "../confirmation-inputs.js";
+import {
+  attachConfirmation,
+  attachNotRequiredConfirmation,
+  authorizeMutation,
+  commandPlanIntent,
+  confirmationSummarySuffix,
+  retireSubmittedConfirmation,
+} from "../confirmation.js";
 import type { MutatingOptions, OperationPlan, OperationResponse, ToolkitContext } from "./types.js";
 
 export async function runMutating(
   ctx: ToolkitContext,
-  plan: { summary: string; risk: OperationPlan["risk"]; specs: CommandSpec[]; rollback: string[]; verification: string[] },
+  plan: {
+    summary: string;
+    risk: OperationPlan["risk"];
+    specs: CommandSpec[];
+    rollback: string[];
+    verification: string[];
+    confirmationInputs?: ConfirmationContentInput[];
+    confirmationScope?: unknown;
+  },
   options: MutatingOptions
 ): Promise<OperationResponse> {
   const plannedCommands = plan.specs.map((spec) => ctx.client.display(spec));
-  if (!options.confirm) {
-    return {
-      summary: `${plan.summary} Not executed because confirm=true was not provided.`,
+  if (plan.specs.length === 0) {
+    retireSubmittedConfirmation(ctx, options);
+    return attachNotRequiredConfirmation(ctx, {
+      summary: plan.summary,
       executed: false,
       risk: plan.risk,
       plannedCommands,
       rollback: plan.rollback,
       verification: plan.verification
-    };
+    });
   }
-  const results = await runCommandSpecs(ctx, plan.specs);
-  return {
-    summary: `${plan.summary} Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
-    executed: true,
-    risk: plan.risk,
-    plannedCommands,
-    rollback: plan.rollback,
-    verification: plan.verification,
-    results
-  };
+  const decision = await authorizeMutation(
+    ctx,
+    options,
+    commandPlanIntent(plan),
+    {
+      contentInputs: plan.confirmationInputs,
+      rotatingScope: plan.confirmationScope,
+    },
+  );
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${plan.summary}${confirmationSummarySuffix(decision.confirmation)}`,
+      executed: false,
+      risk: plan.risk,
+      plannedCommands,
+      rollback: plan.rollback,
+      verification: plan.verification
+    }, decision.confirmation);
+  }
+  return withAuthorizedContentExecution(
+    ctx,
+    decision.receipt,
+    plan.specs,
+    async (executionContext) => {
+      const results = await runCommandSpecs(executionContext, plan.specs);
+      return attachConfirmation({
+        summary: `${plan.summary} Executed ${results.filter((result) => result.ok).length}/${results.length} commands.`,
+        executed: true,
+        risk: plan.risk,
+        plannedCommands,
+        rollback: plan.rollback,
+        verification: plan.verification,
+        results
+      }, decision.confirmation);
+    },
+  );
 }
 
 export async function runCommandSpecs(ctx: ToolkitContext, specs: CommandSpec[]): Promise<CommandResult[]> {
@@ -39,6 +84,17 @@ export async function runCommandSpecs(ctx: ToolkitContext, specs: CommandSpec[])
     }
   }
   return results;
+}
+
+export function appendOperationResultsAndCheckSuccess(
+  results: CommandResult[],
+  response: { results?: CommandResult[] },
+): boolean {
+  if (!response.results) {
+    return true;
+  }
+  results.push(...response.results);
+  return response.results.every((result) => result.ok);
 }
 
 export function normalizeExpectedYdbResult(spec: CommandSpec, result: CommandResult): CommandResult {
@@ -74,14 +130,16 @@ export function planOnly(
   risk: OperationPlan["risk"],
   specs: CommandSpec[],
   rollback: string[],
-  verification: string[]
+  verification: string[],
+  options: MutatingOptions,
 ): OperationResponse {
-  return {
+  retireSubmittedConfirmation(ctx, options);
+  return attachNotRequiredConfirmation(ctx, {
     summary,
     executed: false,
     risk,
     plannedCommands: specs.map((spec) => ctx.client.display(spec)),
     rollback,
     verification
-  };
+  });
 }

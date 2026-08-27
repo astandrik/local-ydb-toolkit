@@ -1,4 +1,5 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +13,7 @@ import {
   cleanupStorage,
   commandToShell,
   createContext,
+  createContext as createToolkitContext,
   createTenant,
   destroyStack,
   dumpTenant,
@@ -22,6 +24,7 @@ import {
   prepareAuthConfig,
   pullImage,
   pullImageStatus,
+  ProcessConfirmationStore,
   redactCommand,
   reduceStorageGroups,
   removeDynamicNodes,
@@ -41,6 +44,7 @@ import {
   type ResolvedLocalYdbProfile
 } from "../src/index.js";
 import { ConfigSchema } from "../src/validation.js";
+import { withConfiguredContainerIds } from "./fixtures/stack-identities.js";
 
 const STABLE_DYNAMIC_CONTAINER_STATE = "container-id\ttrue\tfalse\t0";
 
@@ -56,14 +60,44 @@ function commandResult(command: string, overrides: Partial<CommandResult> = {}):
   };
 }
 
+function runSpecSynchronously(
+  executor: CommandExecutor,
+  profile: ResolvedLocalYdbProfile,
+  spec: CommandSpec,
+): CommandResult {
+  const completed = spawnSync(spec.command, spec.args ?? [], {
+    encoding: "utf8",
+    input: spec.stdin,
+    timeout: spec.timeoutMs,
+  });
+  return {
+    command: executor.display(profile, spec),
+    exitCode: completed.status,
+    stdout: completed.stdout ?? "",
+    stderr: completed.stderr ?? completed.error?.message ?? "",
+    ok: completed.status === 0 && !completed.error,
+    timedOut: completed.error?.name === "TimeoutError",
+  };
+}
+
 class RecordingExecutor implements CommandExecutor {
   readonly commands: string[] = [];
+  private readonly shell = new ShellCommandExecutor();
 
   display(_profile: ResolvedLocalYdbProfile, spec: CommandSpec): string {
     return commandToShell(spec);
   }
 
   async run(profile: ResolvedLocalYdbProfile, spec: CommandSpec): Promise<CommandResult> {
+    if (spec.description?.startsWith("Fingerprint ")) {
+      return this.shell.run(profile, spec);
+    }
+    if (
+      spec.description === "Prepare confirmed content snapshots"
+      || spec.description === "Remove confirmed content snapshots"
+    ) {
+      return commandResult(this.display(profile, spec));
+    }
     const command = this.display(profile, spec);
     this.commands.push(command);
     return {
@@ -78,6 +112,8 @@ class RecordingExecutor implements CommandExecutor {
 }
 
 class DeferredImagePullExecutor implements CommandExecutor {
+  imagePresent = false;
+  pullCalls = 0;
   private outputObserver: CommandOutputObserver | undefined;
   private resolvePull: ((result: CommandResult) => void) | undefined;
   private pullCommand = "";
@@ -93,9 +129,12 @@ class DeferredImagePullExecutor implements CommandExecutor {
   ): Promise<CommandResult> {
     const command = this.display(profile, spec);
     if (command.startsWith("docker image inspect ")) {
-      return Promise.resolve(commandResult(command, { exitCode: 1, ok: false }));
+      return Promise.resolve(commandResult(command, this.imagePresent
+        ? {}
+        : { exitCode: 1, ok: false }));
     }
     if (command.startsWith("docker pull ")) {
+      this.pullCalls += 1;
       this.pullCommand = command;
       this.outputObserver = outputObserver;
       return new Promise((resolve) => {
@@ -164,6 +203,27 @@ function createTempExecutableDir(files: Record<string, string>): { path: string;
   return {
     path,
     cleanup: () => rmSync(path, { recursive: true, force: true })
+  };
+}
+
+function createTempAuthArtifacts(): {
+  authConfigPath: string;
+  dynamicNodeAuthTokenFile: string;
+  rootPasswordFile: string;
+  cleanup: () => void;
+} {
+  const directory = mkdtempSync(join(tmpdir(), "local-ydb-auth-test-"));
+  const authConfigPath = join(directory, "config.auth.yaml");
+  const dynamicNodeAuthTokenFile = join(directory, "dynamic-node-auth.pb");
+  const rootPasswordFile = join(directory, "root.password");
+  writeFileSync(authConfigPath, "domains_config: {}\n", { mode: 0o600 });
+  writeFileSync(dynamicNodeAuthTokenFile, "StaffApiUserToken: \"root@builtin\"\n", { mode: 0o600 });
+  writeFileSync(rootPasswordFile, "test-password\n", { mode: 0o600 });
+  return {
+    authConfigPath,
+    dynamicNodeAuthTokenFile,
+    rootPasswordFile,
+    cleanup: () => rmSync(directory, { recursive: true, force: true }),
   };
 }
 
@@ -1102,6 +1162,10 @@ describe("read-only checks", () => {
 });
 
 describe("mutating operations", () => {
+  function createContext(...args: Parameters<typeof createToolkitContext>) {
+    const [profile, executor, config, configPath] = args;
+    return createToolkitContext(profile, executor && withConfiguredContainerIds(executor), config, configPath);
+  }
   it("keeps a missing Docker CLI in missing rather than unavailable prerequisites", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -1391,7 +1455,40 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("docker pull ghcr.io/ydb-platform/local-ydb:25.4");
   });
 
-  it("uses the default stable image when a pull image is omitted", async () => {
+  it("starts a background pull only with its current exact-plan token", async () => {
+    const executor = new DeferredImagePullExecutor();
+    const context = createContext(undefined, executor, ConfigSchema.parse({}));
+    const ctx = {
+      ...context,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_pull_image",
+        configSource: { kind: "provided", config: context.config },
+      },
+    };
+    const request = { image: "ghcr.io/ydb-platform/local-ydb:exact-pull" };
+
+    const planned = await pullImage(ctx, request);
+    const accepted = await pullImage(ctx, {
+      ...request,
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(planned).toMatchObject({
+      executed: false,
+      status: "planned",
+      confirmation: { status: "planned", token: expect.any(String) },
+    });
+    expect(accepted).toMatchObject({
+      executed: true,
+      status: "running",
+      confirmation: { status: "accepted" },
+    });
+    executor.finish(true);
+  });
+
+  it("uses the default stable image without starting a pull job when it is already present", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
     const response = await pullImage(ctx, { confirm: true });
@@ -1399,6 +1496,83 @@ describe("mutating operations", () => {
     expect(response.status).toBe("already-present");
     expect(response.jobId).toBeUndefined();
     expect(executor.commands).toEqual(["docker image inspect ghcr.io/ydb-platform/local-ydb:stable-26-1-1"]);
+  });
+
+  it("retires a submitted pull token when the image becomes already present", async () => {
+    const executor = new DeferredImagePullExecutor();
+    const config = ConfigSchema.parse({});
+    const context = createContext(undefined, executor, config);
+    const ctx = {
+      ...context,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_pull_image",
+        configSource: { kind: "provided" as const, config },
+      },
+    };
+    const request = { image: "ghcr.io/ydb-platform/local-ydb:retired-pull" };
+    const planned = await pullImage(ctx, request);
+
+    executor.imagePresent = true;
+    const noOp = await pullImage(ctx, {
+      ...request,
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    executor.imagePresent = false;
+    const replay = await pullImage(ctx, {
+      ...request,
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(noOp).toMatchObject({
+      status: "already-present",
+      confirmation: { status: "not-required" },
+    });
+    expect(replay).toMatchObject({
+      executed: false,
+      status: "planned",
+      confirmation: { status: "rejected" },
+    });
+    expect(executor.pullCalls).toBe(0);
+  });
+
+  it("retires only same-process image capabilities on the already-present path", async () => {
+    const executor = new DeferredImagePullExecutor();
+    executor.imagePresent = true;
+    const config = ConfigSchema.parse({});
+    const store = new ProcessConfirmationStore();
+    const foreignStore = new ProcessConfirmationStore();
+    const context = createContext(undefined, executor, config);
+    const ctx = {
+      ...context,
+      confirmation: {
+        store,
+        toolName: "local_ydb_pull_image",
+        configSource: { kind: "provided" as const, config },
+      },
+    };
+    const wrongIntent = { kind: "different-tool-intent" };
+    const foreignIntent = { kind: "pre-restart-intent" };
+    const wrongToolToken = store.issue(wrongIntent);
+    const foreignToken = foreignStore.issue(foreignIntent);
+
+    for (const confirmationToken of [undefined, "malformed", foreignToken, wrongToolToken]) {
+      expect(await pullImage(ctx, {
+        image: "ghcr.io/ydb-platform/local-ydb:already-present-controls",
+        confirm: true,
+        confirmationToken,
+      })).toMatchObject({
+        status: "already-present",
+        confirmation: { status: "not-required" },
+      });
+    }
+
+    expect(store.consume(wrongToolToken, wrongIntent)).toBe(false);
+    expect(foreignStore.consume(foreignToken, foreignIntent)).toBe(true);
+    expect(executor.pullCalls).toBe(0);
   });
 
   it("reports unknown image pull jobs without throwing", () => {
@@ -1561,6 +1735,51 @@ describe("mutating operations", () => {
     expect(response.manualActions.some((item) => item.includes("local_ydb_prepare_auth_config"))).toBe(true);
     expect(response.plannedCommands.join("\n")).toContain("sudo -n apt-get install -y curl ruby");
     expect(JSON.stringify(response)).not.toContain("/tmp/local-ydb-auth/root.password");
+  });
+
+  it("retires a prerequisite token when the install becomes unnecessary", async () => {
+    const executor = new RecordingExecutor();
+    const config = ConfigSchema.parse({});
+    const context = createContext(undefined, executor, config);
+    const ctx = {
+      ...context,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_check_prerequisites",
+        configSource: { kind: "provided" as const, config },
+      },
+    };
+    let curlPresent = false;
+    let installCalls = 0;
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      if (spec.description === "Check curl availability") {
+        return commandResult(command, curlPresent ? {} : { ok: false, exitCode: 1 });
+      }
+      if (
+        spec.description === "Update apt package index"
+        || spec.description === "Install missing prerequisite packages"
+      ) {
+        installCalls += 1;
+      }
+      return commandResult(command);
+    };
+
+    const planned = await checkPrerequisites(ctx);
+    curlPresent = true;
+    const noOp = await checkPrerequisites(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+    curlPresent = false;
+    const replay = await checkPrerequisites(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(noOp.confirmation).toEqual({ status: "not-required" });
+    expect(replay.confirmation?.status).toBe("rejected");
+    expect(installCalls).toBe(0);
   });
 
   it("installs supported prerequisite packages when confirm=true", async () => {
@@ -1973,14 +2192,19 @@ describe("mutating operations", () => {
     });
     expect(response.summary).toContain("Restore /local/example/restore-root");
     expect(response.plannedCommands).toHaveLength(3);
-    expect(response.plannedCommands[0]).toContain("tools restore -p restore-root -i /dump/mcp-smoke/tenant");
+    expect(response.plannedCommands[0]).toContain("tools restore -p restore-root -i /dump/confirmed");
     expect(response.plannedCommands[1]).toContain("scheme describe /local/example/restore-root/table");
     expect(response.plannedCommands[2]).toContain("sql -s 'SELECT COUNT(*) AS rows FROM `restore-root/table`;'");
   });
 
   it("executes restore verification hooks after the restore command", async () => {
     const executor = new RecordingExecutor();
-    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const dumpRoot = mkdtempSync(join(tmpdir(), "local-ydb-restore-test-"));
+    mkdirSync(join(dumpRoot, "mcp-smoke", "tenant"), { recursive: true });
+    writeFileSync(join(dumpRoot, "mcp-smoke", "tenant", "data.csv"), "1,test\n", "utf8");
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: { default: { dumpHostPath: dumpRoot } },
+    }));
     const response = await restoreTenant(ctx, {
       confirm: true,
       dumpName: "mcp-smoke",
@@ -1990,9 +2214,11 @@ describe("mutating operations", () => {
 
     expect(response.executed).toBe(true);
     expect(executor.commands).toHaveLength(3);
-    expect(executor.commands[0]).toContain("tools restore -p . -i /dump/mcp-smoke/tenant");
+    expect(executor.commands[0]).toContain("tools restore -p . -i /dump/confirmed");
+    expect(executor.commands[0]).toContain(":/dump/confirmed:ro");
     expect(executor.commands[1]).toContain("scheme describe /local/example/table");
     expect(executor.commands[2]).toContain("sql -s 'SELECT COUNT(*) FROM `table`;'");
+    rmSync(dumpRoot, { recursive: true, force: true });
   });
 
   it("rejects count query set operations", async () => {
@@ -2093,6 +2319,13 @@ describe("mutating operations", () => {
 
   it("checks static compatibility before planning any restart mutation", async () => {
     const executor = new RecordingExecutor();
+    const originalRun = executor.run.bind(executor);
+    executor.run = async (profile, spec) => {
+      const result = await originalRun(profile, spec);
+      return spec.command === "docker" && spec.args?.[0] === "ps"
+        ? { ...result, stdout: '{"Names":"ydb-local","State":"running","ID":"reviewed-static"}\n{"Names":"ydb-dyn-example","State":"running","ID":"reviewed-primary"}' }
+        : result;
+    };
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
       profiles: { default: { dynamicNodeCount: 3 } }
     }));
@@ -2132,6 +2365,11 @@ describe("mutating operations", () => {
             '{"Names":"ydb-dyn-example","State":"running","ID":"primary-id"}',
             '{"Names":"ydb-dyn-example-4","State":"running","ID":"one-off-id"}'
           ].join("\n")
+        });
+      }
+      if (command.startsWith("docker inspect ydb-dyn-example-4")) {
+        return commandResult(command, {
+          stdout: '[{"Id":"one-off-id","Name":"/ydb-dyn-example-4"}]'
         });
       }
       if (command.includes("docker rm -f ydb-dyn-example")) {
@@ -2178,7 +2416,14 @@ describe("mutating operations", () => {
         };
       }
       if (command.startsWith("docker inspect ")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Id":"one-off-4-id","Name":"/ydb-dyn-example-4"}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
       }
       return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
     };
@@ -2188,14 +2433,90 @@ describe("mutating operations", () => {
 
     expect(response.missingDynamicContainers).toEqual(["ydb-dyn-example-2"]);
     expect(response.unexpectedDynamicContainers).toEqual(["ydb-dyn-example-4", "ydb-dyn-example-5"]);
-    expect(plan).toContain("docker stop ydb-dyn-example-4");
-    expect(plan).toContain("docker start ydb-dyn-example-4");
+    expect(plan).toContain("expected_id=one-off-4-id");
+    expect(plan).toContain("docker inspect --format");
+    expect(plan).toContain("docker stop \"$expected_id\"");
+    expect(plan).toContain("docker start \"$expected_id\"");
     expect(plan).not.toContain("docker start ydb-dyn-example-5");
     expect(plan).not.toMatch(/docker rm -f ydb-dyn-example-4(?:\s|$)/);
     expect(plan).not.toMatch(/docker rm -f ydb-dyn-example-5(?:\s|$)/);
     expect(response.rollback.join("\n")).toMatch(/local_ydb_(restart_stack|bootstrap)/);
     expect(response.rollback.join("\n")).not.toContain("configured container definitions captured by local_ydb_inventory");
-    expect(response.rollback).toContain("docker start ydb-dyn-example-4");
+    expect(response.rollback).toContain("docker start one-off-4-id");
+  });
+
+  it("rejects a restart token after a running unexpected container is replaced", async () => {
+    let unexpectedId = "reviewed-unexpected-id";
+    let unexpectedStopCalls = 0;
+    const executor = new RecordingExecutor();
+    const baseCtx = createContext(undefined, executor, ConfigSchema.parse({}));
+    const ctx = {
+      ...baseCtx,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_restart_stack",
+        configSource: { kind: "provided" as const, config: ConfigSchema.parse({}) }
+      }
+    };
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local","State":"running","ID":"static-id"}',
+            '{"Names":"ydb-dyn-example","State":"running","ID":"primary-id"}',
+            JSON.stringify({ Names: "ydb-dyn-example-2", State: "running", ID: unexpectedId })
+          ].join("\n")
+        });
+      }
+      if (command.startsWith("docker inspect ydb-dyn-example-2")) {
+        return commandResult(command, {
+          stdout: JSON.stringify([{ Id: unexpectedId, Name: "/ydb-dyn-example-2" }])
+        });
+      }
+      if (command.includes("docker stop") && command.includes("ydb-dyn-example-2")) {
+        unexpectedStopCalls += 1;
+      }
+      return commandResult(command);
+    };
+
+    const planned = await restartStack(ctx, {});
+    unexpectedId = "replacement-unexpected-id";
+    const confirmed = await restartStack(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token
+    });
+
+    expect(confirmed.confirmation?.status).toBe("rejected");
+    expect(unexpectedStopCalls).toBe(0);
+  });
+
+  it("rejects restart planning when a running unexpected container identity is unavailable", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (command.includes("docker ps -a --format")) {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local","State":"running"}',
+            '{"Names":"ydb-dyn-example","State":"running"}',
+            '{"Names":"ydb-dyn-example-2","State":"running"}'
+          ].join("\n")
+        });
+      }
+      if (command.startsWith("docker inspect ydb-dyn-example-2")) {
+        return commandResult(command, { stdout: "[]" });
+      }
+      return commandResult(command);
+    };
+
+    await expect(restartStack(ctx, {})).rejects.toThrow(
+      "Could not inspect exact Docker identity for unexpected dynamic node ydb-dyn-example-2 before restart."
+    );
+    expect(executor.commands.some((command) => command.includes("docker stop"))).toBe(false);
   });
 
   it("recreates a configured container found restarting during restart preflight", async () => {
@@ -2218,10 +2539,10 @@ describe("mutating operations", () => {
           ].join("\n")
         });
       }
-      if (command.includes("docker stop ydb-dyn-example-2")) {
+      if (command.includes('docker stop "$expected_id"') && command.includes("expected_id=reviewed-ydb-dyn-example-2-id")) {
         nodeTwoStopped = true;
       }
-      if (command.includes("docker rm -f ydb-dyn-example-2")) {
+      if (command.includes('docker rm -f "$expected_id"') && command.includes("expected_id=reviewed-ydb-dyn-example-2-id")) {
         nodeTwoRecreated = nodeTwoStopped || !command.includes(".State.Running");
       }
       if (command.includes("{{.RestartCount}}")) {
@@ -2243,13 +2564,16 @@ describe("mutating operations", () => {
 
     const planOnly = await restartStack(ctx, {});
     const nodeTwoPlan = planOnly.plannedCommands.find((command) => command.includes("--name ydb-dyn-example-2"));
-    expect(nodeTwoPlan).toContain("docker rm -f ydb-dyn-example-2");
+    expect(nodeTwoPlan).toContain("expected_id=reviewed-ydb-dyn-example-2-id");
+    expect(nodeTwoPlan).toContain('docker rm -f "$expected_id"');
+    expect(nodeTwoPlan).not.toContain("docker rm -f ydb-dyn-example-2");
     expect(nodeTwoPlan).not.toContain(".State.Running");
 
     const pending = restartStack(ctx, { confirm: true });
     await vi.runAllTimersAsync();
     const response = await pending;
 
+    expect(nodeTwoStopped).toBe(true);
     expect(nodeTwoRecreated).toBe(true);
     expect(response.summary).toContain("verified 2/2 configured dynamic nodes");
   });
@@ -2279,7 +2603,14 @@ describe("mutating operations", () => {
         return { command, exitCode: 0, stdout: STABLE_DYNAMIC_CONTAINER_STATE, stderr: "", ok: true, timedOut: false };
       }
       if (command.startsWith("docker inspect ")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+        return {
+          command,
+          exitCode: 0,
+          stdout: '[{"Id":"running-extra","Name":"/ydb-dyn-example-2"}]',
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
       }
       if (command.includes("viewer/json/nodelist")) {
         return { command, exitCode: 0, stdout: '[{"Port":19002}]', stderr: "", ok: true, timedOut: false };
@@ -2289,19 +2620,29 @@ describe("mutating operations", () => {
 
     const response = await withRunTimers(() => restartStack(ctx, { confirm: true }));
     const commands = executor.commands.join("\n");
+    const unexpectedStop = executor.commands.findIndex((command) => (
+      command.includes("docker stop \"$expected_id\"") && command.includes("ydb-dyn-example-2")
+    ));
+    const configuredStop = executor.commands.findIndex((command) =>
+      command.includes('docker stop "$expected_id"') && command.includes("expected_id=reviewed-ydb-dyn-example-id"));
     const configuredStart = executor.commands.findIndex((command) => command.includes("--name ydb-dyn-example "));
-    const unexpectedStart = executor.commands.findIndex((command) => command.includes("docker start ydb-dyn-example-2"));
+    const unexpectedStart = executor.commands.findIndex((command) => (
+      command.includes("docker start") && command.includes("ydb-dyn-example-2")
+    ));
 
     expect(response.results?.every((result) => result.ok)).toBe(true);
-    expect(commands).toContain("docker stop ydb-dyn-example-2");
+    expect(commands).toContain("expected_id=running-extra");
+    expect(commands).toContain("docker stop \"$expected_id\"");
     expect(commands).not.toContain("docker stop ydb-dyn-example-3");
+    expect(unexpectedStop).toBeGreaterThan(-1);
+    expect(unexpectedStop).toBeLessThan(configuredStop);
     expect(unexpectedStart).toBeGreaterThan(configuredStart);
     expect(commands).not.toContain("docker start ydb-dyn-example-3");
     expect(commands).not.toMatch(/docker rm -f ydb-dyn-example-[23](?:\s|$)/);
   });
 
   it.each([
-    { phase: "base restart", failureCommand: "docker start ydb-local", error: "static start failed" },
+    { phase: "base restart", failureCommand: "Start reviewed static container", error: "static start failed" },
     { phase: "configured-node command", failureCommand: "--name ydb-dyn-example ", error: "configured start failed" }
   ])("restores a running unexpected container after a $phase failure", async ({ failureCommand, error }) => {
     const executor = new RecordingExecutor();
@@ -2323,7 +2664,12 @@ describe("mutating operations", () => {
           timedOut: false
         };
       }
-      if (command.includes(failureCommand)) {
+      if (command.startsWith("docker inspect ydb-dyn-example-2")) {
+        return commandResult(command, {
+          stdout: '[{"Id":"one-off-2","Name":"/ydb-dyn-example-2"}]'
+        });
+      }
+      if (command.includes(failureCommand) || spec.description === failureCommand) {
         return { command, exitCode: 1, stdout: "", stderr: error, ok: false, timedOut: false };
       }
       return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
@@ -2331,7 +2677,9 @@ describe("mutating operations", () => {
 
     const response = await restartStack(ctx, { confirm: true });
     const failureIndex = response.results?.findIndex((result) => result.stderr === error) ?? -1;
-    const recoveryIndex = response.results?.findIndex((result) => result.command.includes("docker start ydb-dyn-example-2")) ?? -1;
+    const recoveryIndex = response.results?.findIndex((result) => (
+      result.command.includes("docker start") && result.command.includes("ydb-dyn-example-2")
+    )) ?? -1;
 
     expect(failureIndex).toBeGreaterThan(-1);
     expect(recoveryIndex).toBeGreaterThan(failureIndex);
@@ -2359,6 +2707,11 @@ describe("mutating operations", () => {
           timedOut: false
         };
       }
+      if (command.startsWith("docker inspect ydb-dyn-example-2")) {
+        return commandResult(command, {
+          stdout: '[{"Id":"one-off-2","Name":"/ydb-dyn-example-2"}]'
+        });
+      }
       if (command.includes("{{.RestartCount}}")) {
         return {
           command,
@@ -2376,7 +2729,9 @@ describe("mutating operations", () => {
     await vi.runAllTimersAsync();
     const response = await pending;
     const failureIndex = response.results?.findIndex((result) => result.command.includes("verify dynamic node")) ?? -1;
-    const recoveryIndex = response.results?.findIndex((result) => result.command.includes("docker start ydb-dyn-example-2")) ?? -1;
+    const recoveryIndex = response.results?.findIndex((result) => (
+      result.command.includes("docker start") && result.command.includes("ydb-dyn-example-2")
+    )) ?? -1;
 
     expect(response.results?.[failureIndex]).toMatchObject({ ok: false });
     expect(response.results?.[failureIndex]?.stderr).toContain("matching IC port does not confirm the exact container");
@@ -2406,7 +2761,12 @@ describe("mutating operations", () => {
           timedOut: false
         };
       }
-      if (command.includes("docker start ydb-dyn-example-2")) {
+      if (command.startsWith("docker inspect ydb-dyn-example-2 ydb-dyn-example-3")) {
+        return commandResult(command, {
+          stdout: '[{"Id":"one-off-2","Name":"/ydb-dyn-example-2"},{"Id":"one-off-3","Name":"/ydb-dyn-example-3"}]'
+        });
+      }
+      if (command.includes("docker start \"$expected_id\"") && command.includes("ydb-dyn-example-2")) {
         return { command, exitCode: 1, stdout: "", stderr: "first recovery failed", ok: false, timedOut: false };
       }
       const stdout = command.includes("{{.RestartCount}}") ? STABLE_DYNAMIC_CONTAINER_STATE : "";
@@ -2415,11 +2775,11 @@ describe("mutating operations", () => {
 
     const response = await withRunTimers(() => restartStack(ctx, { confirm: true }));
     const recoveryCommands = response.results
-      ?.filter((result) => result.command.includes("docker start ydb-dyn-example-"));
+      ?.filter((result) => result.command.includes('docker start "$expected_id"') && result.command.includes("ydb-dyn-example-"));
 
     expect(recoveryCommands).toHaveLength(2);
-    expect(recoveryCommands?.[0].command).toContain("docker start ydb-dyn-example-2");
-    expect(recoveryCommands?.[1].command).toContain("docker start ydb-dyn-example-3");
+    expect(recoveryCommands?.[0].command).toContain("ydb-dyn-example-2");
+    expect(recoveryCommands?.[1].command).toContain("ydb-dyn-example-3");
     expect(executor.commands.some((command) => command.includes("docker start ydb-dyn-example-4"))).toBe(false);
     expect(executor.commands.some((command) => command.includes("scheme ls /local/example"))).toBe(false);
   });
@@ -2444,8 +2804,9 @@ describe("mutating operations", () => {
     expect(response.plannedCommands[2]).toContain("/ydb_data/kikimr_configs/config.yaml");
     expect(response.plannedCommands[2]).toContain("\"$source_config\"");
     expect(response.plannedCommands[2]).not.toContain("sed -e '/^  ca: \\/ydb_certs\\/ca\\.pem$/d' -e '/^  cert: \\/ydb_certs\\/cert\\.pem$/d' -e '/^  key: \\/ydb_certs\\/key\\.pem$/d' /ydb_data/cluster/kikimr_configs/config.yaml");
-    expect(response.plannedCommands[2]).toContain("/tmp/local-ydb-auth.pb:/run/local-ydb/dynamic-node-auth.pb:ro");
-    expect(response.plannedCommands[2]).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
+    expect(response.plannedCommands[2]).not.toContain("/tmp/local-ydb-auth.pb:/run/local-ydb/dynamic-node-auth.pb:ro");
+    expect(response.plannedCommands[2]).toContain("docker cp __LOCAL_YDB_CONFIRMATION_SNAPSHOT_");
+    expect(response.plannedCommands[2]).toContain("--auth-token-file /tmp/local-ydb-toolkit-dynamic-node-auth.pb");
   });
 
   it("redacts custom dynamic auth token file and parent directory in planned commands", async () => {
@@ -2488,7 +2849,7 @@ describe("mutating operations", () => {
     expect(response.nodes.map((node) => node.grpcPort)).toEqual([2138, 2139]);
     expect(response.nodes.map((node) => node.monitoringPort)).toEqual([8767, 8768]);
     expect(response.nodes.map((node) => node.icPort)).toEqual([19003, 19004]);
-    expect(response.plannedCommands.join("\n")).toContain("--auth-token-file /run/local-ydb/dynamic-node-auth.pb");
+    expect(response.plannedCommands.join("\n")).toContain("--auth-token-file /tmp/local-ydb-toolkit-dynamic-node-auth.pb");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-3");
   });
@@ -2682,7 +3043,7 @@ describe("mutating operations", () => {
         return {
           command,
           exitCode: 0,
-          stdout: '[{"Name":"/ydb-dyn-example-5","Args":["-lc","exec /ydbd --ic-port 19006"]}]',
+          stdout: '[{"Id":"container-5-id","Name":"/ydb-dyn-example-5","Args":["-lc","exec /ydbd --ic-port 19006"]}]',
           stderr: "",
           ok: true,
           timedOut: false
@@ -2700,9 +3061,109 @@ describe("mutating operations", () => {
     const response = await removeDynamicNodes(ctx, {});
     expect(response.executed).toBe(false);
     expect(response.nodes.map((node) => node.container)).toEqual(["ydb-dyn-example-5"]);
-    expect(response.plannedCommands[0]).toContain("docker rm -f ydb-dyn-example-5");
+    expect(response.plannedCommands[0]).toContain("expected_id=container-5-id");
+    expect(response.plannedCommands[0]).toContain("{{.Id}}");
+    expect(response.plannedCommands[0]).toContain("ydb-dyn-example-5");
     expect(response.rollback.join("\n")).toContain("local_ydb_add_dynamic_nodes");
     expect(response.rollback.join("\n")).not.toMatch(/local_ydb_(restart_stack|bootstrap)/);
+  });
+
+  it("rejects a removal token when the selected Docker identity changes", async () => {
+    const executor = new RecordingExecutor();
+    const config = ConfigSchema.parse({});
+    const base = createContext(undefined, executor, config);
+    const ctx = {
+      ...base,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_remove_dynamic_nodes",
+        configSource: { kind: "provided", config },
+      },
+    };
+    let containerId = "reviewed-container-id";
+    let removed = false;
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      if (spec.command === "docker" && spec.args?.[0] === "ps") {
+        return commandResult(command, {
+          stdout: JSON.stringify({ Names: "ydb-dyn-example-2" }),
+        });
+      }
+      if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+        return commandResult(command, {
+          stdout: JSON.stringify([{
+            Id: containerId,
+            Name: "/ydb-dyn-example-2",
+            Args: ["--ic-port", "19003"],
+          }]),
+        });
+      }
+      if (spec.description === "Remove exact dynamic tenant node ydb-dyn-example-2") {
+        removed = true;
+      }
+      return commandResult(command);
+    };
+
+    const planned = await removeDynamicNodes(ctx, {});
+    containerId = "replacement-container-id";
+    const rejected = await removeDynamicNodes(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(rejected.confirmation?.status).toBe("rejected");
+    expect(removed).toBe(false);
+  });
+
+  it("fails closed when the selected Docker identity changes after confirmation", async () => {
+    const executor = new RecordingExecutor();
+    const config = ConfigSchema.parse({});
+    const base = createContext(undefined, executor, config);
+    const ctx = {
+      ...base,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_remove_dynamic_nodes",
+        configSource: { kind: "provided", config },
+      },
+    };
+    let containerId = "reviewed-container-id";
+    let removed = false;
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      if (spec.command === "docker" && spec.args?.[0] === "ps") {
+        return commandResult(command, {
+          stdout: JSON.stringify({ Names: "ydb-dyn-example-2" }),
+        });
+      }
+      if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+        return commandResult(command, {
+          stdout: JSON.stringify([{
+            Id: containerId,
+            Name: "/ydb-dyn-example-2",
+            Args: ["--ic-port", "19003"],
+          }]),
+        });
+      }
+      if (spec.description === "Remove exact dynamic tenant node ydb-dyn-example-2") {
+        containerId = "replacement-container-id";
+        expect(command).toContain("expected_id=reviewed-container-id");
+        expect(command).toContain("docker rm -f \"$expected_id\"");
+        return commandResult(command, { exitCode: 1, ok: false });
+      }
+      removed = removed || command.includes("docker rm -f replacement-container-id");
+      return commandResult(command);
+    };
+
+    const planned = await removeDynamicNodes(ctx, {});
+    const accepted = await removeDynamicNodes(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(accepted.confirmation?.status).toBe("accepted");
+    expect(accepted.results?.[0]?.ok).toBe(false);
+    expect(removed).toBe(false);
   });
 
   it.each([
@@ -2720,7 +3181,7 @@ describe("mutating operations", () => {
         return { command, exitCode: 0, stdout: '{"Names":"ydb-dyn-example-2"}', stderr: "", ok: true, timedOut: false };
       }
       if (command.includes("docker inspect")) {
-        return { command, exitCode: 0, stdout: '[{"Name":"/ydb-dyn-example-2","Args":["--ic-port","19003"]}]', stderr: "", ok: true, timedOut: false };
+        return { command, exitCode: 0, stdout: '[{"Id":"container-2-id","Name":"/ydb-dyn-example-2","Args":["--ic-port","19003"]}]', stderr: "", ok: true, timedOut: false };
       }
       return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
     };
@@ -2760,8 +3221,8 @@ describe("mutating operations", () => {
           command,
           exitCode: 0,
           stdout: JSON.stringify([
-            { Name: "/ydb-dyn-example-2", Args: ["-lc", "exec /ydbd --ic-port 19003"] },
-            { Name: "/ydb-dyn-example-3", Args: ["-lc", "exec /ydbd --ic-port 19004"] }
+            { Id: "container-2-id", Name: "/ydb-dyn-example-2", Args: ["-lc", "exec /ydbd --ic-port 19003"] },
+            { Id: "container-3-id", Name: "/ydb-dyn-example-3", Args: ["-lc", "exec /ydbd --ic-port 19004"] }
           ]),
           stderr: "",
           ok: true,
@@ -2791,7 +3252,9 @@ describe("mutating operations", () => {
     const response = await removeDynamicNodes(ctx, { nodeIds: [50001] });
     expect(response.executed).toBe(false);
     expect(response.nodes).toEqual([{ container: "ydb-dyn-example-2", index: 2, icPort: 19003, nodeId: 50001 }]);
-    expect(response.plannedCommands[0]).toContain("docker rm -f ydb-dyn-example-2");
+    expect(response.plannedCommands[0]).toContain("expected_id=container-2-id");
+    expect(response.plannedCommands[0]).toContain("{{.Id}}");
+    expect(response.plannedCommands[0]).toContain("ydb-dyn-example-2");
     expect(response.rollback.join("\n")).toMatch(/local_ydb_(restart_stack|bootstrap)/);
     expect(response.rollback.join("\n")).not.toContain("local_ydb_add_dynamic_nodes");
   });
@@ -2815,8 +3278,8 @@ describe("mutating operations", () => {
       if (command.includes("docker inspect")) {
         return commandResult(command, {
           stdout: JSON.stringify([
-            { Name: "/ydb-dyn-example-2", Args: ["--ic-port", "19003"] },
-            { Name: "/ydb-dyn-example-4", Args: ["--ic-port", "19005"] }
+            { Id: "container-2-id", Name: "/ydb-dyn-example-2", Args: ["--ic-port", "19003"] },
+            { Id: "container-4-id", Name: "/ydb-dyn-example-4", Args: ["--ic-port", "19005"] }
           ])
         });
       }
@@ -2859,7 +3322,7 @@ describe("mutating operations", () => {
         return {
           command,
           exitCode: 0,
-          stdout: '[{"Name":"/ydb-dyn-example-2","Args":["-lc","exec /ydbd --ic-port 19003"]}]',
+          stdout: '[{"Id":"container-2-id","Name":"/ydb-dyn-example-2","Args":["-lc","exec /ydbd --ic-port 19003"]}]',
           stderr: "",
           ok: true,
           timedOut: false
@@ -2914,7 +3377,7 @@ describe("mutating operations", () => {
         return {
           command,
           exitCode: 0,
-          stdout: '[{"Name":"/ydb-dyn-example-2","Args":["-lc","exec /ydbd --ic-port 19003"]}]',
+          stdout: '[{"Id":"container-2-id","Name":"/ydb-dyn-example-2","Args":["-lc","exec /ydbd --ic-port 19003"]}]',
           stderr: "",
           ok: true,
           timedOut: false
@@ -3029,6 +3492,12 @@ describe("mutating operations", () => {
     executor.run = async (_profile, spec) => {
       const command = executor.display(_profile, spec);
       executor.commands.push(command);
+      if (
+        spec.command === "docker"
+        && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+      ) {
+        return commandResult(command, { stdout: "sha256:reviewed-storage-image\n" });
+      }
       if (command.includes("ReadStoragePool")) {
         return {
           command,
@@ -3083,6 +3552,7 @@ describe("mutating operations", () => {
           command,
           exitCode: 0,
           stdout: JSON.stringify([{
+            Id: "reviewed-ydb-dyn-example-4-id",
             Name: "/ydb-dyn-example-4",
             Args: ["--grpc-port", "32004", "--mon-port", "9204", "--ic-port", "19204"]
           }]),
@@ -3109,8 +3579,12 @@ describe("mutating operations", () => {
     expect(response.authReapplyPlanned).toBe(true);
     expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-4"]);
     expect(response.plannedCommands.join("\n")).toContain("/dump/shrink-smoke/tenant");
+    expect(response.plannedCommands).toContain("prepare private verified composite dump snapshot");
     expect(response.plannedCommands.join("\n")).toContain("admin database /local/example create hdd:1");
-    expect(response.plannedCommands.join("\n")).toContain("/tmp/local-ydb-auth/config.auth.yaml");
+    expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-ydb-dyn-example-4-id");
+    expect(response.plannedCommands.join("\n")).toContain('docker rm -f "$expected_id"');
+    expect(response.plannedCommands.join("\n")).not.toContain("/tmp/local-ydb-auth/config.auth.yaml");
+    expect(response.plannedCommands.join("\n")).not.toContain("/tmp/local-ydb-toolkit-composite-auth-");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-2");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-3");
     expect(response.plannedCommands.join("\n")).toContain("--name ydb-dyn-example-4");
@@ -3141,6 +3615,12 @@ describe("mutating operations", () => {
     executor.run = async (_profile, spec) => {
       const command = executor.display(_profile, spec);
       executor.commands.push(command);
+      if (
+        spec.command === "docker"
+        && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+      ) {
+        return commandResult(command, { stdout: "sha256:reviewed-storage-image\n" });
+      }
       if (command.includes("ReadStoragePool")) {
         return commandResult(command, {
           stdout: `Status {
@@ -3187,22 +3667,25 @@ describe("mutating operations", () => {
     };
 
     await expect(reduceStorageGroups(ctx, { confirm: true, dumpName: "shrink-smoke" }))
-      .rejects.toThrow(/inspect exact gRPC, monitoring, and IC ports.*before destructive rebuild/i);
+      .rejects.toThrow(/inspect exact Docker identity and gRPC, monitoring, and IC ports.*before destructive rebuild/i);
     expect(executor.commands.some((command) => command.includes("/dump/shrink-smoke"))).toBe(false);
     expect(executor.commands.some((command) => command.includes("docker rm -f"))).toBe(false);
   });
 
   it("executes storage-group reduction rebuild and reapplies auth before re-adding extra dynamic nodes", async () => {
     const executor = new RecordingExecutor();
+    const auth = createTempAuthArtifacts();
+    const dumpRoot = mkdtempSync(join(tmpdir(), "local-ydb-rebuild-test-"));
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
       profiles: {
         default: {
-          authConfigPath: "/tmp/local-ydb-auth/config.auth.yaml",
+          authConfigPath: auth.authConfigPath,
+          dumpHostPath: dumpRoot,
           dynamicContainer: "ydb-dyn-example",
           dynamicNodeCount: 3,
           dynamicNodeAuthSid: "root@builtin",
-          dynamicNodeAuthTokenFile: "/tmp/local-ydb-auth/dynamic-node-auth.pb",
-          rootPasswordFile: "/tmp/local-ydb-auth/root.password",
+          dynamicNodeAuthTokenFile: auth.dynamicNodeAuthTokenFile,
+          rootPasswordFile: auth.rootPasswordFile,
           staticContainer: "ydb-local",
           tenantPath: "/local/example",
           storagePoolKind: "hdd"
@@ -3211,9 +3694,69 @@ describe("mutating operations", () => {
     }));
 
     let readStoragePoolCalls = 0;
+    let appliedAuth: string | undefined;
+    let privateAuthRoot: string | undefined;
     executor.run = async (_profile, spec) => {
       const command = executor.display(_profile, spec);
+      const rawScript = spec.args?.[1] ?? "";
+      const authRoot = /\/tmp\/local-ydb-toolkit-composite-auth-[A-Za-z0-9_-]+/.exec(rawScript)?.[0];
+      if (
+        spec.command === "docker"
+        && spec.args?.slice(0, 4).join(" ") === "image inspect --format {{.Id}}"
+      ) {
+        executor.commands.push(command);
+        return commandResult(command, { stdout: "sha256:reviewed-storage-image\n" });
+      }
+      if (spec.description?.startsWith("Fingerprint ")) {
+        return commandResult(command, {
+          stdout: `directory:${"a".repeat(64)}\n`,
+        });
+      }
+      if (
+        spec.description === "Prepare confirmed content snapshots"
+        || spec.description === "Remove confirmed content snapshots"
+      ) {
+        return runSpecSynchronously(executor, _profile, spec);
+      }
+      if (spec.description === "Prepare private verified composite dump snapshot") {
+        return commandResult(command, {
+          stdout: `${"a".repeat(64)}\n`,
+        });
+      }
+      if (spec.description === "Remove private composite auth artifacts") {
+        return runSpecSynchronously(executor, _profile, spec);
+      }
       executor.commands.push(command);
+
+      if (authRoot && rawScript.includes("ruby -ryaml -e")) {
+        privateAuthRoot = authRoot;
+        mkdirSync(authRoot, { recursive: true, mode: 0o700 });
+        writeFileSync(join(authRoot, "config.yaml"), "BENIGN_STORAGE_GENERATED_AUTH\n", { mode: 0o600 });
+        writeFileSync(join(authRoot, "root.password"), "BENIGN_STORAGE_GENERATED_ROOT\n", { mode: 0o600 });
+      }
+      if (authRoot && rawScript.includes("StaffApiUserToken")) {
+        mkdirSync(authRoot, { recursive: true, mode: 0o700 });
+        writeFileSync(join(authRoot, "dynamic-token.txt"), "BENIGN_STORAGE_GENERATED_DYNAMIC\n", { mode: 0o600 });
+      }
+      if (spec.description === "Persist privately generated auth artifacts") {
+        const persisted = runSpecSynchronously(executor, _profile, spec);
+        if (persisted.ok) {
+          writeFileSync(auth.authConfigPath, "BENIGN_STORAGE_CANONICAL_REPLACEMENT\n", "utf8");
+        }
+        return persisted;
+      }
+      if (spec.description === "Copy confirmed auth config snapshot into the static container") {
+        const snapshot = /confirmed_config_snapshot=([A-Za-z0-9_./-]+)/.exec(rawScript)?.[1];
+        if (snapshot && existsSync(snapshot)) {
+          appliedAuth = readFileSync(snapshot, "utf8");
+        }
+      }
+
+      if (command.includes(" tools dump ")) {
+        const tenantDump = join(dumpRoot, "shrink-smoke", "tenant");
+        mkdirSync(tenantDump, { recursive: true });
+        writeFileSync(join(tenantDump, "data.csv"), "1,test\n", "utf8");
+      }
 
       if (command.includes("ReadStoragePool")) {
         readStoragePoolCalls += 1;
@@ -3288,11 +3831,26 @@ describe("mutating operations", () => {
         };
       }
 
+      if (spec.command === "docker" && spec.args?.[0] === "inspect" && spec.args.length > 2) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: JSON.stringify(spec.args.slice(1).map((name) => ({
+            Name: `/${name}`,
+            Image: "sha256:reviewed-storage-image"
+          }))),
+          stderr: "",
+          ok: true,
+          timedOut: false
+        };
+      }
+
       if (command.includes("docker inspect")) {
         return {
           command,
           exitCode: 0,
           stdout: JSON.stringify([{
+            Id: "reviewed-ydb-dyn-example-4-id",
             Name: "/ydb-dyn-example-4",
             Args: ["--grpc-port", "2140", "--mon-port", "8769", "--ic-port", "19005"]
           }]),
@@ -3332,6 +3890,7 @@ describe("mutating operations", () => {
 
     const commands = response.results?.map((result) => result.command) ?? [];
     expect(commands.some((command) => command.includes("/dump/shrink-smoke/tenant"))).toBe(true);
+    expect(commands).toContain("prepare private verified composite dump snapshot");
     expect(commands.some((command) => command.includes("admin database /local/example create hdd:1"))).toBe(true);
     expect(commands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(2);
     expect(commands.some((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""))).toBe(true);
@@ -3340,6 +3899,11 @@ describe("mutating operations", () => {
     expect(commands.some((command) => command.includes("--name ydb-dyn-example-3"))).toBe(true);
     expect(commands.some((command) => command.includes("--name ydb-dyn-example-4"))).toBe(true);
     expect(commands.some((command) => command.includes("verify rebuilt profile containers use image"))).toBe(true);
+    expect(appliedAuth).toBe("BENIGN_STORAGE_GENERATED_AUTH\n");
+    expect(readFileSync(auth.authConfigPath, "utf8")).toBe("BENIGN_STORAGE_CANONICAL_REPLACEMENT\n");
+    expect(JSON.stringify(response)).not.toContain("/tmp/local-ydb-toolkit-composite-auth-");
+    expect(privateAuthRoot).toMatch(/^\/tmp\/local-ydb-toolkit-composite-auth-/);
+    expect(privateAuthRoot && existsSync(privateAuthRoot)).toBe(false);
 
     const firstRestartIndex = commands.findIndex((command) => command.includes("docker restart ydb-local"));
     const recopyIndex = commands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""));
@@ -3349,6 +3913,8 @@ describe("mutating operations", () => {
     expect(recopyIndex).toBeGreaterThan(firstRestartIndex);
     expect(secondRestartIndex).toBeGreaterThan(recopyIndex);
     expect(readdExtraNodeIndex).toBeGreaterThan(secondRestartIndex);
+    auth.cleanup();
+    rmSync(dumpRoot, { recursive: true, force: true });
   });
 
   it("plans full stack teardown and keeps shared host paths opt-in", async () => {
@@ -3389,7 +3955,12 @@ describe("mutating operations", () => {
         return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
       }
       if (command.includes("docker inspect")) {
-        return { command, exitCode: 0, stdout: "[]", stderr: "", ok: true, timedOut: false };
+        return commandResult(command, {
+          stdout: JSON.stringify([
+            { Id: "reviewed-extra-3", Name: "/ydb-dyn-example-3" },
+            { Id: "reviewed-extra-2", Name: "/ydb-dyn-example-2" },
+          ]),
+        });
       }
       return {
         command,
@@ -3404,12 +3975,126 @@ describe("mutating operations", () => {
     expect(response.executed).toBe(false);
     expect(response.extraDynamicNodes).toEqual(["ydb-dyn-example-3", "ydb-dyn-example-2"]);
     expect(response.plannedCommands.join("\n")).toContain("admin database /local/example remove --force");
-    expect(response.plannedCommands.join("\n")).toContain("docker rm -f ydb-dyn-example-3");
-    expect(response.plannedCommands.join("\n")).toContain("docker rm -f ydb-dyn-example");
+    expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-extra-3");
+    expect(response.plannedCommands.join("\n")).toContain('docker rm -f "$expected_id"');
+    expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-ydb-dyn-example-id");
+    expect(response.plannedCommands.join("\n")).not.toMatch(/docker rm -f ydb-dyn-example(?:\s|$)/);
     expect(response.plannedCommands.join("\n")).toContain("docker network rm ydb-net");
     expect(response.plannedCommands.join("\n")).toContain("docker volume rm ydb-local-data");
     expect(response.removesAuthArtifacts).toBe(false);
     expect(response.removesDumpHostPath).toBe(false);
+  });
+
+  it("rejects standalone destroy planning when an extra container identity is unavailable", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (spec.command === "docker" && spec.args?.[0] === "ps") {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local"}',
+            '{"Names":"ydb-dyn-example"}',
+            '{"Names":"ydb-dyn-example-2"}',
+          ].join("\n"),
+        });
+      }
+      if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+        return commandResult(command, { stdout: "[]" });
+      }
+      return commandResult(command);
+    };
+
+    await expect(destroyStack(ctx, {})).rejects.toThrow(
+      "Could not inspect exact Docker identity for every extra dynamic node before destructive teardown.",
+    );
+    expect(executor.commands.some((command) => command.includes("docker rm -f"))).toBe(false);
+  });
+
+  it("rejects a standalone destroy token after an extra container is replaced", async () => {
+    let extraContainerId = "reviewed-extra-id";
+    let extraRemovalCalls = 0;
+    const executor = new RecordingExecutor();
+    const context = createContext(undefined, executor, ConfigSchema.parse({}));
+    const ctx = {
+      ...context,
+      confirmation: {
+        store: new ProcessConfirmationStore(),
+        toolName: "local_ydb_destroy_stack",
+        configSource: { kind: "provided" as const, config: context.config },
+      },
+    };
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (spec.command === "docker" && spec.args?.[0] === "ps") {
+        return commandResult(command, {
+          stdout: [
+            '{"Names":"ydb-local"}',
+            '{"Names":"ydb-dyn-example"}',
+            '{"Names":"ydb-dyn-example-2"}',
+          ].join("\n"),
+        });
+      }
+      if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+        return commandResult(command, {
+          stdout: JSON.stringify([{ Id: extraContainerId, Name: "/ydb-dyn-example-2" }]),
+        });
+      }
+      if (spec.description === "Remove exact extra dynamic tenant node ydb-dyn-example-2") {
+        extraRemovalCalls += 1;
+      }
+      return commandResult(command);
+    };
+
+    const planned = await destroyStack(ctx, {});
+    extraContainerId = "replacement-extra-id";
+    const confirmed = await destroyStack(ctx, {
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(confirmed.confirmation?.status).toBe("rejected");
+    expect(extraRemovalCalls).toBe(0);
+  });
+
+  it("fails closed when a prepared composite extra-node identity changes", async () => {
+    const executor = new RecordingExecutor();
+    const ctx = createContext(undefined, executor, ConfigSchema.parse({
+      profiles: {
+        default: {
+          dynamicContainer: "review-dynamic",
+          staticContainer: "review-static",
+          network: "review-network",
+          volume: "review-volume",
+        },
+      },
+    }));
+    let laterTeardownReached = false;
+    executor.run = async (profile, spec) => {
+      const command = executor.display(profile, spec);
+      executor.commands.push(command);
+      if (spec.description === "Remove exact extra dynamic tenant node review-dynamic-2") {
+        const script = spec.args?.[1] ?? "";
+        expect(script).toContain("expected_id=reviewed-container-id");
+        expect(script).toContain("docker inspect --format '{{.Id}}' review-dynamic-2");
+        expect(script).toContain('docker rm -f "$expected_id"');
+        return commandResult(command, { exitCode: 1, ok: false });
+      }
+      laterTeardownReached ||= command.includes("docker rm -f review-dynamic");
+      return commandResult(command);
+    };
+
+    const response = await destroyStack(ctx, { confirm: true }, [{
+      container: "review-dynamic-2",
+      containerId: "reviewed-container-id",
+    }]);
+
+    expect(response.executed).toBe(true);
+    expect(response.extraDynamicNodes).toEqual(["review-dynamic-2"]);
+    expect(response.results?.at(-1)?.ok).toBe(false);
+    expect(laterTeardownReached).toBe(false);
   });
 
   it("redacts auth artifact cleanup paths without malformed shell quotes", async () => {
@@ -3499,6 +4184,11 @@ describe("mutating operations", () => {
       if (command.includes("docker volume ls")) {
         return { command, exitCode: 0, stdout: "ydb-local-data\n", stderr: "", ok: true, timedOut: false };
       }
+      if (spec.command === "docker" && spec.args?.[0] === "inspect") {
+        return commandResult(command, {
+          stdout: JSON.stringify([{ Id: "reviewed-extra-2", Name: "/ydb-dyn-example-2" }]),
+        });
+      }
       if (command.includes("admin database /local/example remove --force")) {
         return {
           command,
@@ -3522,7 +4212,7 @@ describe("mutating operations", () => {
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
     expect(response.summary).toContain("continuing past tenant removal failure during teardown");
-    expect(response.results?.[0]?.ok).toBe(false);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.ok).toBe(false);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
@@ -3579,8 +4269,8 @@ describe("mutating operations", () => {
 
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
-    expect(response.results?.[0]?.ok).toBe(false);
-    expect(response.results?.some((result) => result.command.includes("docker rm -f ydb-local"))).toBe(true);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes('docker rm -f "$expected_id"') && result.command.includes("expected_id=reviewed-ydb-local-id"))).toBe(true);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
@@ -3637,8 +4327,8 @@ describe("mutating operations", () => {
 
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
-    expect(response.results?.[0]?.ok).toBe(false);
-    expect(response.results?.some((result) => result.command.includes("docker rm -f ydb-local"))).toBe(true);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes('docker rm -f "$expected_id"') && result.command.includes("expected_id=reviewed-ydb-local-id"))).toBe(true);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
@@ -3695,8 +4385,8 @@ describe("mutating operations", () => {
 
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
-    expect(response.results?.[0]?.ok).toBe(true);
-    expect(response.results?.[0]?.exitCode).toBe(1);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.ok).toBe(true);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.exitCode).toBe(1);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
@@ -3729,14 +4419,15 @@ describe("mutating operations", () => {
     }));
     const response = await applyAuthHardening(ctx, {});
     expect(response.executed).toBe(false);
-    expect(response.plannedCommands.some((command) => command.includes("docker cp /tmp/local-ydb/config.yaml"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("confirmed_config_snapshot="))).toBe(true);
+    expect(response.plannedCommands.join("\n")).not.toContain("docker cp /tmp/local-ydb/config.yaml");
     expect(response.plannedCommands.filter((command) => command.includes("docker restart ydb-local")).length).toBe(2);
     expect(response.plannedCommands.join("\n")).toContain("State:[[:space:]]*(RUNNING|PENDING_RESOURCES)");
     const firstRestartIndex = response.plannedCommands.findIndex((command) => command.includes("docker restart ydb-local"));
     const recopyIndex = response.plannedCommands.findIndex((command) => command.includes("cp /tmp/local-ydb-toolkit-config.yaml \"$target\""));
     expect(recopyIndex).toBeGreaterThan(firstRestartIndex);
     expect(response.plannedCommands.some((command) => command.includes("docker rm -f ydb-dyn-example"))).toBe(true);
-    expect(response.plannedCommands.some((command) => command.includes("--auth-token-file /run/local-ydb/dynamic-node-auth.pb"))).toBe(true);
+    expect(response.plannedCommands.some((command) => command.includes("--auth-token-file /tmp/local-ydb-toolkit-dynamic-node-auth.pb"))).toBe(true);
     expect(response.plannedCommands.join("\n")).toContain("SCHEME_ERROR|No database found");
     expect(response.plannedCommands.join("\n")).toContain("Group fit error|failed to allocate group|no group options");
     expect(response.rollback.join("\n")).toMatch(/local_ydb_(restart_stack|bootstrap)/);
@@ -3745,10 +4436,11 @@ describe("mutating operations", () => {
 
   it("checks static compatibility before any auth-hardening mutation", async () => {
     const executor = new RecordingExecutor();
+    const auth = createTempAuthArtifacts();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
       profiles: {
         default: {
-          authConfigPath: "/tmp/local-ydb/config.yaml",
+          authConfigPath: auth.authConfigPath,
           dynamicNodeCount: 3
         }
       }
@@ -3760,7 +4452,7 @@ describe("mutating operations", () => {
       && command.includes("does not match profile published ports")
     ));
     const firstMutationIndex = plan.plannedCommands.findIndex((command) => (
-      command.startsWith("bash -lc 'docker cp ")
+      command.includes("confirmed_config_snapshot=")
       || command.startsWith("bash -lc 'docker stop ")
       || command.startsWith("bash -lc 'docker restart ")
       || command.includes("docker rm -f ydb-dyn-example 2>/dev/null")
@@ -3770,6 +4462,12 @@ describe("mutating operations", () => {
     expect(compatibilityIndex).toBeLessThan(firstMutationIndex);
 
     executor.run = async (profile, spec) => {
+      if (
+        spec.description === "Prepare confirmed content snapshots"
+        || spec.description === "Remove confirmed content snapshots"
+      ) {
+        return commandResult(executor.display(profile, spec));
+      }
       const command = executor.display(profile, spec);
       executor.commands.push(command);
       if (command.includes("does not match profile published ports")) {
@@ -3789,11 +4487,12 @@ describe("mutating operations", () => {
     const confirmed = await applyAuthHardening(ctx, { confirm: true });
     expect(confirmed.results?.at(-1)?.stderr).toContain("does not match profile published ports");
     expect(executor.commands.some((command) => (
-      command.startsWith("bash -lc 'docker cp ")
+      command.includes("confirmed_config_snapshot=")
       || command.startsWith("bash -lc 'docker stop ")
       || command.startsWith("bash -lc 'docker restart ")
       || command.includes("docker rm -f ydb-dyn-example 2>/dev/null")
     ))).toBe(false);
+    auth.cleanup();
   });
 
   it("recreates every configured dynamic node during auth hardening", async () => {
@@ -3845,10 +4544,11 @@ describe("mutating operations", () => {
 
   it("restores a missing configured node during confirmed no-token auth hardening", async () => {
     const executor = new RecordingExecutor();
+    const auth = createTempAuthArtifacts();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
       profiles: {
         default: {
-          authConfigPath: "/tmp/local-ydb/config.yaml",
+          authConfigPath: auth.authConfigPath,
           dynamicNodeCount: 2
         }
       }
@@ -3861,6 +4561,7 @@ describe("mutating operations", () => {
     expect(executor.commands.some((command) => command.includes("docker rm -f ydb-dyn-example-2"))).toBe(true);
     expect(executor.commands.some((command) => command.includes("--name ydb-dyn-example-2 "))).toBe(true);
     expect(executor.commands.join("\n")).not.toContain("docker restart ydb-dyn-example");
+    auth.cleanup();
   });
 
   it("adds an authenticated tenant metadata wait for auth-hardening profiles with rootPasswordFile", async () => {

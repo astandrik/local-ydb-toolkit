@@ -1,8 +1,10 @@
 import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import { attachNotRequiredConfirmation, retireSubmittedConfirmation } from "../confirmation.js";
 import { probeDockerRuntime } from "./docker-runtime.js";
 import { runMutating } from "./execution.js";
 import type {
   CheckPrerequisitesResponse,
+  MutatingOptions,
   PrerequisiteCheck,
   ToolkitContext
 } from "./types.js";
@@ -30,25 +32,23 @@ const INSTALLABLE_COMMANDS: InstallTarget[] = [
 
 export async function checkPrerequisites(
   ctx: ToolkitContext,
-  options: { confirm?: boolean } = {}
+  options: MutatingOptions = {}
 ): Promise<CheckPrerequisitesResponse> {
   const initial = await collectPrerequisiteSnapshot(ctx);
 
-  if (!options.confirm || initial.installablePackages.length === 0) {
-    return snapshotResponse(ctx, initial, {
+  if (initial.installablePackages.length === 0) {
+    retireSubmittedConfirmation(ctx, options);
+    return attachNotRequiredConfirmation(ctx, snapshotResponse(ctx, initial, {
       summarySuffix: prerequisiteSummarySuffix(options.confirm, initial.installablePackages.length),
-      plannedCommands: initial.installablePackages.length && initial.packageManager === "apt-get"
-        ? installSpecs(initial.installablePackages).map((spec) => ctx.client.display(spec))
-        : [],
-      rollback: initial.installablePackages.length
-        ? ["Remove installed packages manually if you need to revert host dependencies."]
-        : ["No changes."],
+      plannedCommands: [],
+      rollback: ["No changes."],
       verification: failedCheckVerification(initial.checks)
-    });
+    }));
   }
 
   if (initial.packageManager !== "apt-get") {
-    return snapshotResponse(ctx, {
+    retireSubmittedConfirmation(ctx, options);
+    return attachNotRequiredConfirmation(ctx, snapshotResponse(ctx, {
       ...initial,
       manualActions: [...initial.manualActions, "Install missing host packages manually on the target machine."]
     }, {
@@ -56,7 +56,7 @@ export async function checkPrerequisites(
       plannedCommands: [],
       rollback: ["No changes."],
       verification: []
-    });
+    }));
   }
 
   const installPlan = {
@@ -67,7 +67,21 @@ export async function checkPrerequisites(
     verification: initial.installablePackages.map((packageName) => `${packageName} installation completes successfully`)
   };
 
-  const installResponse = await runMutating(ctx, installPlan, { confirm: true });
+  const installResponse = await runMutating(ctx, installPlan, options);
+  if (!installResponse.executed) {
+    return {
+      ...installResponse,
+      summary: `${installResponse.summary} ${snapshotSummary(ctx, initial)}.`,
+      results: initial.results,
+      checks: initial.checks,
+      ready: initial.ready,
+      missing: initial.missing,
+      unavailable: initial.unavailable,
+      installablePackages: initial.installablePackages,
+      packageManager: initial.packageManager,
+      manualActions: initial.manualActions,
+    };
+  }
   const finalSnapshot = await collectPrerequisiteSnapshot(ctx);
   return {
     ...installResponse,

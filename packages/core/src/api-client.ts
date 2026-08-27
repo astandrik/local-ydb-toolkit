@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { redactCommand, redactText } from "./auth.js";
+import type { ConfirmationContentBinding } from "./confirmation-inputs.js";
 import { pathRedactions } from "./redactions.js";
 import type { ResolvedLocalYdbProfile } from "./validation.js";
 
@@ -12,6 +13,7 @@ export interface CommandSpec {
   allowFailure?: boolean;
   description?: string;
   redactions?: string[];
+  confirmationContentBindings?: ConfirmationContentBinding[];
 }
 
 export interface CommandResult {

@@ -93,11 +93,19 @@ On POSIX, create the FIFO without a writer and require the MCP call to return wi
 ## Global Rules
 
 - Run `local_ydb_check_prerequisites` first on a new host or profile.
-- If `local_ydb_check_prerequisites` reports installable packages, review its plan-only output and then use `confirm: true` to install supported host helpers before trying deeper checks.
+- If `local_ydb_check_prerequisites` reports installable packages, review its plan-only output and then repeat the exact request with `confirm: true`, copying the plan response's `confirmation.token` into the `confirmationToken` request argument before trying deeper checks.
 - Run read-only tools first.
 - Use `local_ydb_list_versions` before `local_ydb_upgrade_version` when you need to verify the exact registry tag to deploy.
-- If an image is not already present on the target host, use `local_ydb_pull_image(confirm=true)` and poll `local_ydb_pull_status` before bootstrap or upgrade.
-- For mutating tools, call plan-only once before `confirm: true` unless you are deliberately smoke-testing an idempotent path.
+- If an image is not already present on the target host, plan `local_ydb_pull_image`, repeat that exact request with its token and `confirm: true`, and poll `local_ydb_pull_status` before bootstrap or upgrade.
+- For every mutating tool, call the exact request without `confirm`, review `plannedCommands`, `risk`, `rollback`, and `verification` with the human, then repeat the same arguments with `confirm: true`, copying that response's `confirmation.token` into the `confirmationToken` request argument. The `<token-from-plan>` placeholders below always mean the token from the immediately preceding identical plan call.
+- A missing, malformed, changed-plan, replayed, or pre-restart token must execute nothing and returns `confirmation.status="rejected"` with a fresh plan/token. No-op responses use `not-required`; successful consumption uses `accepted`.
+- If a package or image becomes present between plan and confirm, the no-op response must use `not-required` and retire any valid submitted process token; making the resource missing again must not make that token executable.
+- The same retirement rule applies when any mutating confirm becomes plan-only because a required profile input or request value is temporarily absent; restoring that input must not make the submitted token executable.
+- Changing a configured auth/password file or a file inside the selected standalone restore dump between plan and confirm must reject the old token; file contents and private fingerprints must never appear in either response.
+- A configured auth/password file larger than 16 MiB must fail before hashing or mutation with no path, size, contents, or filesystem details in the response; the same bound applies to local and SSH targets.
+- After acceptance, replace the canonical auth config, root-password backup input, dynamic-node token, or restore file before its mutation consumer runs. The consumer must observe the reviewed snapshot bytes or fail closed; credential-only reads may change authentication success/failure but not mutation payloads. Responses must omit contents, digests, and actual snapshot paths, and cleanup must remove every snapshot after success, failure, or abort.
+- Marker-shaped user arguments that happen to equal an internal content placeholder must remain byte-for-byte unchanged unless that exact command field has a declared content binding.
+- Treat the token as an ephemeral capability. Do not log it, paste it into reusable notes, persist it across sessions, or treat possession as proof of human approval; the MCP host/client remains responsible for that approval.
 - Do not test `cleanup_storage` against active volumes or paths.
 - Do not mix static and dynamic image tags inside one profile.
 - For stable GHCR tests, use the exact patch tag `ghcr.io/ydb-platform/local-ydb:26.1.1.6`.
@@ -113,13 +121,18 @@ On POSIX, create the FIFO without a writer and require the MCP call to return wi
 - Tenant bootstrap recreates configured containers in index order, even when a stale container is already running. Readiness requires a stable running exact container plus IC registration; a matching nodelist port alone is insufficient.
 - Default `local_ydb_add_dynamic_nodes` starts at `dynamicNodeCount + 1`; an explicit `startIndex` must be greater than `dynamicNodeCount`, and higher suffixes are one-off runtime nodes.
 - Default `local_ydb_remove_dynamic_nodes` considers only suffixes above `dynamicNodeCount`; explicit selectors or `startIndex` can remove a configured suffix and create drift.
+- Dynamic-node removal binds the token and final command to the inspected Docker container ID. Replacing a selected container under the same name before confirm rejects the token; replacing it after acceptance makes the exact-ID command fail without removing the replacement.
 - Before any restart mutation, the existing static container must pass the full profile check, including exact configured loopback bindings. A mismatch leaves all container IDs and states unchanged and requires destroy/bootstrap.
-- Restart unconditionally recreates every configured container, including containers observed restarting. It reports missing configured and unexpected one-off containers, never removes unexpected containers, and attempts to restore every preflight-running unexpected container even when restart fails.
+- Restart unconditionally recreates every configured container, including containers observed restarting. It reports missing configured and unexpected one-off containers, never removes unexpected containers, and binds every preflight-running unexpected container's stop and recovery to its full inspected Docker ID. A same-name replacement invalidates the old token or fails closed without touching the replacement; restart still attempts every reviewed unexpected recovery after later failures.
 - Restart rollback uses restart or bootstrap reconciliation because inventory does not retain removed configured container definitions.
 - Removal rollback restores configured nodes through restart or bootstrap and recreates one-off nodes through add; a mixed selection returns both instructions.
 - Auth hardening runs the full static compatibility preflight before any config or container mutation, then recreates and verifies every configured node in index order, including profiles without a dynamic-node token file; rollback also uses restart or bootstrap reconciliation.
 - Partial primary starts and one-off additions repeat the full static compatibility preflight after checking image presence and immediately before every dynamic container launch. Each container is created but not started until its resolved immutable image ID matches the static container; a concurrent named-tag refresh removes the never-started container and fails closed before later nodes, while a preflight mismatch requires destroy followed by bootstrap.
-- Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy; an incomplete container definition aborts the rebuild before destructive work.
+- Storage reduction and version upgrade inspect and preserve exact one-off gRPC, monitoring, and IC ports before dump or destroy, plus each container's exact Docker ID; an incomplete container definition aborts the rebuild before destructive work. The reviewed one-off set and IDs are frozen for teardown: a late container is not added to deletion, and replacing a reviewed node under the same name after acceptance makes teardown fail without removing the replacement.
+- Both composite rebuilds make a private verified copy of the generated dump before teardown and restore only from that copy. The copy is removed after success, failure, or abort and can require temporary space up to the full dump size when copy-on-write is unavailable.
+- Issue distinct upgrade and storage-reduction tokens for the same execution host and static container, including implicit versus explicit config sources and different profile names. Only one rebuild may execute at a time. While it is running, a new plan's confirm is rejected; pre-existing plans become stale when the first rebuild and cleanup finish. A distinct stack target remains independently confirmable.
+- Auth-enabled composite rebuilds reject exact, normalized, symlink and hardlink aliases among the three configured auth destinations, including dangling links to the same missing target. Check before rebuild and again at persistence; a link introduced between those checks must fail before writing any artifact. Distinct regular files, distinct symlink targets and distinct missing paths remain supported. With distinct destinations, generate artifacts privately, persist those exact bytes, then keep using private copies through auth reapply and node recreation. Remove all disposable files and links in cleanup.
+- Storage reduction binds the configured image reference to its resolved Docker image ID. Retargeting a mutable tag before confirm rejects the token; retargeting after acceptance fails closed at the pre-dump or pre-teardown check; bootstrap and final container verification require the same reviewed ID.
 <!-- END DECLARATIVE TOPOLOGY CONTRACT -->
 
 ## Declarative Topology Acceptance Flow
@@ -131,7 +144,7 @@ Use only a disposable profile with unique container/network/volume names and non
 3. Confirm destroy, then perform a fresh count-3 bootstrap. Inventory must contain the primary, `-2`, and `-3`; the static container must publish exactly the static and all three configured dynamic gRPC ports on loopback; authenticated `nodelist` must contain all three derived IC ports; `scheme ls` through every configured dynamic gRPC endpoint and `local_ydb_tenant_check` must pass.
 4. Call `local_ydb_add_dynamic_nodes` without `startIndex`. It must plan and create `-4`. Save its Docker ID and running state from inventory.
 5. Remove configured container `-2` explicitly. Call restart plan-only and require `missingDynamicContainers=["<dynamicContainer>-2"]` and `unexpectedDynamicContainers=["<dynamicContainer>-4"]`. The plan must not contain `docker rm -f <dynamicContainer>-4`.
-6. Replace configured `-2` with a same-name restart-looping fixture. Restart plan-only must contain an unconditional remove/run for `-2`; confirmed restart must give it a new Docker ID. The preflight-running `-4` must retain its saved Docker ID and running state. Exact configured IC ports and tenant metadata must pass again.
+6. Replace configured `-2` with a same-name restart-looping fixture. Restart plan-only must contain an unconditional remove/run for `-2`; confirmed restart must give it a new Docker ID. The preflight-running `-4` must retain its saved Docker ID and running state. As a negative control, plan again, replace `-4` under the same name, and require the old token to execute no stop or recovery against the replacement. Exact configured IC ports and tenant metadata must pass again.
 7. While `-4` exists with non-default gRPC, monitoring, and IC ports, plan a storage reduction or version upgrade rebuild. Only `-4` may appear in `extraDynamicNodes`; its exact inspected ports must be reused, while configured `-2` and `-3` come from bootstrap/auth reconciliation. Withhold one inspected port as a negative control and require failure before dump or destroy. Final container/image and nodelist verification must cover configured nodes plus `-4`.
 8. Confirm destroy, then bootstrap again. Inventory must contain exactly the three configured dynamic containers and no `-4`.
 9. In `finally`, destroy the disposable stack and independently remove any leftover disposable containers, network, and volume.
@@ -156,7 +169,7 @@ Calls:
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "query", "script": "SELECT COUNT(*) AS count FROM `managed_sql_smoke`;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "SELECT id, value FROM `managed_sql_smoke`;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");" } }
-{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");", "confirm": true } }
+{ "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "UPSERT INTO `managed_sql_smoke` (id, value) VALUES (1, \"confirmed\");", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "execute", "script": "THIS IS NOT VALID YQL;", "confirm": true } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "ALTER TABLE `managed_sql_smoke` ADD COLUMN note Utf8;" } }
 { "tool": "local_ydb_sql", "arguments": { "profile": "ghcr261-clean", "action": "explain", "script": "CREATE TABLE `managed_sql_ctas_explain` (PRIMARY KEY (id)) WITH (STORE = COLUMN) AS SELECT id, value FROM `managed_sql_smoke`;" } }
@@ -172,8 +185,9 @@ Expected:
 
 - `query` uses SnapshotRO even when `confirm=true`; the attempted UPSERT fails and the following count remains zero.
 - `explain` returns a plan or AST without side effects.
-- `execute` always performs mandatory EXPLAIN first. Without `confirm=true` it returns `outcome=planned`; with confirmation it sends one NoTx execution and performs no retries.
-- Invalid confirmed YQL is blocked by failed preflight with `executed=false` and `confirmationConsumed=false`.
+- `execute` always performs mandatory EXPLAIN first. A successful plan call returns `outcome=planned` and a token; the exact repeat call with that token sends one NoTx execution and performs no retries.
+- Invalid YQL is blocked by failed preflight with `executed=false`, `confirmationConsumed=false`, and `confirmation.status=not-required` because no executable plan was produced.
+- If a token was issued after a successful `EXPLAIN` but the confirm-time `EXPLAIN` fails, that submitted current-process token is retired. A recovered preflight must reject its replay and execute zero NoTx calls; malformed or foreign-process tokens remain unrecorded.
 - Parameter names are bare names, declarations are generated deterministically, and response metadata contains canonical parameter types with configured credential paths redacted but does not echo supplied parameter values. Selected result rows can still contain those values.
 - `maxRows` truncates a result set only between complete rows; the first row-limit hit stops all further result capture (read-only execution cancels, confirmed `NoTx` drains). `maxOutputBytes` is shared across captured issues, plan/AST, metadata, and rows.
 - The byte-limit call's placeholder is documentation only; replace it with an actual value of at least 4096 characters, or an equivalent fixture that reliably exceeds the 256-byte capture budget.
@@ -199,7 +213,7 @@ Calls:
 Optional install path on supported apt-based hosts:
 
 ```json
-{ "tool": "local_ydb_check_prerequisites", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_check_prerequisites", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -271,9 +285,10 @@ Calls:
 { "tool": "local_ydb_generate_schema", "arguments": { "profile": "ghcr261-auth", "validate": true, "statements": [{ "kind": "createTable", "tableName": "schema_apply_smoke", "columns": [{ "name": "id", "type": "Uint64", "notNull": true }, { "name": "value", "type": "Utf8" }], "primaryKey": ["id"], "indexes": [{ "name": "schema_apply_smoke_by_value", "columns": ["value"], "global": true }], "with": { "AUTO_PARTITIONING_BY_SIZE": { "token": "ENABLED" } } }] } }
 { "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "validate", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);" } }
 { "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);", "confirm": false } }
-{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);", "confirm": true } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "CREATE TABLE `schema_apply_smoke` (\n  `id` Uint64 NOT NULL,\n  `value` Utf8,\n  INDEX `schema_apply_smoke_by_value` GLOBAL ON (`value`),\n  PRIMARY KEY (`id`)\n)\nWITH (\n  AUTO_PARTITIONING_BY_SIZE = ENABLED\n);", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-auth", "action": "describe", "path": "/local/example/schema_apply_smoke" } }
-{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "DROP TABLE schema_apply_smoke;", "confirm": true } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "DROP TABLE schema_apply_smoke;" } }
+{ "tool": "local_ydb_apply_schema", "arguments": { "profile": "ghcr261-auth", "action": "apply", "script": "DROP TABLE schema_apply_smoke;", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -387,7 +402,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_pull_image", "arguments": { "profile": "ghcr261-clean", "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6", "confirm": false } }
-{ "tool": "local_ydb_pull_image", "arguments": { "profile": "ghcr261-clean", "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6", "confirm": true } }
+{ "tool": "local_ydb_pull_image", "arguments": { "profile": "ghcr261-clean", "image": "ghcr.io/ydb-platform/local-ydb:26.1.1.6", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_pull_status", "arguments": { "jobId": "<jobId-from-pull-image>" } }
 ```
 
@@ -416,7 +431,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_scheme", "arguments": { "profile": "ghcr261-clean", "path": "/local" } }
 ```
 
@@ -442,7 +457,8 @@ bootstrap a disposable profile, then stop only that profile's static container.
 Calls:
 
 ```json
-{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "<disposable-profile>", "confirm": true } }
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "<disposable-profile>" } }
+{ "tool": "local_ydb_bootstrap_root_database", "arguments": { "profile": "<disposable-profile>", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_healthcheck", "arguments": { "profile": "<disposable-profile>", "databasePath": "/local" } }
 ```
 
@@ -471,7 +487,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_bootstrap", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_bootstrap", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_bootstrap", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -507,10 +523,10 @@ Calls:
 
 ```json
 { "tool": "local_ydb_create_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_create_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_create_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_database_status", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_start_dynamic_node", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_start_dynamic_node", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_start_dynamic_node", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
@@ -576,7 +592,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_restart_stack", "arguments": { "profile": "ghcr261-clean", "confirm": false } }
-{ "tool": "local_ydb_restart_stack", "arguments": { "profile": "ghcr261-clean", "confirm": true } }
+{ "tool": "local_ydb_restart_stack", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_status_report", "arguments": { "profile": "ghcr261-clean" } }
 ```
 
@@ -586,7 +602,10 @@ Expected:
 - a static binding mismatch fails without changing configured or one-off container IDs/states and requires destroy/bootstrap
 - after a successful preflight, the static node restarts first
 - tenant status is checked before dynamic node is started again
-- every configured dynamic node is unconditionally recreated, including a container observed in Docker's restarting state
+- static and configured dynamic IDs (or explicit absence) are part of the reviewed plan; replace each name before confirm and require rejection without touching the replacement
+- replace a reviewed name after acceptance and require ID-bound stop/start/remove or static tenant commands to preserve the replacement; a missing configured node that appears late must not be adopted
+- every configured dynamic node is recreated from its reviewed ID, including a container observed in Docker's restarting state; copy/start/error cleanup use only the new ID returned by that create, and a create collision must not delete the competing container
+- every preflight-running unexpected container is stopped and recovered only after its name still resolves to the full Docker ID bound into the plan; a same-name replacement is left untouched
 - rollback uses `local_ydb_restart_stack` or `local_ydb_bootstrap`, not an inventory claim about removed configured definitions
 - post-restart `status_report` returns `tenant=ok`, `nodes=ok`
 
@@ -606,9 +625,11 @@ Profiles:
 Calls:
 
 ```json
-{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "confirmationToken": "<token-from-plan>", "dumpName": "pre-auth-mcp-20260425" } }
 { "tool": "local_ydb_list_dumps", "arguments": { "profile": "ghcr261-clean" } }
-{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "dumpName": "pre-auth-mcp-20260425" } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>", "dumpName": "pre-auth-mcp-20260425" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-clean" } }
 { "tool": "local_ydb_graphshard_check", "arguments": { "profile": "ghcr261-clean" } }
 ```
@@ -616,8 +637,10 @@ Calls:
 Path-level example:
 
 ```json
-{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "dumpName": "one-table-smoke", "path": "dir/table" } }
-{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "dumpName": "one-table-smoke", "path": ".", "describePaths": ["dir/table"], "countQueries": [{ "label": "dir/table rows", "query": "SELECT COUNT(*) FROM `dir/table`;" }] } }
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "dumpName": "one-table-smoke", "path": "dir/table" } }
+{ "tool": "local_ydb_dump_tenant", "arguments": { "profile": "local", "confirm": true, "confirmationToken": "<token-from-plan>", "dumpName": "one-table-smoke", "path": "dir/table" } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "dumpName": "one-table-smoke", "path": ".", "describePaths": ["dir/table"], "countQueries": [{ "label": "dir/table rows", "query": "SELECT COUNT(*) FROM `dir/table`;" }] } }
+{ "tool": "local_ydb_restore_tenant", "arguments": { "profile": "ghcr261-clean", "confirm": true, "confirmationToken": "<token-from-plan>", "dumpName": "one-table-smoke", "path": ".", "describePaths": ["dir/table"], "countQueries": [{ "label": "dir/table rows", "query": "SELECT COUNT(*) FROM `dir/table`;" }] } }
 ```
 
 For dump, `path` is the source object or directory for `ydb tools dump -p`. For restore, `path` is the destination directory for `ydb tools restore -p`; restoring a single table dump back under the tenant root normally uses `path: "."`.
@@ -627,6 +650,9 @@ Expected:
 - dump helper container runs with `--entrypoint /bin/bash`
 - list-dumps reports dump directories that contain a `tenant` folder
 - restore helper container runs with `--entrypoint /bin/bash`
+- restore mounts a verified private snapshot at `/dump/confirmed:ro`; allow temporary space up to the full dump size when copy-on-write/reflink is unavailable
+- replace a source dump file after token consumption and require the restore consumer to see the reviewed snapshot bytes; confirm the temporary snapshot is removed afterward
+- a dump containing a symlink, FIFO, socket, device, or other non-regular entry fails closed before Docker/YDB mutation and leaves no snapshot behind
 - restored tenant returns `.metadata  .sys`
 - GraphShard exists after restore
 
@@ -645,9 +671,9 @@ Calls:
 
 ```json
 { "tool": "local_ydb_prepare_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": false } }
-{ "tool": "local_ydb_prepare_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": true } }
+{ "tool": "local_ydb_prepare_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_write_dynamic_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": false } }
-{ "tool": "local_ydb_write_dynamic_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": true } }
+{ "tool": "local_ydb_write_dynamic_auth_config", "arguments": { "profile": "ghcr261-auth", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -682,7 +708,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_apply_auth_hardening", "arguments": { "profile": "ghcr261-auth", "confirm": false } }
-{ "tool": "local_ydb_apply_auth_hardening", "arguments": { "profile": "ghcr261-auth", "confirm": true } }
+{ "tool": "local_ydb_apply_auth_hardening", "arguments": { "profile": "ghcr261-auth", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
@@ -692,8 +718,8 @@ Expected:
 - dynamic node is stopped
 - static node is restarted
 - tenant status remains readable via password
-- dynamic node is recreated with:
-  `--auth-token-file /run/local-ydb/dynamic-node-auth.pb`
+- dynamic node is recreated by copying the confirmed token snapshot into the stopped container before start, with:
+  `--auth-token-file /tmp/local-ydb-toolkit-dynamic-node-auth.pb`
   sanitized dynamic config
   TLS disabled for local mode
 - rollback restores the static config and uses `local_ydb_restart_stack` or `local_ydb_bootstrap` to recreate configured nodes, never `docker start` for removed definitions
@@ -744,13 +770,16 @@ Calls:
 
 ```json
 { "tool": "local_ydb_set_root_password", "arguments": { "profile": "ghcr261-auth", "password": "<new-password>", "confirm": false } }
+{ "tool": "local_ydb_set_root_password", "arguments": { "profile": "ghcr261-auth", "password": "<new-password>", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
 
-- plan-only output does not print the raw password
+- plan-only output does not print the raw password, and the confirmation token is bound to that password without exposing it
 - the tool rotates the runtime password with `ALTER USER`
-- the generated host auth config and `root.password` file are updated after the runtime password change
+- the generated host auth config and `root.password` file are updated after the runtime password change only if both destinations still match the reviewed bytes and bounded regular-file state immediately before backups/writes
+- change each destination during rotation (also test missing, unreadable, directory, FIFO, and oversized replacements): persistence must fail without replacing either destination or backup, and the token remains consumed
+- independently verify the runtime password, which may already have changed; reconcile host files before obtaining a fresh plan/token. This late freshness check is not atomic against external writes after it
 - post-change anonymous `viewer/json/whoami` should still return `401`
 - authenticated tenant checks should work with the new password
 - empty passwords are an upstream YDB capability, but this MCP tool requires a non-empty `password` argument
@@ -773,7 +802,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "count": 2, "confirm": false } }
-{ "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "count": 2, "confirm": true } }
+{ "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "count": 2, "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_add_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "startIndex": 2, "confirm": false } }
 { "tool": "local_ydb_nodes_check", "arguments": { "profile": "ghcr261-auth" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-auth" } }
@@ -785,7 +814,7 @@ Expected:
 - plan-only output creates one-off containers `ydb-dyn-example-ghcr261-4` and `ydb-dyn-example-ghcr261-5`
 - default ports are derived from the profile:
   `2260/9069/19305` and `2261/9070/19306`
-- dynamic containers mount `/tmp/local-ydb-auth/dynamic-node-auth.pb` when auth is enabled
+- dynamic containers receive the confirmed token snapshot through `docker cp` before start and do not bind-mount the canonical host token path
 - `confirm=true` starts one node, verifies its exact container is stably running and its IC port appears in `nodelist`, then starts the next
 - explicit `startIndex: 2` is rejected before a mutating plan because configured indexes `1..3` cannot be used for one-off add; configured container IDs remain unchanged
 - `nodes_check` reports five dynamic nodes total: three configured nodes plus the two one-off nodes
@@ -813,7 +842,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": false } }
-{ "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": true } }
+{ "tool": "local_ydb_remove_dynamic_nodes", "arguments": { "profile": "ghcr261-auth", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_nodes_check", "arguments": { "profile": "ghcr261-auth" } }
 ```
 
@@ -821,6 +850,7 @@ Expected:
 
 - immediately after Scenario 11, default plan-only output targets the highest one-off suffix, `ydb-dyn-example-ghcr261-5`
 - `confirm=true` removes that container and verifies its IC port disappears from authenticated `nodelist`
+- planning records the selected container ID; replacing the container under the same name before confirm rejects the token, while replacement after acceptance makes the exact-ID remove fail and preserves the replacement
 - rollback for the removed one-off node uses `local_ydb_add_dynamic_nodes` with matching suffixes and ports, not restart/bootstrap
 - configured containers `ydb-dyn-example-ghcr261`, `-2`, and `-3` remain running with unchanged Docker IDs
 - after all one-off nodes are removed, another default call fails with `found 0` and returns no destructive plan
@@ -853,7 +883,7 @@ Calls:
 
 ```json
 { "tool": "local_ydb_add_storage_groups", "arguments": { "profile": "ghcr261-auth", "count": 1, "confirm": false } }
-{ "tool": "local_ydb_add_storage_groups", "arguments": { "profile": "ghcr261-auth", "count": 1, "confirm": true } }
+{ "tool": "local_ydb_add_storage_groups", "arguments": { "profile": "ghcr261-auth", "count": 1, "confirm": true, "confirmationToken": "<token-from-plan>" } }
 { "tool": "local_ydb_storage_placement", "arguments": { "profile": "ghcr261-auth" } }
 { "tool": "local_ydb_tenant_check", "arguments": { "profile": "ghcr261-auth" } }
 ```
@@ -919,13 +949,19 @@ Calls:
 Expected:
 
 - plan-only output starts with a tenant dump
+- immediately after the dump, execution creates a private verified copy; replacing the canonical dump during teardown must not change restored bytes
 - the stack is rebuilt with `admin database /local/example create hdd:1`
 - auth-enabled profiles re-run:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
+- those three artifacts are generated in a private workspace, persisted to their configured paths, and consumed only from the private copies through auth reapply and extra-node recreation
 - extra dynamic-node suffixes are re-added after restore/auth reapply
-- every one-off node keeps its inspected gRPC, monitoring, and IC ports; an incomplete inspect aborts before dump or destroy
+- every one-off node keeps its inspected Docker ID plus gRPC, monitoring, and IC ports; an incomplete inspect aborts before dump or destroy
+- a one-off container appearing after token acceptance is not added to teardown, and a same-name replacement is preserved because its ID does not match the reviewed target
+- destroy, restart, version upgrade, and storage reduction bind static/configured IDs or explicit absence alongside extra-node IDs; a present but uninspectable target aborts planning
+- for both rebuild families, replace the static, primary, or configured suffix during dump: teardown must use the pre-dump receipt, fail without acting on a replacement, and preserve its metadata; inspect IDs and data independently
+- names must remain absent before shared cleanup and during fresh rebuild bootstrap; a late same-name container is not adopted or removed. Keep replacement containers task-owned and clean them up explicitly in `finally`
 
 Avoid:
 
@@ -948,22 +984,29 @@ Calls:
 Optional execution path on a disposable stack:
 
 ```json
-{ "tool": "local_ydb_upgrade_version", "arguments": { "profile": "ghcr261-auth", "version": "<target-tag>", "dumpName": "upgrade-smoke", "confirm": true } }
+{ "tool": "local_ydb_upgrade_version", "arguments": { "profile": "ghcr261-auth", "version": "<target-tag>", "dumpName": "upgrade-smoke" } }
+{ "tool": "local_ydb_upgrade_version", "arguments": { "profile": "ghcr261-auth", "version": "<target-tag>", "dumpName": "upgrade-smoke", "confirm": true, "confirmationToken": "<token-from-plan>" } }
 ```
 
 Expected:
 
 - the plan starts with source and target image preflight checks
+- the target tag's resolved Docker image ID is part of the confirmed plan; retagging before confirm rejects the token, and retagging after acceptance fails the repeated exact-ID check before teardown
 - if either image is missing, run `local_ydb_pull_image` first and retry after `local_ydb_pull_status` reports completion
 - after image preflight, the upgrade path performs dump, destroy, bootstrap, restore, auth reapply, and extra dynamic-node recreation in that order
-- before dump or destroy, every one-off node's exact gRPC, monitoring, and IC ports are inspected and retained; an incomplete definition aborts the rebuild
+- the replacement static container is created stopped and removed without being started if its resolved image ID differs from the confirmed target; final verification checks container image IDs as well as tag labels
+- immediately after dump, the upgrade creates a private verified copy and restores only from it; replacing the canonical dump before restore must not change restored bytes
+- before dump or destroy, every one-off node's exact Docker ID plus gRPC, monitoring, and IC ports are inspected and retained; an incomplete definition aborts the rebuild
 - auth-enabled profiles re-run:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`
   `local_ydb_apply_auth_hardening`
-- successful final inventory verifies the recreated containers' image tags and then persists `profiles.<name>.image` in the file-backed config
+- those three artifacts are generated in a private workspace, persisted to their configured paths, and consumed only from the private copies through auth reapply and extra-node recreation
+- successful final inventory verifies the recreated containers' image tags and returns a manual `profileImageUpdate`; it does not write the config
+- after independent image and data readback, manually set `profiles.<name>.image` to the target tag; ordinary files, symlinks, and concurrent edits must remain untouched by the tool
+- a container appearing after token acceptance is not added to teardown, and a same-name replacement is preserved because its ID does not match the reviewed target
 - a verified image mismatch returns the accumulated history and leaves the profile image unchanged
-- if final inventory is unavailable only after dump/rebuild/restore/auth/node phases succeed, the response appends a safe failed verification result, omits `imageVerification`, preserves the full history, and persists the target profile image for subsequent operations
+- if final inventory is unavailable only after dump/rebuild/restore/auth/node phases succeed, the response appends a safe failed verification result, omits `imageVerification`, preserves the full history, and requires independent verification before the manual profile update
 
 Avoid:
 
