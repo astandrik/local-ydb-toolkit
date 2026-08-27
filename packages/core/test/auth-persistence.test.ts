@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigSchema, createContext, ProcessConfirmationStore, setRootPassword, ShellCommandExecutor, shellQuote,
+import { bash, ConfigSchema, createContext, ProcessConfirmationStore, setRootPassword, ShellCommandExecutor, shellQuote,
   type CommandExecutor, type CommandResult, type CommandSpec, type ResolvedLocalYdbProfile } from "../src/index.js";
 
 const originalConfig = JSON.stringify({ domains_config: { security_config: {
@@ -32,17 +32,68 @@ class PersistenceExecutor implements CommandExecutor {
       this.beforeSync?.();
     }
     if (spec.description === "Sync host auth config and root password file with the new root password") {
+      if (spec.command !== "bash" || spec.args?.length !== 2 || spec.args[0] !== "-lc") {
+        throw new Error("Persistence fixture requires a bash -lc script.");
+      }
       const stub = [this.rubyPrelude, "docker() {",
         '  if [ "$1" != exec ]; then return 99; fi',
         `  if [ "$3" = cat ]; then /bin/cat ${shellQuote(this.containerConfig)}`,
         "  else printf '%s\\n' /fixture/generated.yaml; fi", "}",
       ].join("\n");
-      const response = await this.shell.run(profile, { ...spec, args: ["-c", stub + "\n" + spec.args![1]] });
-      return { ...response, command: this.display(profile, spec) };
+      const envDir = mkdtempSync(join(dirname(this.containerConfig), "executor-"));
+      try {
+        const envPath = join(envDir, "bash-env");
+        writeFileSync(envPath, stub, { mode: 0o600 });
+        const response = await this.shell.run(profile, {
+          ...spec, command: "env", args: [`BASH_ENV=${envPath}`, spec.command, ...spec.args],
+        });
+        return { ...response, command: this.display(profile, spec) };
+      } finally { rmSync(envDir, { recursive: true, force: true }); }
     }
     return { command: this.display(profile, spec), stdout: "", stderr: "", ok: true, exitCode: 0, timedOut: false };
   }
 }
+
+describe("persistence fixture command boundary", () => {
+  const description = "Sync host auth config and root password file with the new root password";
+  it.each([
+    { name: "non-script bash", command: "bash", flag: "--version", extra: [] },
+    { name: "different executable", command: "echo", flag: "-lc", extra: [] },
+    { name: "extra argument", command: "bash", flag: "-lc", extra: ["extra"] },
+  ])("rejects $name without reinterpreting arguments", async ({ command, flag, extra }) => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-persistence-boundary-"));
+    const marker = join(dir, "must-not-execute");
+    const script = "touch " + shellQuote(marker);
+    const spec = { command, args: [flag, script, ...extra], description };
+    try {
+      const executor = new PersistenceExecutor(join(dir, "unused-config"));
+      await expect(executor.run(createContext(undefined, undefined, ConfigSchema.parse({})).profile, spec))
+        .rejects.toThrow("Persistence fixture requires a bash -lc script.");
+      expect(existsSync(marker)).toBe(false);
+      expect(readdirSync(dir)).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it.each(["success", "failure", "abort"])("preserves script semantics and cleans up on %s", async outcome => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ydb-persistence-boundary-"));
+    const profile = createContext(undefined, undefined, ConfigSchema.parse({})).profile;
+    const controller = new AbortController();
+    const spec = bash(outcome === "failure" ? "exit 27" : "read -r value; printf '%s' \"$value\"", {
+      description, stdin: "BENIGN_STDIN\n", signal: controller.signal,
+    });
+    if (outcome === "abort") controller.abort();
+    try {
+      const executor = new PersistenceExecutor(join(dir, "unused-config"));
+      if (outcome === "abort") await expect(executor.run(profile, spec)).rejects.toThrow();
+      else {
+        const response = await executor.run(profile, spec);
+        expect(response.exitCode).toBe(outcome === "failure" ? 27 : 0);
+        expect(response.stdout).toBe(outcome === "failure" ? "" : "BENIGN_STDIN");
+        expect(response.command).toBe(executor.display(profile, spec));
+      }
+      expect(readdirSync(dir)).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
 
 describe("password rotation host persistence", () => {
   const variations = ["config", "password", "missing", "directory", "oversized", "unreadable", "unchanged", "symlink"] as const;

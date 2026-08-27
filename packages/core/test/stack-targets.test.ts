@@ -46,8 +46,8 @@ class IdentityExecutor implements CommandExecutor {
       return result(command);
     }
     this.beforeCommand?.(spec);
-    const script = spec.args?.[1] ?? "";
-    const targets = [...script.matchAll(/expected_id=(\S+)\nactual_id=\$\(docker inspect(?: --type container)? --format '\{\{\.Id\}\}' ([\w.-]+)/g)];
+    const script = spec.command === "bash" && spec.args?.length === 2 && spec.args[0] === "-lc" ? spec.args[1]! : "";
+    const targets = [...script.matchAll(/^expected_id=(\S+)\nactual_id=\$\(docker inspect(?: --type container)? --format '\{\{\.Id\}\}' ([\w.-]+)/gm)];
     for (const [, expected, name] of targets) if (this.ids.get(name!) !== expected) return result(command, "", false);
     for (const [, name] of script.matchAll(/if \[ "\$current_name" = ([\w.-]+) \]/g)) {
       if (this.ids.has(name!)) return result(command, "", false);
@@ -73,6 +73,31 @@ function context(executor: CommandExecutor, operation: "destroy" | "restart") {
     configSource: { kind: "provided" as const, config },
   } };
 }
+describe("identity fixture script parsing", () => {
+  const guard = "expected_id=wrong-id\nactual_id=$(docker inspect --type container --format '{{.Id}}' ydb-local 2>/dev/null)";
+  it.each(["embedded prefix", "non-shell argument"])("ignores %s as an identity guard", async variation => {
+    const executor = new IdentityExecutor();
+    const profile = context(executor, "restart").profile;
+    const spec = variation === "embedded prefix"
+      ? bash("not-a-guard-" + guard)
+      : { command: "fixture", args: ["--value", guard] };
+    expect((await executor.run(profile, spec)).ok).toBe(true);
+    expect(executor.actedOn).toEqual([]);
+  });
+  it("checks every adjacent line-start guard, including a later mismatch", async () => {
+    const executor = new IdentityExecutor();
+    const profile = context(executor, "restart").profile;
+    const matching = guard.replace("wrong-id", "static-id");
+    expect((await executor.run(profile, bash(matching + "\n" + matching))).ok).toBe(true);
+    expect((await executor.run(profile, bash(matching + "\n" + guard))).ok).toBe(false);
+  });
+  it("ignores a long incomplete guard without interpreting it as a target", async () => {
+    const executor = new IdentityExecutor();
+    const response = await executor.run(context(executor, "restart").profile, bash("expected_id=" + "expected_id=!".repeat(8000)));
+    expect(response.ok).toBe(true);
+    expect(executor.actedOn).toEqual([]);
+  });
+});
 describe("configured stack container identities", () => {
   for (const operation of ["destroy", "restart"] as const) {
     const call = operation === "destroy" ? destroyStack : restartStack;

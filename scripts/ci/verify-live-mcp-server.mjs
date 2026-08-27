@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { shellQuote } from "@local-ydb-toolkit/core";
 import {
   assertLiveToolRegistry,
   verifyManagedSqlLive,
@@ -1094,6 +1095,11 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       const restartingNode = findContainer(restartingInventory, configuredNodeTwo);
       assert(restartingNode?.id, "restarting configured-node fixture ID was not available.");
       assert(restartingNode.state === "restarting", "configured-node fixture did not enter restarting state.");
+      const restartingContainerId = restartingFixture.stdout.trim();
+      assert(
+        /^[a-f0-9]{64}$/.test(restartingContainerId) && restartingContainerId.startsWith(restartingNode.id),
+        "restarting configured-node fixture creation and inventory IDs did not match.",
+      );
 
       const restartPlan = await callTool(client, "local_ydb_restart_stack", {
         profile: topologyProfileName,
@@ -1107,8 +1113,8 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         "restart preflight did not report the one-off node.",
       );
       assert(
-        plannedCommandsText(restartPlan).includes(`docker rm -f ${configuredNodeTwo}`),
-        "restart plan did not unconditionally remove the restarting configured node.",
+        plansExactContainerRecreation(restartPlan, configuredNodeTwo, restartingContainerId),
+        "restart plan did not guard and recreate the exact restarting configured node.",
       );
       assert(
         !plannedCommandsText(restartPlan).includes(".State.Running"),
@@ -1528,6 +1534,23 @@ function summarize(value) {
 
 function plannedCommandsText(value) {
   return Array.isArray(value.plannedCommands) ? value.plannedCommands.join("\n") : "";
+}
+
+function plansExactContainerRecreation(value, container, containerId) {
+  const failure = "printf '%s\\n' 'Reviewed Docker container identity changed.' >&2; exit 1";
+  const recreation = [
+    `expected_id=${shellQuote(containerId)}`,
+    `actual_id=$(docker inspect --type container --format '{{.Id}}' ${shellQuote(container)} 2>/dev/null) || { ${failure}; }`,
+    `[ "$actual_id" = "$expected_id" ] || { ${failure}; }`,
+    'docker rm -f "$expected_id"',
+    `created_id=$(docker create --name ${shellQuote(container)} `,
+  ].join("\n");
+  return Array.isArray(value.plannedCommands) && value.plannedCommands.some(command => {
+    if (!command.startsWith("bash -lc '")) return false;
+    const quoted = command.slice("bash -lc ".length);
+    const script = quoted.slice(1, -1).replaceAll("'\\''", "'");
+    return shellQuote(script) === quoted && script.includes("\n" + recreation);
+  });
 }
 
 function assertOutputContainsNumber(stdout, expected, message) {
