@@ -2573,6 +2573,7 @@ describe("mutating operations", () => {
     await vi.runAllTimersAsync();
     const response = await pending;
 
+    expect(nodeTwoStopped).toBe(true);
     expect(nodeTwoRecreated).toBe(true);
     expect(response.summary).toContain("verified 2/2 configured dynamic nodes");
   });

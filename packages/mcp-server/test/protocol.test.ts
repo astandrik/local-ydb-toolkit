@@ -658,6 +658,64 @@ describe("MCP protocol contract", () => {
       .not.toHaveProperty("token");
   });
 
+  it("binds SQL confirmation to the request while refreshing EXPLAIN", async () => {
+    const executor = new ProtocolMutationExecutor();
+    let queryPlan = '{"Plan":{"Node Type":"Upsert","PlanNodeId":1}}';
+    let validPreflight = true;
+    let executions = 0;
+    const { client } = await connect(createLocalYdbMcpApplication({
+      config: ConfigSchema.parse({}),
+      executor,
+      sqlExecutor: async (_context, request) => {
+        if (request.mode === "noTx") executions += 1;
+        return {
+          completion: validPreflight ? "success" : "failed",
+          status: validPreflight ? StatusIds_StatusCode.SUCCESS : StatusIds_StatusCode.BAD_REQUEST,
+          resultSets: [],
+          capturedBytes: 128,
+          truncationReasons: [],
+          ...(request.mode === "explain" ? { queryPlan } : {}),
+        };
+      },
+    }));
+    const call = (args: Record<string, unknown>) => client.callTool({ name: "local_ydb_sql", arguments: args });
+    const status = (response: Awaited<ReturnType<typeof call>>) => (
+      response.structuredContent as { confirmation?: { status?: string } } | undefined
+    )?.confirmation?.status;
+    const parameter = { type: { kind: "primitive", name: "Utf8" }, value: "BENIGN_SQL_PARAMETER" };
+    const request = {
+      action: "execute",
+      script: "UPSERT INTO items (id, value) VALUES (1, $value);",
+      parameters: { value: parameter },
+    };
+    const firstPlan = await call(request);
+    expect(status(await call({
+      ...request,
+      confirm: true,
+      confirmationToken: confirmationToken(firstPlan.structuredContent),
+      parameters: { value: { ...parameter, value: "changed" } },
+    }))).toBe("rejected");
+    expect(executions).toBe(0);
+
+    const plan = await call(request);
+    const confirmed = { ...request, confirm: true, confirmationToken: confirmationToken(plan.structuredContent) };
+    queryPlan = '{"Plan":{"PlanNodeId":1,"Node Type":"Upsert"}}';
+    const responses = await Promise.all([call(confirmed), call(confirmed)]);
+    expect(responses.map(status).sort()).toEqual(["accepted", "rejected"]);
+    expect(status(await call(confirmed))).toBe("rejected");
+    expect(executions).toBe(1);
+    expect(JSON.stringify([firstPlan, plan, ...responses])).not.toContain(parameter.value);
+
+    const nextPlan = await call(request);
+    const nextConfirmed = { ...request, confirm: true, confirmationToken: confirmationToken(nextPlan.structuredContent) };
+    validPreflight = false;
+    expect(status(await call(nextConfirmed))).toBe("not-required");
+    validPreflight = true;
+    expect(status(await call(nextConfirmed))).toBe("rejected");
+    expect(executions).toBe(1);
+    expect(executor.commands).toHaveLength(0);
+  });
+
   it("propagates client cancellation to the tool handler abort signal", async () => {
     let startedResolve: (() => void) | undefined;
     let cancelledResolve: (() => void) | undefined;

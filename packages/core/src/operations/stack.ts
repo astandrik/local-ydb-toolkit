@@ -363,10 +363,6 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
     ...ctx.profile, staticContainer: stackTargets.staticContainer.containerId ?? ctx.profile.staticContainer,
   };
   const drift = classifyDynamicTopologyDrift(ctx.profile, inventory.containers);
-  const configuredNames = new Set(plans.map((plan) => plan.container));
-  const runningConfigured = new Set(inventory.containers
-    .filter((container) => container.names && configuredNames.has(container.names) && container.state === "running")
-    .map((container) => container.names as string));
   const runningUnexpectedNames = drift.unexpected
     .filter((container) => container.state === "running" && container.names)
     .map((container) => container.names as string);
@@ -380,8 +376,10 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
   });
   const unexpectedStopSpecs = runningUnexpected.slice().reverse().map((target) =>
     exactDynamicNodeActionSpec(target, "stop", `Stop exact unexpected dynamic tenant node ${target.container}`));
+  // Every configured node is recreated, so its stop plan must not depend on
+  // transient running/restarting state between planning and confirmation.
   const configuredStopSpecs = stackTargets.dynamicContainers.slice().reverse()
-    .flatMap((target) => target.containerId && runningConfigured.has(target.container)
+    .flatMap((target) => target.containerId
       ? [exactDynamicNodeActionSpec({ ...target, containerId: target.containerId }, "stop", `Stop dynamic tenant node ${target.container}`)]
       : []);
   const stopSpecs = [...unexpectedStopSpecs, ...configuredStopSpecs];

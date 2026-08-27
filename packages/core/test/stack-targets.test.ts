@@ -12,7 +12,9 @@ function result(command: string, stdout = "", ok = true): CommandResult {
 }
 class IdentityExecutor implements CommandExecutor {
   readonly ids = new Map([["ydb-local", "static-id"], ["ydb-dyn-example", "primary-id"], ["ydb-dyn-example-2", "node-two-id"]]);
+  readonly states = new Map<string, string>();
   readonly actedOn: string[] = [];
+  readonly stopped: string[] = [];
   readonly shell = new ShellCommandExecutor();
   beforeCommand: ((spec: CommandSpec) => void) | undefined;
   duringDump: (() => void) | undefined;
@@ -25,7 +27,7 @@ class IdentityExecutor implements CommandExecutor {
       return this.shell.run(profile, spec);
     }
     if (spec.command === "docker" && spec.args?.[0] === "ps") {
-      return result(command, [...this.ids].map(([Names, ID]) => JSON.stringify({ Names, ID, State: "running", Image: profile.image })).join("\n"));
+      return result(command, [...this.ids].map(([Names, ID]) => JSON.stringify({ Names, ID, State: this.states.get(Names) ?? "running", Image: profile.image })).join("\n"));
     }
     if (spec.command === "docker" && spec.args?.[0] === "inspect") {
       return result(command, JSON.stringify(spec.args.slice(1).flatMap(name =>
@@ -55,6 +57,7 @@ class IdentityExecutor implements CommandExecutor {
     const target = targets.at(-1);
     if (target && /docker (?:rm -f|stop|start) "\$expected_id"/.test(script)) {
       this.actedOn.push(target[1]!);
+      if (script.includes('docker stop "$expected_id"')) this.stopped.push(target[1]!);
       if (script.includes('docker rm -f "$expected_id"')) this.ids.delete(target[2]!);
     }
     if (script.includes("admin database") && script.includes("docker exec")) {
@@ -99,6 +102,57 @@ describe("identity fixture script parsing", () => {
   });
 });
 describe("configured stack container identities", () => {
+  it.each(["running", "restarting", "exited", "created", "paused"])(
+    "keeps configured restart intent stable across a %s transition", async state => {
+      const executor = new IdentityExecutor();
+      const ctx = context(executor, "restart");
+      executor.states.set("ydb-dyn-example-2", state);
+      const plan = await restartStack(ctx);
+      executor.states.set("ydb-dyn-example-2", state === "running" ? "restarting" : "running");
+      const refreshed = await restartStack(ctx);
+      expect(refreshed.plannedCommands).toEqual(plan.plannedCommands);
+      expect(refreshed.rollback).toEqual(plan.rollback);
+      expect(refreshed.verification).toEqual(plan.verification);
+      const response = await restartStack(ctx, { confirm: true, confirmationToken: plan.confirmation?.token });
+      expect(response.confirmation?.status).toBe("accepted");
+      expect(executor.stopped).toEqual(["node-two-id", "primary-id", "static-id"]);
+      const replay = await restartStack(ctx, { confirm: true, confirmationToken: plan.confirmation?.token });
+      expect(replay.confirmation?.status).toBe("rejected");
+      expect(executor.stopped).toEqual(["node-two-id", "primary-id", "static-id"]);
+    },
+  );
+  it("still rejects restart when an unexpected node's restoration state changes", async () => {
+    const executor = new IdentityExecutor();
+    executor.ids.set("ydb-dyn-example-3", "extra-id");
+    const ctx = context(executor, "restart");
+    const plan = await restartStack(ctx);
+    executor.states.set("ydb-dyn-example-3", "exited");
+    const response = await restartStack(ctx, { confirm: true, confirmationToken: plan.confirmation?.token });
+    expect(response.confirmation?.status).toBe("rejected");
+    expect(executor.actedOn).toEqual([]);
+  });
+  it("does not stop an absent configured node or adopt one appearing before confirm", async () => {
+    const executor = new IdentityExecutor();
+    executor.ids.delete("ydb-dyn-example-2");
+    const ctx = context(executor, "restart");
+    const plan = await restartStack(ctx);
+    expect(plan.missingDynamicContainers).toEqual(["ydb-dyn-example-2"]);
+    expect(plan.plannedCommands.filter(command => command.includes('docker stop "$expected_id"'))).toHaveLength(2);
+    executor.ids.set("ydb-dyn-example-2", "new-id");
+    const response = await restartStack(ctx, { confirm: true, confirmationToken: plan.confirmation?.token });
+    expect(response.confirmation?.status).toBe("rejected");
+    expect(executor.actedOn).toEqual([]);
+  });
+  it("consumes one concurrent restart capability at most once across a state change", async () => {
+    const executor = new IdentityExecutor();
+    const ctx = context(executor, "restart");
+    const plan = await restartStack(ctx);
+    executor.states.set("ydb-dyn-example-2", "restarting");
+    const options = { confirm: true, confirmationToken: plan.confirmation?.token };
+    const responses = await Promise.all([restartStack(ctx, options), restartStack(ctx, options)]);
+    expect(responses.map(response => response.confirmation?.status).sort()).toEqual(["accepted", "rejected"]);
+    expect(executor.stopped).toEqual(["node-two-id", "primary-id", "static-id"]);
+  });
   for (const operation of ["destroy", "restart"] as const) {
     const call = operation === "destroy" ? destroyStack : restartStack;
     for (const name of ["ydb-local", "ydb-dyn-example", "ydb-dyn-example-2"]) {

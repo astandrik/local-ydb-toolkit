@@ -210,6 +210,7 @@ export async function sql(
     }));
   }
 
+  // NoTx executes this SQL request, not the diagnostic plan returned by EXPLAIN.
   const decision = await authorizeMutation(ctx, options, {
     kind: "managed-sql",
     request: {
@@ -222,7 +223,6 @@ export async function sql(
       parameters: options.parameters ?? {},
       mode: "noTx",
     },
-    preflight,
     risk: "high",
     rollback: common.rollback,
     verification: common.verification,
