@@ -523,7 +523,9 @@ Expected:
 - a static binding mismatch fails without changing configured or one-off container IDs/states and requires destroy/bootstrap
 - after a successful preflight, the static node restarts first
 - tenant status is checked before dynamic node is started again
-- every configured dynamic node is unconditionally recreated, including a container observed in Docker's restarting state
+- static and configured dynamic IDs (or explicit absence) are part of the reviewed plan; replace each name before confirm and require rejection without touching the replacement
+- replace a reviewed name after acceptance and require ID-bound stop/start/remove or static tenant commands to preserve the replacement; a missing configured node that appears late must not be adopted
+- every configured dynamic node is recreated from its reviewed ID, including a container observed in Docker's restarting state; copy/start/error cleanup use only the new ID returned by that create, and a create collision must not delete the competing container
 - every preflight-running unexpected container is stopped and recovered only after its name still resolves to the full Docker ID bound into the plan; a same-name replacement is left untouched
 - rollback uses `local_ydb_restart_stack` or `local_ydb_bootstrap`, not an inventory claim about removed configured definitions
 - post-restart `status_report` returns `tenant=ok`, `nodes=ok`
@@ -696,7 +698,9 @@ Expected:
 
 - plan-only output does not print the raw password, and the confirmation token is bound to that password without exposing it
 - the tool rotates the runtime password with `ALTER USER`
-- the generated host auth config and `root.password` file are updated after the runtime password change
+- the generated host auth config and `root.password` file are updated after the runtime password change only if both destinations still match the reviewed bytes and bounded regular-file state immediately before backups/writes
+- change each destination during rotation (also test missing, unreadable, directory, FIFO, and oversized replacements): persistence must fail without replacing either destination or backup, and the token remains consumed
+- independently verify the runtime password, which may already have changed; reconcile host files before obtaining a fresh plan/token. This late freshness check is not atomic against external writes after it
 - post-change anonymous `viewer/json/whoami` should still return `401`
 - authenticated tenant checks should work with the new password
 - empty passwords are an upstream YDB capability, but this MCP tool requires a non-empty `password` argument
@@ -868,6 +872,9 @@ Expected:
 - plan-only output starts with a tenant dump
 - immediately after the dump, execution creates a private verified copy; replacing the canonical dump during teardown must not change restored bytes
 - the stack is rebuilt with `admin database /local/example create hdd:1`
+- destroy, restart, version upgrade, and storage reduction bind static/configured IDs or explicit absence alongside extra-node IDs; a present but uninspectable target aborts planning
+- for both rebuild families, replace the static, primary, or configured suffix during dump: teardown must use the pre-dump receipt, fail without acting on a replacement, and preserve its metadata; inspect IDs and data independently
+- names must remain absent before shared cleanup and during fresh rebuild bootstrap; a late same-name container is not adopted or removed. Keep replacement containers task-owned and clean them up explicitly in `finally`
 - auth-enabled profiles re-run:
   `local_ydb_prepare_auth_config`
   `local_ydb_write_dynamic_auth_config`

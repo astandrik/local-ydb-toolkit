@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   commandToShell,
-  createContext,
+  createContext as createToolkitContext,
   listVersions,
   parseImageReference,
   ProcessConfirmationStore,
@@ -19,6 +19,12 @@ import {
 } from "../src/index.js";
 import { MANUAL_PROFILE_IMAGE_UPDATE_ERROR } from "../src/operations/profile-image-config.js";
 import { ConfigSchema } from "../src/validation.js";
+import { withConfiguredContainerIds } from "./fixtures/stack-identities.js";
+
+function createContext(...args: Parameters<typeof createToolkitContext>) {
+  const [profile, executor, config, configPath] = args;
+  return createToolkitContext(profile, executor && withConfiguredContainerIds(executor), config, configPath);
+}
 
 class RecordingExecutor implements CommandExecutor {
   readonly commands: string[] = [];

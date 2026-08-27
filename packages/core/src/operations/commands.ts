@@ -12,6 +12,7 @@ import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { generatedConfigDiscoveryLines } from "./generated-config.js";
 import { statusCommandFailureLines } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
+import { stackContainerIdentityCheckLines, type StackContainerTarget } from "./stack-targets.js";
 import type { DynamicNodePlan } from "./types.js";
 
 const YDB_CLI_RETRYABLE_ERRORS = "CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:[[:space:]]*UNAVAILABLE";
@@ -24,6 +25,7 @@ interface StaticCompatibilityOptions {
 interface StaticEnsureOptions extends StaticCompatibilityOptions {
   enableGraphShard?: boolean;
   expectedImageId?: string;
+  requireAbsent?: boolean;
 }
 
 export function commandForStaticRun(
@@ -159,6 +161,9 @@ function commandForStaticContainer(
         ? exactStaticCreateLines(profile, options.expectedImageId, { enableGraphShard, publishedDynamicGrpcPorts })
         : [`  ${commandForStaticRun(profile, { enableGraphShard, publishedDynamicGrpcPorts })}`, "  exit 0"]),
     "fi",
+    ...(options.requireAbsent
+      ? ["printf '%s\\n' 'A static container appeared before rebuild; it was preserved.' >&2", "exit 1"]
+      : []),
     ...compatibilityLines,
     ...(checkOnly
       ? ["exit 0"]
@@ -275,6 +280,7 @@ export function commandForDynamicNodeRun(
   profile: ResolvedLocalYdbProfile,
   node: Pick<DynamicNodePlan, "container" | "grpcPort" | "monitoringPort" | "icPort">,
   removeExisting = false,
+  expectedExisting?: StackContainerTarget,
 ): string {
   const mount = profile.bindMountPath ? `${profile.bindMountPath}:/ydb_data:ro` : `${profile.volume}:/ydb_data:ro`;
   const authInput = dynamicNodeAuthInput(profile);
@@ -325,6 +331,14 @@ export function commandForDynamicNodeRun(
   const staticContainer = shellQuote(profile.staticContainer);
   const imageIdTemplate = shellQuote("{{.Image}}");
   const mismatchMessage = shellQuote(`Dynamic container ${node.container} does not match static container image ID and was removed before start.`);
+  const removalLines: string[] = [];
+  if (removeExisting) {
+    if (!expectedExisting) {
+      removalLines.push(`docker rm -f ${container} 2>/dev/null || true`);
+    } else if (expectedExisting.containerId !== null) {
+      removalLines.push('docker rm -f "$expected_id"');
+    }
+  }
   return [
     "set -euo pipefail",
     ...(authInput && authSnapshot && authDigest ? [
@@ -337,28 +351,28 @@ export function commandForDynamicNodeRun(
       "fi",
     ] : []),
     `verified_image_id=$(docker inspect --type container --format ${imageIdTemplate} ${staticContainer})`,
-    ...(removeExisting
-      ? [`docker rm -f ${container} 2>/dev/null || true`]
-      : []),
-    `${createCommand} >/dev/null`,
-    `if ! created_image_id=$(docker inspect --type container --format ${imageIdTemplate} ${container}); then`,
-    `  docker rm -f ${container} >/dev/null 2>&1 || true`,
+    ...(expectedExisting ? stackContainerIdentityCheckLines(expectedExisting) : []),
+    ...removalLines,
+    `created_id=$(${createCommand})`,
+    "trap 'rc=$?; trap - EXIT; if [ \"$rc\" -ne 0 ]; then docker rm -f \"$created_id\" >/dev/null 2>&1 || true; fi; exit \"$rc\"' EXIT",
+    "trap 'exit 1' HUP INT TERM",
+    'test -n "$created_id"',
+    `if ! created_image_id=$(docker inspect --type container --format ${imageIdTemplate} "$created_id"); then`,
     `  printf '%s\\n' ${mismatchMessage} >&2`,
     "  exit 1",
     "fi",
     "if [ \"$created_image_id\" != \"$verified_image_id\" ]; then",
-    `  docker rm -f ${container} >/dev/null 2>&1 || true`,
     `  printf '%s\\n' ${mismatchMessage} >&2`,
     "  exit 1",
     "fi",
     ...(authSnapshot ? [
-      `if ! docker cp ${shellQuote(authSnapshot)} ${shellQuote(`${node.container}:${authContainerPath}`)} >/dev/null 2>&1; then`,
-      `  docker rm -f ${container} >/dev/null 2>&1 || true`,
+      `if ! docker cp ${shellQuote(authSnapshot)} "$created_id":${shellQuote(authContainerPath)} >/dev/null 2>&1; then`,
       "  printf '%s\\n' 'Confirmed content snapshot could not be created or verified.' >&2",
       "  exit 1",
       "fi",
     ] : []),
-    `docker start ${container} >/dev/null`
+    'docker start "$created_id" >/dev/null',
+    "trap - EXIT HUP INT TERM",
   ].join("\n");
 }
 
@@ -382,11 +396,12 @@ export function dynamicNodeStartSpecs(
   profile: ResolvedLocalYdbProfile,
   plan: DynamicNodePlan,
   mode: "ensure" | "recreate" = "ensure",
-  beforeRunSpecs: readonly CommandSpec[] = []
+  beforeRunSpecs: readonly CommandSpec[] = [],
+  expectedExisting?: StackContainerTarget,
 ): CommandSpec[] {
   const startCommand = mode === "ensure"
     ? commandForDynamicEnsureRun(profile, plan)
-    : commandForDynamicNodeRun(profile, plan, true);
+    : commandForDynamicNodeRun(profile, plan, true, expectedExisting);
   return [
     ensureImagePresentSpec(profile.image),
     ...beforeRunSpecs,

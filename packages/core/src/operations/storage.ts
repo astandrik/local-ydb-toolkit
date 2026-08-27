@@ -36,6 +36,7 @@ import { appendOperationResultsAndCheckSuccess, runMutating } from "./execution.
 import { assertPositiveInteger, assertSafeCleanupTarget } from "./helpers.js";
 import { ensureImageIdSpec, inspectImageId } from "./images.js";
 import { bootstrap, destroyStack } from "./stack.js";
+import { prepareStackTargets } from "./stack-targets.js";
 import { dumpTenant, restoreTenant } from "./tenant.js";
 import type {
   AddStorageGroupsOptions,
@@ -192,6 +193,9 @@ export async function reduceStorageGroups(
   const dumpName = options.dumpName ?? `shrink-${sanitizeTenantName(ctx.profile.tenantPath)}-${pool.numGroups}-to-${targetNumGroups}`;
   const rebuildCtx = rebuildContext(ctx, targetNumGroups);
   const inventoryState = await requireInventory(ctx);
+  const preparedStackTargets = await prepareStackTargets(
+    ctx, inventoryState, configuredDynamicNodePlans(ctx.profile).map((plan) => plan.container),
+  );
   const extraDynamicNodes = await inspectExtraDynamicNodePlans(
     ctx,
     inventoryState.containers.map((container) => container.names)
@@ -221,8 +225,9 @@ export async function reduceStorageGroups(
     phaseCtx,
     { confirm: false },
     preparedExtraDynamicNodes,
+    preparedStackTargets,
   );
-  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false }, { expectedImageId: imageId });
+  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false }, { expectedImageId: imageId, requireAbsent: true });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
     ? [
@@ -352,10 +357,11 @@ export async function reduceStorageGroups(
       phaseCtx,
       { confirm: true },
       preparedExtraDynamicNodes,
+      preparedStackTargets,
     ))) {
       return acceptedResponse();
     }
-    if (!appendOperationResultsAndCheckSuccess(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: imageId }))) {
+    if (!appendOperationResultsAndCheckSuccess(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: imageId, requireAbsent: true }))) {
       return acceptedResponse();
     }
     if (!appendOperationResultsAndCheckSuccess(results, await restoreTenant(

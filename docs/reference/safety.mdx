@@ -49,7 +49,13 @@ For accepted auth config, password-rotation backup inputs, dynamic-node token,
 and standalone restore operations, the server first creates a private snapshot
 and verifies it against the authorized fingerprint. Docker and YDB consume only
 that snapshot; the canonical payload path is not reopened. Credential files
-used only to authenticate remain freshness guards. Dynamic tokens are copied
+used only to authenticate remain freshness guards. Root-password rotation checks
+both host destinations against the reviewed bytes immediately before backups or
+writes. A conflict or unreadable/non-regular destination stops persistence without
+replacing either destination or backup. Runtime credentials may already have
+changed: independently verify the new password, reconcile the host files, then
+obtain a fresh plan/token. This bounded late check is not an atomic lock against
+external writes after the last check. Dynamic tokens are copied
 into stopped containers before start, and restore mounts its snapshot read-only.
 Restore rejects symlinks and special filesystem entries before mutation.
 Snapshot contents, digests, and temporary paths are omitted from responses and
@@ -59,7 +65,12 @@ equal to the full dump size. Composite storage reduction and version upgrade
 make the same kind of private verified copy immediately after generating their
 dump and before teardown, then restore only from that copy. Their teardown
 container set is frozen from the reviewed inventory instead of expanding to
-late arrivals. Upgrade and storage-reduction confirmations for the same execution
+late arrivals. Destroy, restart, and rebuilds bind the static and configured
+dynamic IDs (or explicit absence) as well as one-off IDs. Existing-object actions
+and static tenant commands use the reviewed IDs; rebuilds keep the same receipt
+across dump, check names are absent before shared cleanup, and require vacated
+names during bootstrap. Newly created dynamic containers are copied to, started,
+and cleaned up only by the ID returned by their own create command. Upgrade and storage-reduction confirmations for the same execution
 host and static container share a target-scoped lease held through mutation and cleanup,
 regardless of profile name or config source. A second
 confirm is rejected while the lease is active, and plans issued during that

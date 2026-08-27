@@ -13,6 +13,7 @@ import {
   cleanupStorage,
   commandToShell,
   createContext,
+  createContext as createToolkitContext,
   createTenant,
   destroyStack,
   dumpTenant,
@@ -43,6 +44,7 @@ import {
   type ResolvedLocalYdbProfile
 } from "../src/index.js";
 import { ConfigSchema } from "../src/validation.js";
+import { withConfiguredContainerIds } from "./fixtures/stack-identities.js";
 
 const STABLE_DYNAMIC_CONTAINER_STATE = "container-id\ttrue\tfalse\t0";
 
@@ -1160,6 +1162,10 @@ describe("read-only checks", () => {
 });
 
 describe("mutating operations", () => {
+  function createContext(...args: Parameters<typeof createToolkitContext>) {
+    const [profile, executor, config, configPath] = args;
+    return createToolkitContext(profile, executor && withConfiguredContainerIds(executor), config, configPath);
+  }
   it("keeps a missing Docker CLI in missing rather than unavailable prerequisites", async () => {
     const executor = new RecordingExecutor();
     const ctx = createContext(undefined, executor, ConfigSchema.parse({}));
@@ -2313,6 +2319,13 @@ describe("mutating operations", () => {
 
   it("checks static compatibility before planning any restart mutation", async () => {
     const executor = new RecordingExecutor();
+    const originalRun = executor.run.bind(executor);
+    executor.run = async (profile, spec) => {
+      const result = await originalRun(profile, spec);
+      return spec.command === "docker" && spec.args?.[0] === "ps"
+        ? { ...result, stdout: '{"Names":"ydb-local","State":"running","ID":"reviewed-static"}\n{"Names":"ydb-dyn-example","State":"running","ID":"reviewed-primary"}' }
+        : result;
+    };
     const ctx = createContext(undefined, executor, ConfigSchema.parse({
       profiles: { default: { dynamicNodeCount: 3 } }
     }));
@@ -2526,10 +2539,10 @@ describe("mutating operations", () => {
           ].join("\n")
         });
       }
-      if (command.includes("docker stop ydb-dyn-example-2")) {
+      if (command.includes('docker stop "$expected_id"') && command.includes("expected_id=reviewed-ydb-dyn-example-2-id")) {
         nodeTwoStopped = true;
       }
-      if (command.includes("docker rm -f ydb-dyn-example-2")) {
+      if (command.includes('docker rm -f "$expected_id"') && command.includes("expected_id=reviewed-ydb-dyn-example-2-id")) {
         nodeTwoRecreated = nodeTwoStopped || !command.includes(".State.Running");
       }
       if (command.includes("{{.RestartCount}}")) {
@@ -2551,7 +2564,9 @@ describe("mutating operations", () => {
 
     const planOnly = await restartStack(ctx, {});
     const nodeTwoPlan = planOnly.plannedCommands.find((command) => command.includes("--name ydb-dyn-example-2"));
-    expect(nodeTwoPlan).toContain("docker rm -f ydb-dyn-example-2");
+    expect(nodeTwoPlan).toContain("expected_id=reviewed-ydb-dyn-example-2-id");
+    expect(nodeTwoPlan).toContain('docker rm -f "$expected_id"');
+    expect(nodeTwoPlan).not.toContain("docker rm -f ydb-dyn-example-2");
     expect(nodeTwoPlan).not.toContain(".State.Running");
 
     const pending = restartStack(ctx, { confirm: true });
@@ -2607,7 +2622,8 @@ describe("mutating operations", () => {
     const unexpectedStop = executor.commands.findIndex((command) => (
       command.includes("docker stop \"$expected_id\"") && command.includes("ydb-dyn-example-2")
     ));
-    const configuredStop = executor.commands.findIndex((command) => command.includes("docker stop ydb-dyn-example"));
+    const configuredStop = executor.commands.findIndex((command) =>
+      command.includes('docker stop "$expected_id"') && command.includes("expected_id=reviewed-ydb-dyn-example-id"));
     const configuredStart = executor.commands.findIndex((command) => command.includes("--name ydb-dyn-example "));
     const unexpectedStart = executor.commands.findIndex((command) => (
       command.includes("docker start") && command.includes("ydb-dyn-example-2")
@@ -2625,7 +2641,7 @@ describe("mutating operations", () => {
   });
 
   it.each([
-    { phase: "base restart", failureCommand: "docker start ydb-local", error: "static start failed" },
+    { phase: "base restart", failureCommand: "Start reviewed static container", error: "static start failed" },
     { phase: "configured-node command", failureCommand: "--name ydb-dyn-example ", error: "configured start failed" }
   ])("restores a running unexpected container after a $phase failure", async ({ failureCommand, error }) => {
     const executor = new RecordingExecutor();
@@ -2652,7 +2668,7 @@ describe("mutating operations", () => {
           stdout: '[{"Id":"one-off-2","Name":"/ydb-dyn-example-2"}]'
         });
       }
-      if (command.includes(failureCommand)) {
+      if (command.includes(failureCommand) || spec.description === failureCommand) {
         return { command, exitCode: 1, stdout: "", stderr: error, ok: false, timedOut: false };
       }
       return { command, exitCode: 0, stdout: "", stderr: "", ok: true, timedOut: false };
@@ -2758,7 +2774,7 @@ describe("mutating operations", () => {
 
     const response = await withRunTimers(() => restartStack(ctx, { confirm: true }));
     const recoveryCommands = response.results
-      ?.filter((result) => result.command.includes("docker start") && result.command.includes("ydb-dyn-example-"));
+      ?.filter((result) => result.command.includes('docker start "$expected_id"') && result.command.includes("ydb-dyn-example-"));
 
     expect(recoveryCommands).toHaveLength(2);
     expect(recoveryCommands?.[0].command).toContain("ydb-dyn-example-2");
@@ -3960,7 +3976,8 @@ describe("mutating operations", () => {
     expect(response.plannedCommands.join("\n")).toContain("admin database /local/example remove --force");
     expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-extra-3");
     expect(response.plannedCommands.join("\n")).toContain('docker rm -f "$expected_id"');
-    expect(response.plannedCommands.join("\n")).toContain("docker rm -f ydb-dyn-example");
+    expect(response.plannedCommands.join("\n")).toContain("expected_id=reviewed-ydb-dyn-example-id");
+    expect(response.plannedCommands.join("\n")).not.toMatch(/docker rm -f ydb-dyn-example(?:\s|$)/);
     expect(response.plannedCommands.join("\n")).toContain("docker network rm ydb-net");
     expect(response.plannedCommands.join("\n")).toContain("docker volume rm ydb-local-data");
     expect(response.removesAuthArtifacts).toBe(false);
@@ -4194,7 +4211,7 @@ describe("mutating operations", () => {
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
     expect(response.summary).toContain("continuing past tenant removal failure during teardown");
-    expect(response.results?.[0]?.ok).toBe(false);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.ok).toBe(false);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
@@ -4251,8 +4268,8 @@ describe("mutating operations", () => {
 
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
-    expect(response.results?.[0]?.ok).toBe(false);
-    expect(response.results?.some((result) => result.command.includes("docker rm -f ydb-local"))).toBe(true);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes('docker rm -f "$expected_id"') && result.command.includes("expected_id=reviewed-ydb-local-id"))).toBe(true);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
@@ -4309,8 +4326,8 @@ describe("mutating operations", () => {
 
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
-    expect(response.results?.[0]?.ok).toBe(false);
-    expect(response.results?.some((result) => result.command.includes("docker rm -f ydb-local"))).toBe(true);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.ok).toBe(false);
+    expect(response.results?.some((result) => result.command.includes('docker rm -f "$expected_id"') && result.command.includes("expected_id=reviewed-ydb-local-id"))).toBe(true);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 
@@ -4367,8 +4384,8 @@ describe("mutating operations", () => {
 
     const response = await destroyStack(ctx, { confirm: true });
     expect(response.executed).toBe(true);
-    expect(response.results?.[0]?.ok).toBe(true);
-    expect(response.results?.[0]?.exitCode).toBe(1);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.ok).toBe(true);
+    expect(response.results?.find((result) => result.command.includes("admin database /local/example remove --force"))?.exitCode).toBe(1);
     expect(response.results?.some((result) => result.command.includes("docker volume rm ydb-local-data"))).toBe(true);
   });
 

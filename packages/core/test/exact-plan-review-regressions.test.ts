@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyAuthHardening,
   commandToShell,
-  createContext,
+  createContext as createToolkitContext,
   prepareAuthConfig,
   ProcessConfirmationStore,
   reduceStorageGroups,
@@ -23,6 +23,12 @@ import {
 } from "../src/index.js";
 import { createCompositeAuthArtifacts } from "../src/operations/composite-auth.js";
 import { ConfigSchema } from "../src/validation.js";
+import { withConfiguredContainerIds } from "./fixtures/stack-identities.js";
+
+function createContext(...args: Parameters<typeof createToolkitContext>) {
+  const [profile, executor, config, configPath] = args;
+  return createToolkitContext(profile, executor && withConfiguredContainerIds(executor), config, configPath);
+}
 
 describe("exact-plan review regressions", () => {
   it("serializes distinct composite upgrade confirmations for one profile", async () => {

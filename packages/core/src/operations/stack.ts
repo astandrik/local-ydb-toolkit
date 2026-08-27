@@ -30,6 +30,10 @@ import { normalizeExpectedYdbResult, runCommandSpecs, runMutating } from "./exec
 import { findExtraDynamicContainers } from "./helpers.js";
 import { ensureImagePresentSpec } from "./images.js";
 import {
+  prepareStackTargets, stackTargetsGuardSpec, stackTargetsAbsentSpec,
+  type PreparedStackTargets,
+} from "./stack-targets.js";
+import {
   exactDynamicNodeActionSpec,
   exactDynamicNodeRemovalSpec,
   inspectExactDynamicNodeTargets,
@@ -49,9 +53,12 @@ import type {
 export async function bootstrap(
   ctx: ToolkitContext,
   options: MutatingOptions = {},
-  executionOptions: { expectedImageId?: string } = {},
+  executionOptions: { expectedImageId?: string; requireAbsent?: boolean } = {},
 ): Promise<OperationResponse> {
   const plans = configuredDynamicNodePlans(ctx.profile);
+  const expectedExisting = executionOptions.requireAbsent
+    ? plans.map((plan) => ({ container: plan.container, containerId: null }))
+    : undefined;
   const baseSpecs = [
     ensureImagePresentSpec(ctx.profile.image),
     bash(`docker network inspect ${shellQuote(ctx.profile.network)} >/dev/null 2>&1 || docker network create ${shellQuote(ctx.profile.network)}`, { description: "Ensure Docker network exists" }),
@@ -63,6 +70,7 @@ export async function bootstrap(
       requireGraphShard: true,
       publishedDynamicGrpcPorts: plans.map((plan) => plan.grpcPort),
       expectedImageId: executionOptions.expectedImageId,
+      requireAbsent: executionOptions.requireAbsent,
     }), { timeoutMs: 60_000, description: "Start static local-ydb node" }),
     bash("sleep 5", { description: "Wait briefly for static node startup" }),
     createTenantSpec(ctx.profile),
@@ -72,7 +80,9 @@ export async function bootstrap(
     waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Wait for tenant metadata"),
     bash(`curl -fsSL ${shellQuote(`${ctx.profile.monitoringBaseUrl}/viewer/json/capabilities?database=${encodeURIComponent(ctx.profile.tenantPath)}`)} >/dev/null || true`, { allowFailure: true, description: "Verify viewer capabilities endpoint" })
   ];
-  const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan, "recreate"));
+  const nodeSpecs = plans.flatMap((plan, index) => dynamicNodeStartSpecs(
+    ctx.profile, plan, "recreate", [], expectedExisting?.[index],
+  ));
   const specs = [...baseSpecs, ...nodeSpecs, ...finalSpecs];
   const rollback = [
     ...plans.slice().reverse().map((plan) => `docker rm -f ${plan.container}`),
@@ -115,7 +125,7 @@ export async function bootstrap(
       if (!completedAll(baseSpecs, results)) {
         return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, 0, plans.length));
       }
-      const topology = await startDynamicNodePlans(executionContext, plans, "recreate");
+      const topology = await startDynamicNodePlans(executionContext, plans, "recreate", [], expectedExisting);
       results.push(...topology.results);
       if (topology.completedNodes < plans.length) {
         return confirmed(bootstrapResponse(ctx, specs, rollback, verification, results, topology.completedNodes, plans.length));
@@ -182,31 +192,43 @@ export async function destroyStack(
   ctx: ToolkitContext,
   options: DestroyStackOptions = {},
   preparedExtraDynamicNodes?: readonly (string | Pick<InspectedDynamicNodePlan, "container" | "containerId">)[],
+  preparedStackTargets?: PreparedStackTargets,
 ): Promise<DestroyStackResponse> {
+  const inventoryState = preparedStackTargets && preparedExtraDynamicNodes ? undefined : await requireInventory(ctx);
+  const stackTargets = preparedStackTargets ?? await prepareStackTargets(
+    ctx, inventoryState!, configuredDynamicNodePlans(ctx.profile).map((plan) => plan.container),
+  );
+  const legacyNames = preparedExtraDynamicNodes?.filter((target): target is string => typeof target === "string") ?? [];
+  const legacyTargets = legacyNames.length ? await inspectExactDynamicNodeTargets(ctx, legacyNames) : [];
+  const legacyByName = new Map(legacyTargets.map((target) => [target.container, target]));
   const preparedTargets = preparedExtraDynamicNodes
-    ? [...preparedExtraDynamicNodes]
+    ? preparedExtraDynamicNodes.map((target) => typeof target === "string" ? legacyByName.get(target)! : target)
     : await inspectExactDynamicNodeTargets(
         ctx,
         findExtraDynamicContainers(
           ctx.profile,
-          (await requireInventory(ctx)).containers.map((container) => container.names),
+          inventoryState!.containers.map((container) => container.names),
         ),
       );
-  const extraDynamicNodes = preparedTargets.map((target) =>
-    typeof target === "string" ? target : target.container
-  );
+  const extraDynamicNodes = preparedTargets.map((target) => target.container);
+  const configuredNames = new Set(stackTargets.dynamicContainers.map((target) => target.container));
+  const tenantSpec = stackTargets.staticContainer.containerId
+    ? removeTenantIfPresentSpec({ ...ctx.profile, staticContainer: stackTargets.staticContainer.containerId })
+    : undefined;
+  const targets = [stackTargets.staticContainer, ...stackTargets.dynamicContainers];
+  const sharedCleanupGuard = stackTargetsAbsentSpec([...targets.map((target) => target.container), ...extraDynamicNodes]);
   const specs: CommandSpec[] = [
-    removeTenantIfPresentSpec(ctx.profile),
-    ...preparedTargets.map(removeExtraDynamicNodeSpec),
-    bash(`docker rm -f ${shellQuote(ctx.profile.dynamicContainer)} 2>/dev/null || true`, {
-      timeoutMs: 60_000,
-      description: `Remove main dynamic tenant node ${ctx.profile.dynamicContainer}`
-    }),
-    bash(`docker rm -f ${shellQuote(ctx.profile.staticContainer)} 2>/dev/null || true`, {
-      timeoutMs: 60_000,
-      description: `Remove static local-ydb node ${ctx.profile.staticContainer}`
-    }),
-    bash(`docker network rm ${shellQuote(ctx.profile.network)} 2>/dev/null || true`, {
+    stackTargetsGuardSpec([...targets, ...preparedTargets]),
+    ...(tenantSpec ? [tenantSpec] : []),
+    ...preparedTargets.filter((target) => !configuredNames.has(target.container)).map(removeExtraDynamicNodeSpec),
+    ...stackTargets.dynamicContainers.slice().reverse().flatMap((target) => target.containerId
+      ? [exactDynamicNodeRemovalSpec({ ...target, containerId: target.containerId }, `Remove exact configured tenant node ${target.container}`)]
+      : []),
+    ...(stackTargets.staticContainer.containerId ? [exactDynamicNodeRemovalSpec({
+      ...stackTargets.staticContainer, containerId: stackTargets.staticContainer.containerId,
+    }, `Remove exact static local-ydb node ${ctx.profile.staticContainer}`)] : []),
+    sharedCleanupGuard,
+    bash(`set -euo pipefail; names=$(docker network ls --format '{{.Name}}'); if printf '%s\\n' "$names" | grep -Fxq ${shellQuote(ctx.profile.network)}; then docker network rm ${shellQuote(ctx.profile.network)}; fi`, {
       timeoutMs: 60_000,
       description: `Remove Docker network ${ctx.profile.network}`
     })
@@ -214,19 +236,22 @@ export async function destroyStack(
 
   if (ctx.profile.bindMountPath) {
     if (options.removeBindMountPath) {
+      specs.push(sharedCleanupGuard);
       specs.push(bash(`rm -rf ${shellQuote(ctx.profile.bindMountPath)}`, {
         timeoutMs: 60_000,
         description: `Remove bind mount path ${ctx.profile.bindMountPath}`
       }));
     }
   } else {
-    specs.push(bash(`docker volume rm ${shellQuote(ctx.profile.volume)} 2>/dev/null || true`, {
+    specs.push(sharedCleanupGuard);
+    specs.push(bash(`set -euo pipefail; names=$(docker volume ls --format '{{.Name}}'); if printf '%s\\n' "$names" | grep -Fxq ${shellQuote(ctx.profile.volume)}; then docker volume rm ${shellQuote(ctx.profile.volume)}; fi`, {
       timeoutMs: 60_000,
       description: `Remove Docker volume ${ctx.profile.volume}`
     }));
   }
 
   if (options.removeAuthArtifacts) {
+    specs.push(sharedCleanupGuard);
     for (const path of [ctx.profile.authConfigPath, ctx.profile.dynamicNodeAuthTokenFile, ctx.profile.rootPasswordFile].filter((value): value is string => Boolean(value))) {
       specs.push(bash(`rm -f ${shellQuote(path)}`, {
         timeoutMs: 60_000,
@@ -236,6 +261,7 @@ export async function destroyStack(
   }
 
   if (options.removeDumpHostPath) {
+    specs.push(sharedCleanupGuard);
     specs.push(bash(`rm -rf ${shellQuote(ctx.profile.dumpHostPath)}`, {
       timeoutMs: 60_000,
       description: `Remove dump directory ${ctx.profile.dumpHostPath}`
@@ -267,7 +293,7 @@ export async function destroyStack(
       plannedCommands,
       rollback,
       verification,
-      tenantRemovePlanned: true,
+      tenantRemovePlanned: Boolean(tenantSpec),
       extraDynamicNodes,
       removesBindMountPath: Boolean(ctx.profile.bindMountPath && options.removeBindMountPath),
       removesAuthArtifacts: Boolean(options.removeAuthArtifacts),
@@ -277,11 +303,11 @@ export async function destroyStack(
 
   const results: CommandResult[] = [];
   let tenantRemoveSkipped = false;
-  for (const [index, spec] of specs.entries()) {
+  for (const spec of specs) {
     const result = normalizeExpectedYdbResult(spec, await ctx.client.run(spec));
     results.push(result);
     if (!result.ok) {
-      if (index === 0 && canContinueAfterTenantRemoveFailureDuringTeardown(ctx, options, result)) {
+      if (spec === tenantSpec && canContinueAfterTenantRemoveFailureDuringTeardown(ctx, options, result)) {
         tenantRemoveSkipped = true;
         continue;
       }
@@ -299,7 +325,7 @@ export async function destroyStack(
     rollback,
     verification,
     results,
-    tenantRemovePlanned: true,
+    tenantRemovePlanned: Boolean(tenantSpec),
     extraDynamicNodes,
     removesBindMountPath: Boolean(ctx.profile.bindMountPath && options.removeBindMountPath),
     removesAuthArtifacts: Boolean(options.removeAuthArtifacts),
@@ -308,14 +334,8 @@ export async function destroyStack(
 }
 
 function removeExtraDynamicNodeSpec(
-  target: string | Pick<InspectedDynamicNodePlan, "container" | "containerId">,
+  target: Pick<InspectedDynamicNodePlan, "container" | "containerId">,
 ): CommandSpec {
-  if (typeof target === "string") {
-    return bash(`docker rm -f ${shellQuote(target)} 2>/dev/null || true`, {
-      timeoutMs: 60_000,
-      description: `Remove extra dynamic tenant node ${target}`,
-    });
-  }
   return exactDynamicNodeRemovalSpec(
     target,
     `Remove exact extra dynamic tenant node ${target.container}`,
@@ -338,11 +358,15 @@ function canContinueAfterTenantRemoveFailureDuringTeardown(
 export async function restartStack(ctx: ToolkitContext, options: MutatingOptions = {}): Promise<RestartStackResponse> {
   const inventory = await requireInventory(ctx);
   const plans = configuredDynamicNodePlans(ctx.profile);
+  const stackTargets = await prepareStackTargets(ctx, inventory, plans.map((plan) => plan.container));
+  const staticProfile = {
+    ...ctx.profile, staticContainer: stackTargets.staticContainer.containerId ?? ctx.profile.staticContainer,
+  };
   const drift = classifyDynamicTopologyDrift(ctx.profile, inventory.containers);
   const configuredNames = new Set(plans.map((plan) => plan.container));
-  const runningConfigured = inventory.containers
+  const runningConfigured = new Set(inventory.containers
     .filter((container) => container.names && configuredNames.has(container.names) && container.state === "running")
-    .map((container) => container.names as string);
+    .map((container) => container.names as string));
   const runningUnexpectedNames = drift.unexpected
     .filter((container) => container.state === "running" && container.names)
     .map((container) => container.names as string);
@@ -356,13 +380,17 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
   });
   const unexpectedStopSpecs = runningUnexpected.slice().reverse().map((target) =>
     exactDynamicNodeActionSpec(target, "stop", `Stop exact unexpected dynamic tenant node ${target.container}`));
-  const configuredStopSpecs = runningConfigured.slice().reverse()
-    .map((container) => bash(`docker stop ${shellQuote(container)}`, {
-      timeoutMs: 60_000,
-      description: `Stop dynamic tenant node ${container}`
-    }));
+  const configuredStopSpecs = stackTargets.dynamicContainers.slice().reverse()
+    .flatMap((target) => target.containerId && runningConfigured.has(target.container)
+      ? [exactDynamicNodeActionSpec({ ...target, containerId: target.containerId }, "stop", `Stop dynamic tenant node ${target.container}`)]
+      : []);
   const stopSpecs = [...unexpectedStopSpecs, ...configuredStopSpecs];
   const preflightSpecs = [
+    stackTargetsGuardSpec([stackTargets.staticContainer, ...stackTargets.dynamicContainers]),
+    ...(stackTargets.staticContainer.containerId ? [] : [bash(
+      "printf '%s\\n' 'A reviewed static container is required for restart.' >&2; exit 1",
+      { description: "Require reviewed static container for restart" },
+    )]),
     ensureImagePresentSpec(ctx.profile.image),
     bash(commandForStaticCompatibilityCheck(ctx.profile, {
       requireGraphShard: true,
@@ -371,17 +399,21 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
   ];
   const mutationSpecs = [
     ...stopSpecs,
-    bash(`docker stop ${shellQuote(ctx.profile.staticContainer)} 2>/dev/null || true`),
-    bash(`docker start ${shellQuote(ctx.profile.staticContainer)}`),
+    ...(stackTargets.staticContainer.containerId ? [
+      exactDynamicNodeActionSpec({ ...stackTargets.staticContainer, containerId: stackTargets.staticContainer.containerId }, "stop", "Stop reviewed static container"),
+      exactDynamicNodeActionSpec({ ...stackTargets.staticContainer, containerId: stackTargets.staticContainer.containerId }, "start", "Start reviewed static container"),
+    ] : []),
     bash("sleep 5"),
-    createTenantSpec(ctx.profile),
+    createTenantSpec(staticProfile),
     bash("sleep 5")
   ];
-  const nodeSpecs = plans.flatMap((plan) => dynamicNodeStartSpecs(ctx.profile, plan, "recreate"));
+  const nodeSpecs = plans.flatMap((plan, index) => dynamicNodeStartSpecs(
+    staticProfile, plan, "recreate", [], stackTargets.dynamicContainers[index],
+  ));
   const unexpectedStartSpecs = runningUnexpected.map((target) =>
     exactDynamicNodeActionSpec(target, "start", `Restore exact unexpected dynamic tenant node ${target.container}`));
   const metadataSpec = waitForYdbCli(
-    ctx.profile,
+    staticProfile,
     ["scheme", "ls", ctx.profile.tenantPath],
     ctx.profile.tenantPath,
     "Verify tenant metadata after restart"
@@ -441,7 +473,9 @@ export async function restartStack(ctx: ToolkitContext, options: MutatingOptions
         results.push(...await restoreUnexpectedDynamicNodes(executionContext, unexpectedStartSpecs));
         return confirmed(restartResponse(ctx, specs, rollback, verification, results, missingDynamicContainers, unexpectedDynamicContainers, 0, plans.length));
       }
-      const topology = await startDynamicNodePlans(executionContext, plans, "recreate");
+      const topology = await startDynamicNodePlans(
+        { ...executionContext, profile: staticProfile }, plans, "recreate", [], stackTargets.dynamicContainers,
+      );
       results.push(...topology.results);
       if (topology.completedNodes < plans.length) {
         results.push(...await restoreUnexpectedDynamicNodes(executionContext, unexpectedStartSpecs));

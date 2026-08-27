@@ -33,6 +33,7 @@ import {
   type ProfileImageUpdate,
 } from "./profile-image-config.js";
 import { bootstrap, destroyStack } from "./stack.js";
+import { prepareStackTargets } from "./stack-targets.js";
 import { dumpTenant, restoreTenant } from "./tenant.js";
 import type {
   ListVersionsOptions,
@@ -266,6 +267,9 @@ export async function upgradeVersion(
   const dumpName = options.dumpName ?? buildUpgradeDumpName(ctx.profile, sourceImage, version);
   const profileImageUpdate = plannedProfileImageUpdate(configPath, ctx.profile.name, sourceImage, targetImage);
   const inventoryState = await requireInventory(ctx);
+  const preparedStackTargets = await prepareStackTargets(
+    ctx, inventoryState, configuredDynamicNodePlans(ctx.profile).map((plan) => plan.container),
+  );
   const extraDynamicNodes = await inspectExtraDynamicNodePlans(
     ctx,
     inventoryState.containers.map((container) => container.names)
@@ -293,8 +297,9 @@ export async function upgradeVersion(
     phaseCtx,
     { confirm: false },
     preparedExtraDynamicNodes,
+    preparedStackTargets,
   );
-  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false }, { expectedImageId: targetImageId });
+  const bootstrapPlan = await bootstrap(rebuildCtx, { confirm: false }, { expectedImageId: targetImageId, requireAbsent: true });
   const restorePlan = await restoreTenant(rebuildCtx, { confirm: false, dumpName });
   const reapplyPlans = authReapplyPlanned
     ? [
@@ -434,10 +439,11 @@ export async function upgradeVersion(
       phaseCtx,
       { confirm: true },
       preparedExtraDynamicNodes,
+      preparedStackTargets,
     ))) {
       return acceptedResponse();
     }
-    if (!appendOperationResultsAndCheckSuccess(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: targetImageId }))) {
+    if (!appendOperationResultsAndCheckSuccess(results, await bootstrap(rebuildCtx, { confirm: true }, { expectedImageId: targetImageId, requireAbsent: true }))) {
       return acceptedResponse();
     }
     if (!appendOperationResultsAndCheckSuccess(results, await restoreTenant(
