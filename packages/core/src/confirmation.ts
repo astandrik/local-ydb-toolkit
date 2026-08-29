@@ -1,0 +1,480 @@
+import {
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
+import type { CommandSpec } from "./api-client.js";
+import {
+  confirmationContentIntent,
+  type ConfirmationContentFingerprint,
+  type ConfirmationContentInput,
+} from "./confirmation-inputs.js";
+import type {
+  MutationConfirmation,
+  MutatingOptions,
+  ToolkitContext,
+} from "./operations/types.js";
+
+const TOKEN_VERSION = "v1";
+const PROCESS_KEY_BYTES = 32;
+const NONCE_BYTES = 16;
+const MAC_BYTES = 32;
+
+export interface PlanConfirmationRuntime {
+  store: ProcessConfirmationStore;
+  toolName: string;
+  configSource: unknown;
+}
+
+export interface ConfirmationDecision {
+  execute: boolean;
+  confirmation?: MutationConfirmation;
+  receipt?: ConfirmationReceipt;
+}
+
+export interface ConfirmationReceipt {
+  contentInputs: readonly ConfirmationContentFingerprint[];
+  release?: () => void;
+}
+
+export interface ConfirmationAuthorizationOptions {
+  contentInputs?: ConfirmationContentInput[];
+  rotatingScope?: unknown;
+  sharedExclusiveScope?: unknown;
+}
+
+export class ProcessConfirmationStore {
+  readonly #key = randomBytes(PROCESS_KEY_BYTES);
+  readonly #consumedTokens = new Set<string>();
+  readonly #scopeGenerations = new Map<string, number>();
+  readonly #activeExclusiveScopes = new Set<string>();
+
+  issue(intent: unknown, rotatingScope?: unknown): string {
+    const nonce = randomBytes(NONCE_BYTES);
+    const intentMac = this.#signIntent(nonce, intent, rotatingScope);
+    const capabilityMac = this.#signCapability(nonce, intentMac);
+    return [
+      TOKEN_VERSION,
+      nonce.toString("base64url"),
+      intentMac.toString("base64url"),
+      capabilityMac.toString("base64url"),
+    ].join(".");
+  }
+
+  consume(token: string, intent: unknown, rotatingScope?: unknown): boolean {
+    if (!this.#validateAndConsume(token, intent, rotatingScope)) {
+      return false;
+    }
+    if (rotatingScope !== undefined) {
+      // Rotate synchronously with consumption so concurrent confirms cannot reuse
+      // an auto-resolved execution value before the first caller mutates state.
+      const scopeKey = this.#scopeKey(rotatingScope);
+      this.#scopeGenerations.set(
+        scopeKey,
+        (this.#scopeGenerations.get(scopeKey) ?? 0) + 1,
+      );
+    }
+    return true;
+  }
+
+  acquire(token: string, intent: unknown, exclusiveScope: unknown): (() => void) | undefined {
+    // Consume before checking the active lease so a valid submitted capability
+    // cannot be replayed after the in-flight execution releases the scope.
+    if (!this.#validateAndConsume(token, intent, exclusiveScope)) {
+      return undefined;
+    }
+    const scopeKey = this.#scopeKey(exclusiveScope);
+    if (this.#activeExclusiveScopes.has(scopeKey)) {
+      return undefined;
+    }
+    this.#activeExclusiveScopes.add(scopeKey);
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      if (this.#activeExclusiveScopes.delete(scopeKey)) {
+        this.#scopeGenerations.set(
+          scopeKey,
+          (this.#scopeGenerations.get(scopeKey) ?? 0) + 1,
+        );
+      }
+    };
+  }
+
+  retire(token: string): boolean {
+    if (this.#consumedTokens.has(token)) {
+      return false;
+    }
+    const parsed = parseToken(token);
+    if (!parsed) {
+      return false;
+    }
+    const expectedCapability = this.#signCapability(parsed.nonce, parsed.intentMac);
+    if (!timingSafeEqual(parsed.capabilityMac, expectedCapability)) {
+      return false;
+    }
+    this.#consumedTokens.add(token);
+    return true;
+  }
+
+  scopedId(scope: unknown): string {
+    const scopeKey = this.#scopeKey(scope);
+    const generation = this.#scopeGenerations.get(scopeKey) ?? 0;
+    return createHmac("sha256", this.#key)
+      .update("confirmation-scope-id\0", "utf8")
+      .update(scopeKey, "ascii")
+      .update("\0")
+      .update(String(generation), "ascii")
+      .digest()
+      .subarray(0, NONCE_BYTES)
+      .toString("base64url");
+  }
+
+  #validateAndConsume(token: string, intent: unknown, scope?: unknown): boolean {
+    if (this.#consumedTokens.has(token)) {
+      return false;
+    }
+    const parsed = parseToken(token);
+    if (!parsed) {
+      return false;
+    }
+    const expectedCapability = this.#signCapability(parsed.nonce, parsed.intentMac);
+    if (!timingSafeEqual(parsed.capabilityMac, expectedCapability)) {
+      return false;
+    }
+    const expected = this.#signIntent(parsed.nonce, intent, scope);
+    if (!timingSafeEqual(parsed.intentMac, expected)) {
+      return false;
+    }
+    this.#consumedTokens.add(token);
+    return true;
+  }
+
+  #sign(nonce: Buffer, intent: unknown): Buffer {
+    return createHmac("sha256", this.#key)
+      // This is a keyed capability HMAC, not password hashing.
+      // codeql[js/insufficient-password-hash]
+      .update(nonce)
+      .update("\0")
+      .update(canonicalJson(intent), "utf8")
+      .digest();
+  }
+
+  #signIntent(nonce: Buffer, intent: unknown, rotatingScope?: unknown): Buffer {
+    if (rotatingScope === undefined) {
+      return this.#sign(nonce, intent);
+    }
+    const scopeKey = this.#scopeKey(rotatingScope);
+    return this.#sign(nonce, {
+      intent,
+      rotatingScope: {
+        key: scopeKey,
+        generation: this.#scopeGenerations.get(scopeKey) ?? 0,
+      },
+    });
+  }
+
+  #signCapability(nonce: Buffer, intentMac: Buffer): Buffer {
+    return createHmac("sha256", this.#key)
+      .update("confirmation-capability\0", "utf8")
+      .update(nonce)
+      .update(intentMac)
+      .digest();
+  }
+
+  #scopeKey(scope: unknown): string {
+    return createHmac("sha256", this.#key)
+      .update("confirmation-scope-key\0", "utf8")
+      .update(canonicalJson(scope), "utf8")
+      .digest("hex");
+  }
+}
+
+export async function authorizeMutation(
+  ctx: ToolkitContext,
+  options: MutatingOptions,
+  executionIntent: unknown,
+  authorization: ConfirmationAuthorizationOptions = {},
+): Promise<ConfirmationDecision> {
+  if (
+    authorization.rotatingScope !== undefined
+    && authorization.sharedExclusiveScope !== undefined
+  ) {
+    throw new Error("Confirmation authorization cannot use rotating and shared exclusive scopes together");
+  }
+
+  const runtime = ctx.confirmation;
+  if (!runtime) {
+    if (options.confirm !== true) {
+      return { execute: false };
+    }
+    return {
+      execute: true,
+      receipt: {
+        contentInputs: await confirmationContentIntent(
+          ctx,
+          authorization.contentInputs,
+        ),
+      },
+    };
+  }
+
+  const contentInputs = await confirmationContentIntent(
+    ctx,
+    authorization.contentInputs,
+  );
+  const intent = {
+    ...confirmationEnvelope(ctx, executionIntent),
+    contentInputs,
+  };
+  let confirmationScope: unknown;
+  if (authorization.sharedExclusiveScope !== undefined) {
+    confirmationScope = sharedConfirmationScopeEnvelope(ctx, authorization.sharedExclusiveScope);
+  } else if (authorization.rotatingScope !== undefined) {
+    confirmationScope = confirmationEnvelope(ctx, {
+      kind: "rotating-scope",
+      scope: authorization.rotatingScope,
+    });
+  }
+
+  if (options.confirm !== true) {
+    return {
+      execute: false,
+      confirmation: {
+        status: "planned",
+        token: runtime.store.issue(intent, confirmationScope),
+      },
+    };
+  }
+
+  const release = typeof options.confirmationToken === "string"
+    && authorization.sharedExclusiveScope !== undefined
+    ? runtime.store.acquire(options.confirmationToken, intent, confirmationScope)
+    : undefined;
+  const accepted = release !== undefined || (
+    authorization.sharedExclusiveScope === undefined
+    && typeof options.confirmationToken === "string"
+    && runtime.store.consume(options.confirmationToken, intent, confirmationScope)
+  );
+  if (accepted) {
+    return {
+      execute: true,
+      confirmation: { status: "accepted" },
+      receipt: { contentInputs, release },
+    };
+  }
+
+  return {
+    execute: false,
+    confirmation: {
+      status: "rejected",
+      token: runtime.store.issue(intent, confirmationScope),
+    },
+  };
+}
+
+export function confirmationScopedId(ctx: ToolkitContext, scope: unknown): string | undefined {
+  const runtime = ctx.confirmation;
+  return runtime?.store.scopedId(
+    confirmationEnvelope(ctx, { kind: "rotating-scope", scope }),
+  );
+}
+
+export async function withConfirmationLease<T>(
+  receipt: ConfirmationReceipt | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } finally {
+    receipt?.release?.();
+  }
+}
+
+export function retireSubmittedConfirmation(
+  ctx: ToolkitContext,
+  options: MutatingOptions,
+): boolean {
+  return options.confirm === true
+    && typeof options.confirmationToken === "string"
+    && ctx.confirmation?.store.retire(options.confirmationToken) === true;
+}
+
+export function commandPlanIntent(plan: {
+  summary: string;
+  risk: "low" | "medium" | "high";
+  specs: CommandSpec[];
+  rollback: string[];
+  verification: string[];
+}): Record<string, unknown> {
+  return {
+    kind: "command-plan",
+    summary: plan.summary,
+    risk: plan.risk,
+    commands: plan.specs.map(commandSpecIntent),
+    rollback: plan.rollback,
+    verification: plan.verification,
+  };
+}
+
+export function commandSpecIntent(spec: CommandSpec): Record<string, unknown> {
+  return {
+    command: spec.command,
+    args: spec.args,
+    stdin: spec.stdin,
+    timeoutMs: spec.timeoutMs,
+    allowFailure: spec.allowFailure,
+    description: spec.description,
+    confirmationContentBindings: spec.confirmationContentBindings,
+  };
+}
+
+export function attachConfirmation<T extends object>(
+  response: T,
+  confirmation: MutationConfirmation | undefined,
+): T & { confirmation?: MutationConfirmation } {
+  return confirmation ? { ...response, confirmation } : response;
+}
+
+export function attachNotRequiredConfirmation<T extends object>(
+  ctx: ToolkitContext,
+  response: T,
+): T & { confirmation?: MutationConfirmation } {
+  return attachConfirmation(
+    response,
+    ctx.confirmation ? { status: "not-required" } : undefined,
+  );
+}
+
+export function confirmationSummarySuffix(
+  confirmation: MutationConfirmation | undefined,
+): string {
+  if (confirmation?.status === "planned") {
+    return " Not executed; review this exact plan, then repeat the request with confirm=true and set the confirmationToken request argument to confirmation.token from this plan response.";
+  }
+  if (confirmation?.status === "rejected") {
+    return " Not executed because the confirmation token did not match this exact plan; review the refreshed plan, then repeat the request with confirm=true and set the confirmationToken request argument to confirmation.token from the refreshed plan response.";
+  }
+  return " Not executed because confirm=true was not provided.";
+}
+
+export function withoutConfirmation(ctx: ToolkitContext): ToolkitContext {
+  if (!ctx.confirmation) {
+    return ctx;
+  }
+  const { confirmation: _confirmation, ...rest } = ctx;
+  return rest;
+}
+
+function parseToken(token: string): {
+  nonce: Buffer;
+  intentMac: Buffer;
+  capabilityMac: Buffer;
+} | undefined {
+  const parts = token.split(".");
+  if (
+    parts.length !== 4
+    || parts[0] !== TOKEN_VERSION
+    || !/^[A-Za-z0-9_-]{22}$/.test(parts[1] ?? "")
+    || !/^[A-Za-z0-9_-]{43}$/.test(parts[2] ?? "")
+    || !/^[A-Za-z0-9_-]{43}$/.test(parts[3] ?? "")
+  ) {
+    return undefined;
+  }
+  const nonce = Buffer.from(parts[1]!, "base64url");
+  const intentMac = Buffer.from(parts[2]!, "base64url");
+  const capabilityMac = Buffer.from(parts[3]!, "base64url");
+  if (
+    nonce.length !== NONCE_BYTES
+    || intentMac.length !== MAC_BYTES
+    || capabilityMac.length !== MAC_BYTES
+    || nonce.toString("base64url") !== parts[1]
+    || intentMac.toString("base64url") !== parts[2]
+    || capabilityMac.toString("base64url") !== parts[3]
+  ) {
+    return undefined;
+  }
+  return { nonce, intentMac, capabilityMac };
+}
+
+function canonicalJson(value: unknown): string {
+  return serializeCanonical(value, new Set());
+}
+
+function confirmationEnvelope(ctx: ToolkitContext, execution: unknown): Record<string, unknown> {
+  const runtime = ctx.confirmation;
+  if (!runtime) {
+    throw new Error("Confirmation runtime is required for contextual confirmation state");
+  }
+  return {
+    toolName: runtime.toolName,
+    configSource: runtime.configSource,
+    profile: ctx.profile,
+    execution,
+  };
+}
+
+function sharedConfirmationScopeEnvelope(
+  ctx: ToolkitContext,
+  scope: unknown,
+): Record<string, unknown> {
+  const runtime = ctx.confirmation;
+  if (!runtime) {
+    throw new Error("Confirmation runtime is required for shared confirmation state");
+  }
+  // A stack is addressed by its static container on the execution host, not by
+  // profile labels, config provenance or credentials. Exact intent still binds all of them.
+  const profile = ctx.profile;
+  return {
+    target: {
+      mode: profile.mode,
+      host: profile.mode === "ssh" ? profile.ssh?.host.toLowerCase() : undefined,
+      port: profile.mode === "ssh" ? profile.ssh?.port ?? 22 : undefined,
+      staticContainer: profile.staticContainer,
+    },
+    execution: {
+      kind: "shared-exclusive-scope",
+      scope,
+    },
+  };
+}
+
+function serializeCanonical(value: unknown, seen: Set<object>): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("Confirmation intent contains a non-finite number");
+    }
+    return JSON.stringify(value);
+  }
+  if (typeof value === "undefined") {
+    return "null";
+  }
+  if (typeof value !== "object") {
+    throw new Error("Confirmation intent contains a non-JSON value");
+  }
+  if (seen.has(value)) {
+    throw new Error("Confirmation intent contains a cycle");
+  }
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => serializeCanonical(item, seen)).join(",")}]`;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error("Confirmation intent contains a non-plain object");
+    }
+    return `{${Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => `${JSON.stringify(key)}:${serializeCanonical(item, seen)}`)
+      .join(",")}}`;
+  } finally {
+    seen.delete(value);
+  }
+}
