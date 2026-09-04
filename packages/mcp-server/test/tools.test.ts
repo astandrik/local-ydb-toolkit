@@ -791,12 +791,14 @@ describe("mcp tools", () => {
     expect(result.structuredContent).toBe(responseFixtureJsonModel);
   });
 
-  it("falls back to JSON when TOON would not decode losslessly", () => {
+  it("formats log text as lossless TOON", () => {
     const result = successResult(responseFixtureLogText, {
       responseContentFormat: "toon",
     }) as ToolResultForTest;
+    const text = result.content[1]?.text ?? "";
 
-    expect(JSON.parse(result.content[1]?.text ?? "")).toEqual(responseFixtureLogText);
+    expect(text).not.toBe(JSON.stringify(responseFixtureLogText, null, 2));
+    expect(decode(text)).toEqual(responseFixtureLogText);
     expect(result.structuredContent).toBe(responseFixtureLogText);
   });
 
