@@ -35,6 +35,12 @@ test("published MCP compatibility remains selected for every workflow trigger", 
   assert.doesNotMatch(job, /(?:^|\n)\s+if:/);
 });
 
+test("published MCP smoke allows a cold install to finish", () => {
+  const job = workflowJob("published-mcp-smoke");
+
+  assert.match(job, /^\s+timeout-minutes: 10$/m);
+});
+
 test("workflow contract changes trigger both push and pull request checks", () => {
   const contractPath = '"scripts/ci/agent-plugin-workflow.test.mjs"';
 
