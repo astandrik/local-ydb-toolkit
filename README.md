@@ -27,7 +27,7 @@ The maintained listing hub, including third-party directory status and freshness
 
 [![VerifyMCP trust score for Local YDB MCP](https://verifymcp.io/badge/astandrik-local-ydb-mcp/astandrik-local-ydb-mcp.svg)](https://verifymcp.io/servers/astandrik-local-ydb-mcp/astandrik-local-ydb-mcp)
 
-VerifyMCP reports automated checks of the published npm package's provenance and MCP schemas. Its score is not a security certification or a verification of operations against a configured Docker/YDB deployment.
+VerifyMCP reports automated checks of the published npm package, including provenance and MCP schema checks. Its score is not a security certification or a verification of operations against a configured Docker/YDB deployment.
 
 ## Relationship to `ydb/ydb-mcp`
 
