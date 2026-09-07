@@ -25,6 +25,10 @@ It includes:
 
 The maintained listing hub, including third-party directory status and freshness notes, is on the [project website](https://local-ydb-toolkit.ydb-qdrant.tech/#mcp-registries). External scores, tool counts, and install metrics are directory snapshots, not security attestations.
 
+[![VerifyMCP trust score for Local YDB MCP](https://verifymcp.io/badge/astandrik-local-ydb-mcp/astandrik-local-ydb-mcp.svg)](https://verifymcp.io/servers/astandrik-local-ydb-mcp/astandrik-local-ydb-mcp)
+
+VerifyMCP reports automated checks of the published npm package's provenance and MCP schemas. Its score is not a security certification or a verification of operations against a configured Docker/YDB deployment.
+
 ## Relationship to `ydb/ydb-mcp`
 
 Local YDB MCP is complementary to the official [`ydb-platform/ydb-mcp`](https://github.com/ydb-platform/ydb-mcp) server. Use `ydb/ydb-mcp` when an agent needs general YDB database-level tools such as ad hoc SQL queries, query explanations, directory listing, and path inspection against an existing YDB endpoint.
