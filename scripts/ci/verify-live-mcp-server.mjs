@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { shellQuote } from "@local-ydb-toolkit/core";
 import {
   assertLiveToolRegistry,
   verifyManagedSqlLive,
@@ -521,8 +522,12 @@ async function verifyBackupRestore(client, profile) {
     const restorePlan = await callTool(client, "local_ydb_restore_tenant", restoreArgs);
     assert(restorePlan.executed === false, "plan-only restore should not execute without confirm=true.");
     assert(
-      plannedCommandsText(restorePlan).includes(`tools restore -p ${restorePath} -i /dump/${dumpName}/tenant`),
+      plannedCommandsText(restorePlan).includes(`tools restore -p ${restorePath} -i /dump/confirmed`),
       "path-level restore plan did not target the destination path and dump input.",
+    );
+    assert(
+      plannedCommandsText(restorePlan).includes(":/dump/confirmed:ro"),
+      "path-level restore plan did not use a read-only confirmed snapshot mount.",
     );
 
     const restoreResult = await callTool(client, "local_ydb_restore_tenant", {
@@ -1090,6 +1095,11 @@ async function verifyDeclarativeTopologyLifecycle(client) {
       const restartingNode = findContainer(restartingInventory, configuredNodeTwo);
       assert(restartingNode?.id, "restarting configured-node fixture ID was not available.");
       assert(restartingNode.state === "restarting", "configured-node fixture did not enter restarting state.");
+      const restartingContainerId = restartingFixture.stdout.trim();
+      assert(
+        /^[a-f0-9]{64}$/.test(restartingContainerId) && restartingContainerId.startsWith(restartingNode.id),
+        "restarting configured-node fixture creation and inventory IDs did not match.",
+      );
 
       const restartPlan = await callTool(client, "local_ydb_restart_stack", {
         profile: topologyProfileName,
@@ -1103,8 +1113,8 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         "restart preflight did not report the one-off node.",
       );
       assert(
-        plannedCommandsText(restartPlan).includes(`docker rm -f ${configuredNodeTwo}`),
-        "restart plan did not unconditionally remove the restarting configured node.",
+        plansExactContainerRecreation(restartPlan, configuredNodeTwo, restartingContainerId),
+        "restart plan did not guard and recreate the exact restarting configured node.",
       );
       assert(
         !plannedCommandsText(restartPlan).includes(".State.Running"),
@@ -1138,7 +1148,8 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         const recoveryResultIndex = failedRestart.results?.findIndex((result, index) => (
           index > failedResultIndex
           && result.ok === true
-          && result.command?.includes(`docker start ${oneOffContainer}`)
+          && result.command?.includes("docker start")
+          && result.command.includes(oneOffContainer)
         )) ?? -1;
         assert(failedResultIndex >= 0, "restart with an unused monitoring endpoint did not fail readiness.");
         assert(recoveryResultIndex > failedResultIndex, "failed restart did not restore the running one-off container after the original error.");
@@ -1443,21 +1454,53 @@ async function runCommand(command, args, options = {}) {
 async function callTool(client, name, args) {
   console.log(`::group::tools/call ${name}`);
   try {
-    const result = await client.callTool(
-      { name, arguments: args },
-      undefined,
-      { timeout: 180_000 },
-    );
-    if (result.isError) {
-      throw new Error(`${name} returned MCP error: ${toolText(result)}`);
+    let effectiveArgs = args;
+    if (args.confirm === true && args.confirmationToken === undefined) {
+      const planArgs = { ...args };
+      delete planArgs.confirm;
+      const plan = await invokeTool(client, name, planArgs);
+      console.log(JSON.stringify(summarize(plan), null, 2));
+      if (
+        plan.confirmation?.status === "not-required"
+        || isReadOnlyMixedAction(name, planArgs)
+      ) {
+        return plan;
+      }
+      assert(
+        typeof plan.confirmation?.token === "string",
+        `${name} did not return a confirmation token for its exact plan.`,
+      );
+      effectiveArgs = {
+        ...args,
+        confirmationToken: plan.confirmation.token,
+      };
     }
-    const data = "structuredContent" in result ? result.structuredContent : result.toolResult;
-    assertPlainObject(data, `${name} did not return structured content.`);
+    const data = await invokeTool(client, name, effectiveArgs);
     console.log(JSON.stringify(summarize(data), null, 2));
     return data;
   } finally {
     console.log("::endgroup::");
   }
+}
+
+function isReadOnlyMixedAction(name, args) {
+  return (name === "local_ydb_sql" && (args.action ?? "query") !== "execute")
+    || (name === "local_ydb_apply_schema" && (args.action ?? "validate") === "validate")
+    || (name === "local_ydb_permissions" && (args.action ?? "list") === "list");
+}
+
+async function invokeTool(client, name, args) {
+  const result = await client.callTool(
+    { name, arguments: args },
+    undefined,
+    { timeout: 180_000 },
+  );
+  if (result.isError) {
+    throw new Error(`${name} returned MCP error: ${toolText(result)}`);
+  }
+  const data = "structuredContent" in result ? result.structuredContent : result.toolResult;
+  assertPlainObject(data, `${name} did not return structured content.`);
+  return data;
 }
 
 function nodePorts(value) {
@@ -1481,6 +1524,7 @@ function summarize(value) {
     outcome: value.outcome,
     confirmationRequired: value.confirmationRequired,
     confirmationConsumed: value.confirmationConsumed,
+    confirmationStatus: value.confirmation?.status,
     outputBytes: value.outputBytes,
     truncated: value.truncated,
     risk: value.risk,
@@ -1490,6 +1534,23 @@ function summarize(value) {
 
 function plannedCommandsText(value) {
   return Array.isArray(value.plannedCommands) ? value.plannedCommands.join("\n") : "";
+}
+
+function plansExactContainerRecreation(value, container, containerId) {
+  const failure = "printf '%s\\n' 'Reviewed Docker container identity changed.' >&2; exit 1";
+  const recreation = [
+    `expected_id=${shellQuote(containerId)}`,
+    `actual_id=$(docker inspect --type container --format '{{.Id}}' ${shellQuote(container)} 2>/dev/null) || { ${failure}; }`,
+    `[ "$actual_id" = "$expected_id" ] || { ${failure}; }`,
+    'docker rm -f "$expected_id"',
+    `created_id=$(docker create --name ${shellQuote(container)} `,
+  ].join("\n");
+  return Array.isArray(value.plannedCommands) && value.plannedCommands.some(command => {
+    if (!command.startsWith("bash -lc '")) return false;
+    const quoted = command.slice("bash -lc ".length);
+    const script = quoted.slice(1, -1).replaceAll("'\\''", "'");
+    return shellQuote(script) === quoted && script.includes("\n" + recreation);
+  });
 }
 
 function assertOutputContainsNumber(stdout, expected, message) {

@@ -1,4 +1,11 @@
-import { bash, shellQuote, type CommandResult, type CommandSpec } from "../api-client.js";
+import { bash, type CommandResult, type CommandSpec } from "../api-client.js";
+import { withAuthorizedContentExecution } from "../confirmed-content.js";
+import {
+  attachConfirmation,
+  authorizeMutation,
+  commandPlanIntent,
+  confirmationSummarySuffix,
+} from "../confirmation.js";
 import { nodesCheck, requireInventory } from "./checks.js";
 import { commandForStaticCompatibilityCheck, dynamicNodeStartSpecs, waitForYdbCli } from "./commands.js";
 import {
@@ -6,7 +13,11 @@ import {
   configuredDynamicNodePlans,
   startDynamicNodePlans
 } from "./dynamic-node-topology.js";
-import { inspectDynamicNodePorts } from "./dynamic-node-inspect.js";
+import {
+  exactDynamicNodeRemovalSpec,
+  inspectDynamicNodePorts,
+  type ExactDynamicNodeTarget,
+} from "./dynamic-node-inspect.js";
 import {
   assertPositiveInteger,
   delay,
@@ -41,33 +52,60 @@ export async function addDynamicNodes(ctx: ToolkitContext, options: AddDynamicNo
     `scheme ls ${ctx.profile.tenantPath}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Add ${plans.length} dynamic node${plans.length === 1 ? "" : "s"} to ${ctx.profile.tenantPath}. Not executed because confirm=true was not provided.`,
+  const summary = `Add ${plans.length} dynamic node${plans.length === 1 ? "" : "s"} to ${ctx.profile.tenantPath}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands: specs.map((spec) => ctx.client.display(spec)),
       rollback,
       verification,
       nodes: plans
-    };
+    }, decision.confirmation);
   }
 
-  const { results, nodeChecks, completedNodes } = await startDynamicNodePlans(ctx, plans, "ensure", beforeRunSpecs);
-  if (completedNodes < plans.length) {
-    return addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes);
-  }
+  return withAuthorizedContentExecution(
+    ctx,
+    decision.receipt,
+    specs,
+    async (executionContext) => {
+      const { results, nodeChecks, completedNodes } = await startDynamicNodePlans(
+        executionContext,
+        plans,
+        "ensure",
+        beforeRunSpecs,
+      );
+      if (completedNodes < plans.length) {
+        return attachConfirmation(
+          addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes),
+          decision.confirmation,
+        );
+      }
 
-  results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
-  return addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes);
+      results.push(await executionContext.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
+      return attachConfirmation(
+        addDynamicNodesResponse(ctx, plans, specs, nodeChecks, results, rollback, verification, completedNodes),
+        decision.confirmation,
+      );
+    },
+  );
 }
 
 export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDynamicNodesOptions = {}): Promise<RemoveDynamicNodesResponse> {
   const targets = await removableDynamicNodeTargets(ctx, options);
-  const specs = targets.map((target) => bash(`docker rm -f ${shellQuote(target.container)}`, {
-    timeoutMs: 60_000,
-    description: `Remove dynamic tenant node ${target.container}`
-  }));
+  const publicTargets = targets.map(publicDynamicNodeTarget);
+  const specs = targets.map((target) => exactDynamicNodeRemovalSpec(
+    target,
+    `Remove exact dynamic tenant node ${target.container}`,
+  ));
   const rollback = [
     ...(targets.some((target) => target.index <= ctx.profile.dynamicNodeCount)
       ? ["Restore configured nodes with local_ydb_restart_stack or local_ydb_bootstrap."]
@@ -81,47 +119,63 @@ export async function removeDynamicNodes(ctx: ToolkitContext, options: RemoveDyn
     `scheme ls ${ctx.profile.tenantPath}`
   ];
 
-  if (!options.confirm) {
-    return {
-      summary: `Remove ${targets.length} dynamic node${targets.length === 1 ? "" : "s"} from ${ctx.profile.tenantPath}. Not executed because confirm=true was not provided.`,
+  const summary = `Remove ${targets.length} dynamic node${targets.length === 1 ? "" : "s"} from ${ctx.profile.tenantPath}.`;
+  const decision = await authorizeMutation(ctx, options, commandPlanIntent({
+    summary,
+    risk: "high",
+    specs,
+    rollback,
+    verification,
+  }));
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
       executed: false,
       risk: "high",
       plannedCommands: specs.map((spec) => ctx.client.display(spec)),
       rollback,
       verification,
-      nodes: targets
-    };
+      nodes: publicTargets
+    }, decision.confirmation);
   }
 
   const results: CommandResult[] = [];
   const nodeChecks: DynamicNodeCheck[] = [];
   let completedNodes = 0;
 
-  for (const target of targets) {
-    const result = await ctx.client.run(bash(`docker rm -f ${shellQuote(target.container)}`, {
-      timeoutMs: 60_000,
-      description: `Remove dynamic tenant node ${target.container}`
-    }));
+  for (const [index, target] of targets.entries()) {
+    const result = await ctx.client.run(specs[index]!);
     results.push(result);
     if (!result.ok) {
-      return removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes);
+      return attachConfirmation(
+        removeDynamicNodesResponse(ctx, publicTargets, specs, nodeChecks, results, rollback, verification, completedNodes),
+        decision.confirmation,
+      );
     }
     const icPort = target.icPort;
     if (typeof icPort === "number") {
       const check = await waitForDynamicNodePortAbsence(ctx, { ...target, icPort });
       nodeChecks.push(check);
       if (!check.ok) {
-        return removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes);
+        return attachConfirmation(
+          removeDynamicNodesResponse(ctx, publicTargets, specs, nodeChecks, results, rollback, verification, completedNodes),
+          decision.confirmation,
+        );
       }
     }
     completedNodes += 1;
   }
 
   results.push(await ctx.client.run(waitForYdbCli(ctx.profile, ["scheme", "ls", ctx.profile.tenantPath], ctx.profile.tenantPath, "Verify tenant metadata")));
-  return removeDynamicNodesResponse(ctx, targets, nodeChecks, results, rollback, verification, completedNodes);
+  return attachConfirmation(
+    removeDynamicNodesResponse(ctx, publicTargets, specs, nodeChecks, results, rollback, verification, completedNodes),
+    decision.confirmation,
+  );
 }
 
-async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveDynamicNodesOptions): Promise<DynamicNodeTarget[]> {
+type PreparedDynamicNodeTarget = DynamicNodeTarget & ExactDynamicNodeTarget;
+
+async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveDynamicNodesOptions): Promise<PreparedDynamicNodeTarget[]> {
   const hasExplicitTargets = Boolean(options.nodeIds?.length || options.containers?.length);
   const startIndex = options.startIndex ?? (hasExplicitTargets ? 2 : ctx.profile.dynamicNodeCount + 1);
   if (startIndex < 2) {
@@ -146,7 +200,7 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
     const requestedNodeIds = validateNodeIds(options.nodeIds);
     const inspectByContainer = await inspectDynamicNodePorts(ctx, available.map((target) => target.container));
     targets = await targetsForNodeIds(ctx, available, inspectByContainer, requestedNodeIds);
-    return targets.sort((left, right) => right.index - left.index);
+    return prepareRemovalTargets(targets, inspectByContainer);
   } else if (options.containers && options.containers.length > 0) {
     const requested = new Set(options.containers);
     targets = available.filter((target) => requested.has(target.container));
@@ -170,12 +224,33 @@ async function removableDynamicNodeTargets(ctx: ToolkitContext, options: RemoveD
   }
 
   const inspectByContainer = await inspectDynamicNodePorts(ctx, targets.map((target) => target.container));
+  return prepareRemovalTargets(targets, inspectByContainer);
+}
+
+function prepareRemovalTargets(
+  targets: DynamicNodeTarget[],
+  inspectByContainer: Awaited<ReturnType<typeof inspectDynamicNodePorts>>,
+): PreparedDynamicNodeTarget[] {
   return targets
     .sort((left, right) => right.index - left.index)
-    .map((target) => ({
-      ...target,
-      icPort: inspectByContainer.get(target.container)?.icPort ?? target.icPort
-    }));
+    .map((target) => {
+      const inspected = inspectByContainer.get(target.container);
+      if (!inspected?.containerId) {
+        throw new Error(`Could not inspect exact Docker identity for dynamic node ${target.container} before removal.`);
+      }
+      return {
+        ...target,
+        containerId: inspected.containerId,
+        icPort: inspected.icPort ?? target.icPort,
+      };
+    });
+}
+
+function publicDynamicNodeTarget({
+  containerId: _containerId,
+  ...target
+}: PreparedDynamicNodeTarget): DynamicNodeTarget {
+  return target;
 }
 
 function validateNodeIds(nodeIds: number[]): number[] {
@@ -298,6 +373,7 @@ function addDynamicNodesResponse(
 function removeDynamicNodesResponse(
   ctx: ToolkitContext,
   targets: DynamicNodeTarget[],
+  specs: readonly CommandSpec[],
   nodeChecks: DynamicNodeCheck[],
   results: CommandResult[],
   rollback: string[],
@@ -308,10 +384,7 @@ function removeDynamicNodesResponse(
     summary: `Remove ${targets.length} dynamic node${targets.length === 1 ? "" : "s"} from ${ctx.profile.tenantPath}. Executed ${results.filter((result) => result.ok).length}/${results.length} commands; verified ${completedNodes}/${targets.length} nodes.`,
     executed: true,
     risk: "high",
-    plannedCommands: targets.map((target) => ctx.client.display(bash(`docker rm -f ${shellQuote(target.container)}`, {
-      timeoutMs: 60_000,
-      description: `Remove dynamic tenant node ${target.container}`
-    }))),
+    plannedCommands: specs.map((spec) => ctx.client.display(spec)),
     rollback,
     verification,
     results,

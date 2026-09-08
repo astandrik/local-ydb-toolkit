@@ -2,6 +2,7 @@ import { bash, shellQuote, type CommandResult, type CommandSpec, type DockerCont
 import type { ResolvedLocalYdbProfile } from "../validation.js";
 import { nodesCheck } from "./checks.js";
 import { dynamicNodeStartSpecs } from "./commands.js";
+import type { StackContainerTarget } from "./stack-targets.js";
 import { assertPort, assertPositiveInteger, delay, observedNodePorts } from "./helpers.js";
 import type {
   AddDynamicNodesOptions,
@@ -101,14 +102,20 @@ export async function startDynamicNodePlans(
   ctx: ToolkitContext,
   plans: DynamicNodePlan[],
   mode: "ensure" | "recreate" = "ensure",
-  beforeRunSpecs: readonly CommandSpec[] = []
+  beforeRunSpecs: readonly CommandSpec[] = [],
+  expectedExisting?: readonly StackContainerTarget[],
 ): Promise<DynamicTopologyExecution> {
   const results: CommandResult[] = [];
   const nodeChecks: DynamicNodeCheck[] = [];
   let completedNodes = 0;
+  const expectedByName = expectedExisting
+    ? new Map(expectedExisting.map((target) => [target.container, target]))
+    : undefined;
 
   for (const plan of plans) {
-    for (const spec of dynamicNodeStartSpecs(ctx.profile, plan, mode, beforeRunSpecs)) {
+    const target = expectedByName?.get(plan.container);
+    if (expectedExisting && !target) throw new Error("Missing reviewed configured container identity.");
+    for (const spec of dynamicNodeStartSpecs(ctx.profile, plan, mode, beforeRunSpecs, target)) {
       const result = await ctx.client.run(spec);
       results.push(result);
       if (!result.ok) {

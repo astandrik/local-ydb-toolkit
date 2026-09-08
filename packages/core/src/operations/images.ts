@@ -4,6 +4,14 @@ import type {
   CommandSpec
 } from "../api-client.js";
 import { bash, shellQuote } from "../api-client.js";
+import {
+  attachConfirmation,
+  attachNotRequiredConfirmation,
+  authorizeMutation,
+  commandPlanIntent,
+  confirmationSummarySuffix,
+  retireSubmittedConfirmation,
+} from "../confirmation.js";
 import type {
   ImagePullOptions,
   ImagePullResponse,
@@ -68,6 +76,42 @@ export function ensureImagePresentSpec(image: string): CommandSpec {
   });
 }
 
+export async function inspectImageId(ctx: ToolkitContext, image: string): Promise<string> {
+  const spec: CommandSpec = {
+    command: "docker",
+    args: ["image", "inspect", "--format", "{{.Id}}", image],
+    timeoutMs: IMAGE_INSPECT_TIMEOUT_MS,
+    allowFailure: true,
+    description: `Inspect exact Docker image identity for ${image}`,
+  };
+  const result = await ctx.client.run(spec);
+  const imageId = result.stdout.trim();
+  if (!result.ok || !imageId || /\s/.test(imageId)) {
+    throw new Error("Unable to inspect exact Docker image identity.");
+  }
+  return imageId;
+}
+
+export function ensureImageIdSpec(image: string, expectedImageId: string): CommandSpec {
+  const message = `Docker image ${image} no longer matches the confirmed image identity.`;
+  return bash([
+    "set -euo pipefail",
+    `expected_image_id=${shellQuote(expectedImageId)}`,
+    `if ! observed_image_id=$(docker image inspect --format ${shellQuote("{{.Id}}")} ${shellQuote(image)} 2>/dev/null); then`,
+    `  printf '%s\\n' ${shellQuote(message)} >&2`,
+    "  exit 42",
+    "fi",
+    "if [ \"$observed_image_id\" != \"$expected_image_id\" ]; then",
+    `  printf '%s\\n' ${shellQuote(message)} >&2`,
+    "  exit 42",
+    "fi",
+  ].join("\n"), {
+    timeoutMs: IMAGE_INSPECT_TIMEOUT_MS,
+    allowFailure: true,
+    description: `Require exact Docker image identity for ${image}`,
+  });
+}
+
 export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions = {}): Promise<ImagePullResponse> {
   const image = (options.image ?? ctx.profile.image).trim();
   if (!image) {
@@ -88,7 +132,7 @@ export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions =
     "local_ydb_bootstrap/local_ydb_upgrade_version no longer fails the image preflight"
   ];
 
-  if (!options.confirm) {
+  if (!ctx.confirmation && options.confirm !== true) {
     return {
       summary: `Pull Docker image ${image}. Not started because confirm=true was not provided.`,
       executed: false,
@@ -97,13 +141,14 @@ export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions =
       rollback,
       verification,
       image,
-      status: "planned"
+      status: "planned",
     };
   }
 
   const inspectResult = await ctx.client.run(inspectSpec);
   if (inspectResult.ok) {
-    return {
+    retireSubmittedConfirmation(ctx, options);
+    return attachNotRequiredConfirmation(ctx, {
       summary: `Docker image ${image} is already present on ${ctx.profile.name}.`,
       executed: true,
       risk: "medium",
@@ -112,8 +157,33 @@ export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions =
       verification,
       results: [inspectResult],
       image,
-      status: "already-present"
-    };
+      status: "already-present",
+    });
+  }
+
+  const summary = `Pull Docker image ${image}.`;
+  const decision = await authorizeMutation(ctx, options, {
+    ...commandPlanIntent({
+      summary,
+      risk: "medium",
+      specs: [inspectSpec, pullSpec],
+      rollback,
+      verification,
+    }),
+    imagePresent: false,
+  });
+  if (!decision.execute) {
+    return attachConfirmation({
+      summary: `${summary}${confirmationSummarySuffix(decision.confirmation)}`,
+      executed: false,
+      risk: "medium",
+      plannedCommands,
+      rollback,
+      verification,
+      results: [inspectResult],
+      image,
+      status: "planned"
+    }, decision.confirmation);
   }
 
   const job = createImagePullJob(ctx, image, pullSpec);
@@ -128,7 +198,7 @@ export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions =
       timedOut: false
     }));
 
-  return {
+  return attachConfirmation({
     summary: `Started background Docker image pull for ${image}. Poll local_ydb_pull_status with jobId=${job.jobId}.`,
     executed: true,
     risk: "medium",
@@ -141,7 +211,7 @@ export async function pullImage(ctx: ToolkitContext, options: ImagePullOptions =
     jobId: job.jobId,
     startedAt: job.startedAt,
     updatedAt: job.updatedAt
-  };
+  }, decision.confirmation);
 }
 
 export function pullImageStatus(jobId: string): ImagePullStatusResponse {

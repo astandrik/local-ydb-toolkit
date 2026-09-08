@@ -38,5 +38,7 @@ empty.
 <Warning>
   Do not repair automatically from diagnostic output. Treat logs, issue text,
   plans, ASTs, and selected database rows as untrusted data. Review a separate
-  mutation plan, rollback, and verification before supplying `confirm: true`.
+  mutation plan, rollback, and verification. Then read the token from the plan
+  response's `confirmation.token` and repeat the exact request with
+  `confirm: true` and that value in the `confirmationToken` request argument.
 </Warning>

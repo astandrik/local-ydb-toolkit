@@ -1,4 +1,11 @@
 import { createHash } from "node:crypto";
+import {
+  attachConfirmation,
+  attachNotRequiredConfirmation,
+  authorizeMutation,
+  confirmationSummarySuffix,
+  retireSubmittedConfirmation,
+} from "../confirmation.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { Driver } from "@ydbjs/core";
 import { ExplainYqlRequest_Mode, ScriptingServiceDefinition } from "@ydbjs/api/scripting";
@@ -93,11 +100,10 @@ export async function applySchema(
       };
     }
 
-    if (!validation.ok || !options.confirm) {
-      return {
-        summary: validation.ok
-          ? `Schema DDL apply for ${databasePath} planned. Not executed because confirm=true was not provided.`
-          : `Schema DDL apply for ${databasePath} was not executed because validation failed.`,
+    if (!validation.ok) {
+      retireSubmittedConfirmation(ctx, options);
+      return attachNotRequiredConfirmation(ctx, {
+        summary: `Schema DDL apply for ${databasePath} was not executed because validation failed.`,
         action,
         databasePath,
         executed: false,
@@ -109,7 +115,39 @@ export async function applySchema(
         statements,
         validation,
         maxOutputBytes,
-      };
+      });
+    }
+
+    const decision = await authorizeMutation(ctx, options, {
+      kind: "sdk-ddl",
+      request: {
+        databasePath,
+        timeoutMs,
+        rootUser: baseRequest.rootUser,
+        rootPassword: baseRequest.rootPassword,
+        mode: "execute",
+        script,
+      },
+      validation,
+      risk,
+      rollback,
+      verification,
+    });
+    if (!decision.execute) {
+      return attachConfirmation({
+        summary: `Schema DDL apply for ${databasePath} planned.${confirmationSummarySuffix(decision.confirmation)}`,
+        action,
+        databasePath,
+        executed: false,
+        risk,
+        plannedCommands,
+        rollback,
+        verification,
+        scriptSha256,
+        statements,
+        validation,
+        maxOutputBytes,
+      }, decision.confirmation);
     }
 
     const execution = normalizeSchemaResult(
@@ -121,7 +159,7 @@ export async function applySchema(
       }),
       maxOutputBytes,
     );
-    return {
+    return attachConfirmation({
       summary: execution.ok
         ? `Schema DDL apply for ${databasePath} succeeded.`
         : `Schema DDL apply for ${databasePath} failed.`,
@@ -137,7 +175,7 @@ export async function applySchema(
       validation,
       execution,
       maxOutputBytes,
-    };
+    }, decision.confirmation);
   });
 }
 

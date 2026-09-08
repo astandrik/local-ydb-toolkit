@@ -1808,11 +1808,7 @@ function cancellationDriver(
     async *executeQuery(_request: unknown, options?: { signal?: AbortSignal }) {
       cancelCaller?.();
       yield part;
-      if (!options?.signal?.aborted) {
-        await new Promise<void>((resolve) => {
-          options?.signal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-      }
+      await waitForAbort(options?.signal);
     },
     async deleteSession(_request: unknown, options?: { signal?: AbortSignal }) {
       cleanupSignals.push(options!.signal!);
@@ -1919,11 +1915,7 @@ function sessionLossDriver(onExecuteFinished: () => void) {
       yield { status: StatusIds_StatusCode.BAD_SESSION, issues: [] };
     },
     async *executeQuery(_request: unknown, options?: { signal?: AbortSignal }) {
-      if (!options?.signal?.aborted) {
-        await new Promise<void>((resolve) => {
-          options?.signal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-      }
+      await waitForAbort(options?.signal);
       onExecuteFinished();
     },
     async deleteSession() {
@@ -1937,4 +1929,20 @@ function sessionLossDriver(onExecuteFinished: () => void) {
     },
     close() {},
   };
+}
+
+function waitForAbort(signal: AbortSignal | undefined): Promise<void> {
+  if (!signal || signal.aborted) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const finish = () => {
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted) {
+      finish();
+    }
+  });
 }

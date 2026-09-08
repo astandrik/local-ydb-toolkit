@@ -6,7 +6,10 @@ import {
   GetPromptRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { ConfigLoadError } from "@local-ydb-toolkit/core";
+import {
+  ConfigLoadError,
+  ProcessConfirmationStore,
+} from "@local-ydb-toolkit/core";
 import { localYdbMcpServerVersion } from "./metadata.js";
 import { getLocalYdbPrompt, registerLocalYdbPrompts } from "./prompts.js";
 import { resolveResponseContentFormat } from "./response-format.js";
@@ -29,6 +32,7 @@ export function createLocalYdbMcpApplication(
     { capabilities: { tools: {} }, instructions: localYdbInstructions },
   );
   const { server } = application;
+  const confirmationStore = new ProcessConfirmationStore();
 
   registerLocalYdbPrompts(application);
 
@@ -48,6 +52,8 @@ export function createLocalYdbMcpApplication(
       const responseContentFormat = resolveResponseContentFormat(options.responseContentFormat);
       const callOptions = {
         ...options,
+        confirmationStore,
+        confirmationToolName: name,
         responseContentFormat,
         signal: extra.signal ?? options.signal,
       };

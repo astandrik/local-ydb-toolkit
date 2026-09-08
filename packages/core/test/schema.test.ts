@@ -6,9 +6,11 @@ import {
   applySchema,
   createSdkOperationDeadline,
   createContext,
+  ProcessConfirmationStore,
   remainingSdkOperationTimeoutMs,
   type SchemaSdkExecuteRequest,
   type SchemaSdkExecuteResult,
+  type ToolkitContext,
   withSdkConnection,
 } from "../src/index.js";
 import { ConfigSchema } from "../src/validation.js";
@@ -177,6 +179,97 @@ describe("schema application", () => {
     expect(calls.map((call) => call.mode)).toEqual(["validate", "execute"]);
   });
 
+  it("binds SDK DDL execution to the validated exact plan token", async () => {
+    const calls: SchemaSdkExecuteRequest[] = [];
+    const ctx = confirmationContext(createContext(
+      undefined,
+      undefined,
+      ConfigSchema.parse({}),
+    ), "local_ydb_apply_schema");
+    const request = {
+      action: "apply" as const,
+      script: "CREATE TABLE exact_plan (id Uint64, PRIMARY KEY (id));",
+      sdkExecutor: successfulSdkRecorder(calls),
+    };
+
+    const planned = await applySchema(ctx, request);
+    const accepted = await applySchema(ctx, {
+      ...request,
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    });
+
+    expect(planned).toMatchObject({
+      executed: false,
+      confirmation: { status: "planned", token: expect.any(String) },
+    });
+    expect(accepted).toMatchObject({
+      executed: true,
+      confirmation: { status: "accepted" },
+    });
+    expect(calls.map((call) => call.mode)).toEqual([
+      "validate",
+      "validate",
+      "execute",
+    ]);
+  });
+
+  it("retires a submitted token when repeated apply validation fails", async () => {
+    const calls: SchemaSdkExecuteRequest[] = [];
+    let validationCalls = 0;
+    let executionCalls = 0;
+    const store = new ProcessConfirmationStore();
+    const context = createContext(undefined, undefined, ConfigSchema.parse({}));
+    const ctx: ToolkitContext = {
+      ...context,
+      confirmation: {
+        store,
+        toolName: "local_ydb_apply_schema",
+        configSource: { kind: "provided", config: context.config },
+      },
+    };
+    const request = {
+      action: "apply" as const,
+      script: "CREATE TABLE exact_plan (id Uint64, PRIMARY KEY (id));",
+      sdkExecutor: async (sdkRequest: SchemaSdkExecuteRequest) => {
+        calls.push(sdkRequest);
+        if (sdkRequest.mode === "validate") {
+          validationCalls += 1;
+          if (validationCalls === 2) {
+            return {
+              ok: false,
+              status: "UNAVAILABLE",
+              issues: "BENIGN_TRANSIENT_VALIDATION",
+            };
+          }
+        } else {
+          executionCalls += 1;
+        }
+        return { ok: true, status: "SUCCESS", issues: "" };
+      },
+    };
+
+    const planned = await applySchema(ctx, request);
+    const confirmedRequest = {
+      ...request,
+      confirm: true as const,
+      confirmationToken: planned.confirmation?.token,
+    };
+    const blocked = await applySchema(ctx, confirmedRequest);
+    const replay = await applySchema(ctx, confirmedRequest);
+
+    expect(blocked).toMatchObject({
+      executed: false,
+      confirmation: { status: "not-required" },
+    });
+    expect(replay).toMatchObject({
+      executed: false,
+      confirmation: { status: "rejected" },
+    });
+    expect(executionCalls).toBe(0);
+    expect(calls.map((call) => call.mode)).toEqual(["validate", "validate", "validate"]);
+  });
+
   it("shares one absolute timeout across schema validation and execution", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
     const calls: SchemaSdkExecuteRequest[] = [];
@@ -316,3 +409,17 @@ describe("schema application", () => {
     }
   });
 });
+
+function confirmationContext(
+  context: ToolkitContext,
+  toolName: string,
+): ToolkitContext {
+  return {
+    ...context,
+    confirmation: {
+      store: new ProcessConfirmationStore(),
+      toolName,
+      configSource: { kind: "provided", config: context.config },
+    },
+  };
+}

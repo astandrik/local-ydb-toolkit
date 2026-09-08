@@ -46,11 +46,12 @@ description: "Choose the right path for operating Docker-based local YDB in an a
 
 The operational MCP server runs on your machine and inherits the permissions of
 its process. It can reach only the Docker daemon, files, SSH targets, and YDB
-credentials available to that process. Mutating tools return a plan first and
-execute only when the caller supplies `confirm: true`.
+credentials available to that process. Mutating tools return a plan and
+process-bound one-time token first, then execute only when the exact request is
+repeated with `confirm: true` and that token.
 
 <Warning>
-  `confirm: true` is an application-level gate. It is not an operating-system
+  Exact-plan confirmation is an application-level gate. It is not an operating-system
   sandbox or a replacement for least-privilege Docker, SSH, filesystem, and YDB
   credentials.
 </Warning>

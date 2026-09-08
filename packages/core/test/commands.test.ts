@@ -127,7 +127,7 @@ describe("waitForCommand", () => {
 });
 
 describe("commandForDynamicNodeRun", () => {
-  async function runDynamicCreateCase(createdImageId: string) {
+  async function runDynamicCreateCase(createdImageId: string, failure: "create" | "start" | "signal" | undefined = undefined) {
     const tempDir = createTempDir();
     try {
       const dockerLog = join(tempDir.path, "docker.log");
@@ -138,7 +138,13 @@ if [ "$1" = "inspect" ] && [[ "$*" == *" ydb-local" ]]; then
   printf '%s\\n' 'sha256:static-image'
   return 0
 fi
-if [ "$1" = "inspect" ] && [[ "$*" == *" ydb-dyn-example" ]]; then
+if [ "$1" = "create" ]; then
+  ${failure === "create" ? "return 1" : "printf '%s\\n' created-dynamic-id"}
+  return 0
+fi
+if [ "$1" = "start" ] && [ ${shellQuote(failure ?? "")} = start ]; then return 7; fi
+if [ "$1" = "start" ] && [ ${shellQuote(failure ?? "")} = signal ]; then kill -TERM $$; fi
+if [ "$1" = "inspect" ] && [[ "$*" == *" created-dynamic-id" ]]; then
   printf '%s\\n' ${shellQuote(createdImageId)}
   return 0
 fi
@@ -164,8 +170,8 @@ return 0
   it("starts a created dynamic container only after its image ID matches the static node", async () => {
     const response = await runDynamicCreateCase("sha256:static-image");
     const createIndex = response.invocations.findIndex((invocation) => invocation.startsWith("create "));
-    const imageCheckIndex = response.invocations.findIndex((invocation) => invocation.startsWith("inspect ") && invocation.endsWith(" ydb-dyn-example"));
-    const startIndex = response.invocations.findIndex((invocation) => invocation === "start ydb-dyn-example");
+    const imageCheckIndex = response.invocations.findIndex((invocation) => invocation.startsWith("inspect ") && invocation.endsWith(" created-dynamic-id"));
+    const startIndex = response.invocations.findIndex((invocation) => invocation === "start created-dynamic-id");
 
     expect(response.result.ok).toBe(true);
     expect(createIndex).toBeGreaterThanOrEqual(0);
@@ -178,8 +184,43 @@ return 0
 
     expect(response.result.ok).toBe(false);
     expect(response.result.stderr).toContain("does not match static container image ID");
-    expect(response.invocations.some((invocation) => invocation === "rm -f ydb-dyn-example")).toBe(true);
-    expect(response.invocations.some((invocation) => invocation === "start ydb-dyn-example")).toBe(false);
+    expect(response.invocations).toContain("rm -f created-dynamic-id");
+    expect(response.invocations).not.toContain("start created-dynamic-id");
+    expect(response.invocations).not.toContain("rm -f ydb-dyn-example");
+  });
+  it("does not remove a colliding name when create fails", async () => {
+    const response = await runDynamicCreateCase("sha256:static-image", "create");
+    expect(response.result.ok).toBe(false);
+    expect(response.invocations.some((entry) => entry.startsWith("rm "))).toBe(false);
+  });
+  it("cleans only the created ID when start fails", async () => {
+    const response = await runDynamicCreateCase("sha256:static-image", "start");
+    expect(response.result.ok).toBe(false);
+    expect(response.invocations).toContain("rm -f created-dynamic-id");
+    expect(response.invocations).not.toContain("rm -f ydb-dyn-example");
+  });
+  it("cleans only the created ID when interrupted during start", async () => {
+    const response = await runDynamicCreateCase("sha256:static-image", "signal");
+    expect(response.result.ok).toBe(false);
+    expect(response.invocations).toContain("rm -f created-dynamic-id");
+    expect(response.invocations).not.toContain("rm -f ydb-dyn-example");
+  });
+});
+
+describe("fresh rebuild ownership", () => {
+  it.each(["static", "dynamic"] as const)("preserves a late %s name during fresh rebuild bootstrap", async kind => {
+    const profile = resolveProfile(ConfigSchema.parse({}));
+    const command = kind === "static"
+      ? commandForStaticEnsureRun(profile, { expectedImageId: "sha256:reviewed", requireAbsent: true })
+      : commandForDynamicNodeRun(profile, {
+        container: profile.dynamicContainer, grpcPort: profile.ports.dynamicGrpc,
+        monitoringPort: profile.ports.dynamicMonitoring, icPort: profile.ports.dynamicIc,
+      }, true, { container: profile.dynamicContainer, containerId: null });
+    const docker = "docker() { if [ \"$1\" = ps ]; then printf '%s\\n' ydb-local ydb-dyn-example; elif [ \"$1\" = inspect ]; then printf '%s\\n' sha256:reviewed; else printf UNEXPECTED_DOCKER_ACTION >&2; return 77; fi; }";
+    const response = await new ShellCommandExecutor().run(profile, bash(docker + "\n" + command));
+    expect(response.ok).toBe(false);
+    expect(response.stderr).toContain(kind === "static" ? "appeared before rebuild" : "appeared before cleanup");
+    expect(response.stderr).not.toContain("UNEXPECTED_DOCKER_ACTION");
   });
 });
 
@@ -232,6 +273,7 @@ async function runStaticEnsureCase(options: {
   fixture?: Partial<StaticContainerFixture>;
   profileOverrides?: Record<string, unknown>;
   checkOnly?: boolean;
+  expectedImageId?: string;
 } = {}) {
   const tempDir = createTempDir();
   try {
@@ -327,7 +369,17 @@ if [ "$1" = "inspect" ]; then
   fi
   return 0
 fi
+if [ "$1" = "create" ]; then
+  printf '%s\n' created-static-id
+  return 0
+fi
 if [ "$1" = "start" ] && [ "$2" = "ydb-local" ]; then
+  return 0
+fi
+if [ "$1" = "start" ] && [ "$2" = "created-static-id" ]; then
+  return 0
+fi
+if [ "$1" = "rm" ] && [ "$2" = "-f" ] && [ "$3" = "created-static-id" ]; then
   return 0
 fi
 printf '%s\\n' "unexpected docker invocation: $*" >&2
@@ -347,9 +399,10 @@ return 99
             )
           })
         : commandForStaticEnsureRun(profile, {
-            enableGraphShard: true,
-            requireGraphShard: true,
-            publishedDynamicGrpcPorts: Array.from(
+          enableGraphShard: true,
+          requireGraphShard: true,
+          expectedImageId: options.expectedImageId,
+          publishedDynamicGrpcPorts: Array.from(
               { length: profile.dynamicNodeCount },
               (_, offset) => profile.ports.dynamicGrpc + offset
             )
@@ -539,5 +592,35 @@ describe("commandForStaticEnsureRun", () => {
     expect(response.result.ok).toBe(false);
     expect(response.injectionMarkerCreated).toBe(false);
     expect(response.result.stderr).not.toContain("touch");
+  });
+
+  it("starts a newly created static container only after its image ID matches the confirmed target", async () => {
+    const response = await runStaticEnsureCase({
+      fixture: { exists: "false" },
+      expectedImageId: "sha256:current-image",
+    });
+    const createIndex = response.invocations.findIndex((invocation) => invocation.startsWith("create "));
+    const imageCheckIndex = response.invocations.findIndex((invocation) => invocation.includes("{{.Image}} created-static-id"));
+    const startIndex = response.invocations.findIndex((invocation) => invocation === "start created-static-id");
+
+    expect(response.result.ok).toBe(true);
+    expect(createIndex).toBeGreaterThanOrEqual(0);
+    expect(imageCheckIndex).toBeGreaterThan(createIndex);
+    expect(startIndex).toBeGreaterThan(imageCheckIndex);
+  });
+
+  it("removes a newly created static container when a tag retargets before creation completes", async () => {
+    const response = await runStaticEnsureCase({
+      fixture: {
+        exists: "false",
+        containerImageId: "sha256:retagged-image",
+      },
+      expectedImageId: "sha256:current-image",
+    });
+
+    expect(response.result.ok).toBe(false);
+    expect(response.result.stderr).toContain("no longer matches the confirmed image identity");
+    expect(response.invocations).toContain("rm -f created-static-id");
+    expect(response.invocations).not.toContain("start created-static-id");
   });
 });
