@@ -6,6 +6,7 @@
       "command": "npx",
       "args": [
         "--yes",
+        "--prefix=./.codex-plugin",
         "@astandrik/local-ydb-mcp@0.18.2"
       ]
     }

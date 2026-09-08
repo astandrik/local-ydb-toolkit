@@ -445,7 +445,9 @@ Upstream YDB defaults to no password complexity requirements: even an empty pass
 
 The repo marketplace loads the full Agent Plugin from the repository root. `plugin.json` and `mcp.json` are the portable Agent Plugins 1.0 entry points; `.codex-plugin/plugin.json` and `.mcp.json` preserve compatibility with Codex clients that use the earlier layout. Contract tests keep both representations aligned.
 
-The plugin version is independent from the MCP npm package version. Plugin `0.1.6` pins `@astandrik/local-ydb-mcp@0.18.2`. Update that pin only in a follow-up change after the exact npm version has been published and read back successfully; do not make release-please point the plugin at an unpublished version.
+The launcher uses `--prefix=./.codex-plugin` to resolve the published npm package outside the repository workspace while preserving the server working directory and npm registry settings. Keep this metadata directory present and free of `package.json`, lockfiles, and `node_modules`; otherwise npm could select an unbuilt workspace or another executable from `PATH`.
+
+The plugin version is independent from the MCP npm package version. Plugin `0.1.7` pins `@astandrik/local-ydb-mcp@0.18.2`. Update that pin only in a follow-up change after the exact npm version has been published and read back successfully; do not make release-please point the plugin at an unpublished version.
 
 Build the OpenAI skills-only review artifact with:
 
@@ -453,7 +455,7 @@ Build the OpenAI skills-only review artifact with:
 npm run plugin:package
 ```
 
-This writes `dist/local-ydb-toolkit-0.1.6-skills.zip`. The generated compatibility manifest omits `mcpServers`, and the ZIP excludes both MCP config files. Submission copy, reviewer cases, and external approval gates are recorded in [`docs/openai-plugin-submission.md`](docs/openai-plugin-submission.md). Building the artifact does not authorize uploading or publishing it.
+This writes `dist/local-ydb-toolkit-0.1.7-skills.zip`. The generated compatibility manifest omits `mcpServers`, and the ZIP excludes both MCP config files. Submission copy, reviewer cases, and external approval gates are recorded in [`docs/openai-plugin-submission.md`](docs/openai-plugin-submission.md). Building the artifact does not authorize uploading or publishing it.
 
 ### MCP npm package
 

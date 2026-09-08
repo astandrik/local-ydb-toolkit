@@ -101,22 +101,23 @@ export function pluginPinFromConfig(plugin, expectedPackageName) {
     !isObject(server)
     || server.command !== "npx"
     || !Array.isArray(server.args)
-    || server.args.length !== 2
+    || server.args.length !== 3
     || server.args[0] !== "--yes"
-    || typeof server.args[1] !== "string"
+    || server.args[1] !== "--prefix=./.codex-plugin"
+    || typeof server.args[2] !== "string"
   ) {
     throw new Error("mcp.json must contain the exact local-ydb npx package shape");
   }
 
-  const separator = server.args[1].lastIndexOf("@");
-  const packageName = server.args[1].slice(0, separator);
-  const version = server.args[1].slice(separator + 1);
+  const separator = server.args[2].lastIndexOf("@");
+  const packageName = server.args[2].slice(0, separator);
+  const version = server.args[2].slice(separator + 1);
   if (!packageName || !version || packageName !== expectedPackageName) {
     throw new Error(`mcp.json must pin ${expectedPackageName} exactly`);
   }
   assertStableSemver(version, "mcp.json plugin pin");
 
-  return { packageName, version, spec: server.args[1] };
+  return { packageName, version, spec: server.args[2] };
 }
 
 export function npmLatestUrl(npmPackage) {

@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkAgentPluginFreshness } from "./check-agent-plugin-freshness.mjs";
+import { checkAgentPluginFreshness, pluginPinFromConfig } from "./check-agent-plugin-freshness.mjs";
 
 const packageName = "@astandrik/local-ydb-mcp";
 const serverName = "io.github.astandrik/local-ydb-mcp";
 const publishedVersion = "0.16.0";
+
+test("plugin pin rejects missing, changed, or extra launcher arguments", () => {
+  const spec = `${packageName}@${publishedVersion}`;
+  for (const args of [
+    ["--yes", spec],
+    ["--yes", "--prefix=.", spec],
+    ["--yes", "--prefix=./.codex-plugin", spec, "extra"],
+    ["--yes", "--prefix=./.codex-plugin", `${packageName}@latest`],
+  ]) {
+    assert.throws(() => pluginPinFromConfig({
+      mcpServers: { "local-ydb": { command: "npx", args } },
+    }, packageName));
+  }
+});
 
 function serverMetadata() {
   return {
@@ -27,7 +41,7 @@ function pluginConfig(version = publishedVersion) {
     mcpServers: {
       "local-ydb": {
         command: "npx",
-        args: ["--yes", `${packageName}@${version}`],
+        args: ["--yes", "--prefix=./.codex-plugin", `${packageName}@${version}`],
       },
     },
   };

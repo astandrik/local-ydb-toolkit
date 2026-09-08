@@ -85,6 +85,7 @@ test("updates every plugin surface to the exact higher MCP pin", async () => {
       const manifest = await readJson(fixture, path);
       assert.deepEqual(manifest.mcpServers["local-ydb"].args, [
         "--yes",
+        "--prefix=./.codex-plugin",
         "@astandrik/local-ydb-mcp@0.16.0",
       ]);
     }
@@ -140,12 +141,36 @@ test("compares and increments large stable semver identifiers exactly", async ()
     for (const path of ["mcp.json", ".mcp.json", "gemini-extension.json"]) {
       const manifest = await readJson(fixture, path);
       assert.equal(
-        manifest.mcpServers["local-ydb"].args[1],
+        manifest.mcpServers["local-ydb"].args[2],
         `@astandrik/local-ydb-mcp@${targetMcpVersion}`,
       );
     }
   } finally {
     await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("rejects an unsafe launcher or inconsistent pins before writing", async (t) => {
+  for (const scenario of ["missing prefix", "changed prefix", "extra argument", "different pin"]) {
+    await t.test(scenario, async () => {
+      const fixture = await createFixture();
+      try {
+        const manifest = await readJson(fixture, ".mcp.json");
+        const args = manifest.mcpServers["local-ydb"].args;
+        if (scenario === "missing prefix") args.splice(1, 1);
+        if (scenario === "changed prefix") args[1] = "--prefix=.";
+        if (scenario === "extra argument") args.push("extra");
+        if (scenario === "different pin") args[2] = "@astandrik/local-ydb-mcp@0.15.3";
+        await writeJson(fixture, ".mcp.json", manifest);
+        const before = await snapshot(fixture);
+        const result = runUpdater(fixture, ["--mcp-version", "0.16.0", "--write"]);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /exact local-ydb npx package shape|pins are not aligned/);
+        assert.deepEqual(await snapshot(fixture), before);
+      } finally {
+        await rm(fixture, { recursive: true, force: true });
+      }
+    });
   }
 });
 
@@ -166,7 +191,7 @@ async function seedPriorRelease(fixture) {
 
 async function seedRelease(fixture, { pluginVersion, mcpVersion }) {
   const currentPluginVersion = (await readJson(fixture, "plugin.json")).version;
-  const currentMcpVersion = (await readJson(fixture, "mcp.json")).mcpServers["local-ydb"].args[1].slice(
+  const currentMcpVersion = (await readJson(fixture, "mcp.json")).mcpServers["local-ydb"].args[2].slice(
     "@astandrik/local-ydb-mcp@".length,
   );
   for (const path of [
@@ -181,7 +206,7 @@ async function seedRelease(fixture, { pluginVersion, mcpVersion }) {
   }
   for (const path of ["mcp.json", ".mcp.json", "gemini-extension.json"]) {
     const manifest = await readJson(fixture, path);
-    manifest.mcpServers["local-ydb"].args[1] = `@astandrik/local-ydb-mcp@${mcpVersion}`;
+    manifest.mcpServers["local-ydb"].args[2] = `@astandrik/local-ydb-mcp@${mcpVersion}`;
     await writeJson(fixture, path, manifest);
   }
 

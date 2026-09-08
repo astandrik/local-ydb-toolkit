@@ -6,33 +6,35 @@ on:
       - main
     paths:
       - ".github/workflows/agent-plugin-smoke.yml"
-      - ".codex-plugin/plugin.json"
+      - ".codex-plugin/**"
+      - ".claude-plugin/plugin.json"
       - ".mcp.json"
       - "mcp.json"
+      - "gemini-extension.json"
       - "package-lock.json"
       - "package.json"
+      - "packages/*/package.json"
       - "plugin.json"
       - "server.json"
-      - "scripts/ci/agent-plugin-workflow.test.mjs"
-      - "scripts/ci/check-agent-plugin-freshness.mjs"
-      - "scripts/ci/check-agent-plugin-freshness.test.mjs"
-      - "scripts/ci/verify-published-plugin-mcp.mjs"
+      - "scripts/ci/*plugin*.mjs"
+      - "scripts/package-agent-plugin.mjs"
   pull_request:
     branches:
       - main
     paths:
       - ".github/workflows/agent-plugin-smoke.yml"
-      - ".codex-plugin/plugin.json"
+      - ".codex-plugin/**"
+      - ".claude-plugin/plugin.json"
       - ".mcp.json"
       - "mcp.json"
+      - "gemini-extension.json"
       - "package-lock.json"
       - "package.json"
+      - "packages/*/package.json"
       - "plugin.json"
       - "server.json"
-      - "scripts/ci/agent-plugin-workflow.test.mjs"
-      - "scripts/ci/check-agent-plugin-freshness.mjs"
-      - "scripts/ci/check-agent-plugin-freshness.test.mjs"
-      - "scripts/ci/verify-published-plugin-mcp.mjs"
+      - "scripts/ci/*plugin*.mjs"
+      - "scripts/package-agent-plugin.mjs"
   workflow_dispatch:
   schedule:
     - cron: "17 4 * * 1"
@@ -61,6 +63,10 @@ jobs:
       - run: npm run plugin:freshness
 
   published-mcp-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20.19.0", "24"]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -68,9 +74,11 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - run: npm ci
+
+      - run: node --test scripts/ci/*plugin*.test.mjs
 
       - run: npm run plugin:smoke
