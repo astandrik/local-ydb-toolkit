@@ -41,8 +41,20 @@ test("published MCP smoke allows a cold install to finish", () => {
   assert.match(job, /^\s+timeout-minutes: 10$/m);
 });
 
-test("workflow contract changes trigger both push and pull request checks", () => {
-  const contractPath = '"scripts/ci/agent-plugin-workflow.test.mjs"';
+test("launcher metadata and contracts trigger both push and pull request checks", () => {
+  for (const path of [
+    ".codex-plugin/**", ".claude-plugin/plugin.json", "gemini-extension.json",
+    ".mcp.json", "mcp.json", "packages/*/package.json", "scripts/ci/*plugin*.mjs",
+  ]) {
+    assert.equal(workflow.split(JSON.stringify(path)).length - 1, 2, path);
+  }
+});
 
-  assert.equal(workflow.split(contractPath).length - 1, 2);
+test("published smoke covers the minimum Node version and CI Node after contract checks", () => {
+  const job = workflowJob("published-mcp-smoke");
+  assert.match(job, /node: \["20\.19\.0", "24"\]/);
+  assert.match(job, /node-version: \$\{\{ matrix\.node \}\}/);
+  const contracts = job.indexOf("node --test scripts/ci/*plugin*.test.mjs");
+  assert(contracts > job.indexOf("npm ci"));
+  assert(job.indexOf("npm run plugin:smoke") > contracts);
 });

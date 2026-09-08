@@ -109,9 +109,17 @@ test("plugin surfaces use aligned stable versions and the exact pinned package s
   assert.equal(type, "stdio");
   assert.deepEqual(portableServer, legacyMcp.mcpServers["local-ydb"]);
   assert.equal(portableServer.command, "npx");
-  assert.deepEqual(portableServer.args, ["--yes", packageSpec]);
+  assert.deepEqual(portableServer.args, ["--yes", "--prefix=./.codex-plugin", packageSpec]);
   assert.equal("env" in portableServer, false);
   assert.doesNotMatch(portableServer.args.join(" "), /@latest|[~^*]/);
+});
+
+test("npm prefix is an existing metadata directory without a package or dependencies", async () => {
+  const prefix = join(repositoryRoot, ".codex-plugin");
+  assert((await lstat(prefix)).isDirectory());
+  for (const name of ["package.json", "package-lock.json", "npm-shrinkwrap.json", "node_modules"]) {
+    await assert.rejects(lstat(join(prefix, name)), { code: "ENOENT" }, `${name} must not enter the npm prefix`);
+  }
 });
 
 test("Claude manifest mirrors portable metadata and uses default component locations", async () => {
@@ -141,7 +149,11 @@ test("Gemini extension mirrors portable metadata and the pinned local MCP", asyn
   const { cwd, ...geminiServer } = geminiManifest.mcpServers["local-ydb"];
   assert.equal(cwd, "${extensionPath}");
   assert.deepEqual(geminiServer, legacyMcp.mcpServers["local-ydb"]);
-  assert.deepEqual(geminiServer.args, ["--yes", packageSpecFrom(portableMcp.mcpServers["local-ydb"])]);
+  assert.deepEqual(geminiServer.args, [
+    "--yes",
+    "--prefix=./.codex-plugin",
+    packageSpecFrom(portableMcp.mcpServers["local-ydb"]),
+  ]);
   assert.doesNotMatch(geminiServer.args.join(" "), /@latest|[~^*]/);
   assert.equal("env" in geminiServer, false);
 
@@ -353,9 +365,9 @@ const stableSemver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function packageSpecFrom(server) {
   assert.equal(server.command, "npx");
-  assert.deepEqual(server.args.slice(0, 1), ["--yes"]);
-  assert.equal(server.args.length, 2);
-  const packageSpec = server.args[1];
+  assert.deepEqual(server.args.slice(0, 2), ["--yes", "--prefix=./.codex-plugin"]);
+  assert.equal(server.args.length, 3);
+  const packageSpec = server.args[2];
   assert(packageSpec.startsWith(`${packageName}@`));
   assertStableSemver(packageSpec.slice(`${packageName}@`.length), "pinned MCP version");
   return packageSpec;

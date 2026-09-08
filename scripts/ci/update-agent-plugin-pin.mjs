@@ -91,7 +91,7 @@ async function createPlan(targetMcpVersion) {
   }
   for (const relativePath of mcpConfigPaths) {
     const file = jsonByPath.get(relativePath);
-    file.value.mcpServers["local-ydb"].args[1] = `${packageName}@${targetMcpVersion}`;
+    file.value.mcpServers["local-ydb"].args[2] = `${packageName}@${targetMcpVersion}`;
   }
 
   const updates = jsonFiles.map(jsonUpdate);
@@ -158,14 +158,15 @@ function readMcpVersion(jsonByPath) {
       !server ||
       server.command !== "npx" ||
       !Array.isArray(server.args) ||
-      server.args.length !== 2 ||
+      server.args.length !== 3 ||
       server.args[0] !== "--yes" ||
-      typeof server.args[1] !== "string"
+      server.args[1] !== "--prefix=./.codex-plugin" ||
+      typeof server.args[2] !== "string"
     ) {
       throw new Error(`${relativePath} must contain the exact local-ydb npx package shape.`);
     }
     const match = new RegExp(`^${escapeRegex(packageName)}@(${stableSemverSource})$`).exec(
-      server.args[1],
+      server.args[2],
     );
     if (!match) {
       throw new Error(`${relativePath} must pin ${packageName} to a stable X.Y.Z version.`);
