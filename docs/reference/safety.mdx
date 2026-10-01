@@ -17,18 +17,85 @@ credentials that can complete the task.
 
 ## Plan-first mutations
 
-Mutating tools return planned commands, risk, rollback, and verification without
-executing when `confirm` is absent or false. Supply `confirm: true` only after
-reviewing the exact target and plan.
+Mutating tools return planned commands, risk, rollback, verification, and a
+one-time process-bound token without executing. After human review, read the
+token from the plan response's `confirmation.token`, then repeat the same
+request with `confirm: true` and that value in the `confirmationToken` request
+argument.
 
 ```json
 {
-  "confirm": true
+  "confirm": true,
+  "confirmationToken": "<value from confirmation.token>"
 }
 ```
 
-`confirm: true` does not replace operating-system sandboxing, authentication,
-authorization, branch protection, backups, or least-privilege credentials.
+The token is bound to the exact tool, target, config source, execution inputs,
+current plan, risk, rollback, and verification. Execution inputs include DDL,
+SQL parameters, secret-bearing command input, and private content fingerprints
+for configured auth files or the selected standalone restore dump; contents and
+fingerprints are never returned. The token is valid only until use or MCP
+restart and is consumed before the first side effect. A missing, changed,
+replayed, or pre-restart token executes nothing and returns a fresh plan/token.
+A valid submitted token is also retired whenever a mutating confirm call becomes
+a no-op or plan-only response after refreshed prerequisites, required profile
+inputs, DDL validation, or SQL `EXPLAIN`, so it cannot become executable again
+if state changes later. Configured auth/password files are rejected above
+16 MiB before hashing. Content placeholders are resolved only in their
+declared internal command fields; marker-shaped user arguments are not scanned
+or rewritten globally.
+
+For accepted auth config, password-rotation backup inputs, dynamic-node token,
+and standalone restore operations, the server first creates a private snapshot
+and verifies it against the authorized fingerprint. Docker and YDB consume only
+that snapshot; the canonical payload path is not reopened. Credential files
+used only to authenticate remain freshness guards. Root-password rotation checks
+both host destinations against the reviewed bytes immediately before backups or
+writes. A conflict or unreadable/non-regular destination stops persistence without
+replacing either destination or backup. Runtime credentials may already have
+changed: independently verify the new password, reconcile the host files, then
+obtain a fresh plan/token. This bounded late check is not an atomic lock against
+external writes after the last check. Dynamic tokens are copied
+into stopped containers before start, and restore mounts its snapshot read-only.
+Restore rejects symlinks and special filesystem entries before mutation.
+Snapshot contents, digests, and temporary paths are omitted from responses and
+cleaned after success, failure, or abort. Restore tries copy-on-write or reflink
+cloning first, but its portable fallback can temporarily require free space
+equal to the full dump size. Composite storage reduction and version upgrade
+make the same kind of private verified copy immediately after generating their
+dump and before teardown, then restore only from that copy. Their teardown
+container set is frozen from the reviewed inventory instead of expanding to
+late arrivals. Destroy, restart, and rebuilds bind the static and configured
+dynamic IDs (or explicit absence) as well as one-off IDs. Existing-object actions
+and static tenant commands use the reviewed IDs; rebuilds keep the same receipt
+across dump, check names are absent before shared cleanup, and require vacated
+names during bootstrap. Newly created dynamic containers are copied to, started,
+and cleaned up only by the ID returned by their own create command. Upgrade and storage-reduction confirmations for the same execution
+host and static container share a target-scoped lease held through mutation and cleanup,
+regardless of profile name or config source. A second
+confirm is rejected while the lease is active, and plans issued during that
+execution become stale when it finishes; distinct stack targets remain
+independent. Auth-enabled composite rebuilds require the three configured auth
+destinations to remain distinct after path normalization and target-side filesystem
+identity checks, including symlink/hardlink aliases. Checks run before rebuild and
+again immediately before persistence. Rebuilds generate config,
+dynamic token, and root credential in a separate private workspace, persist
+those bytes to the configured host files, and keep using only the private
+copies through auth reapply and dynamic-node recreation. Storage reduction
+binds the configured image tag to its exact Docker image ID, rechecks it before
+dump and destructive teardown, enforces it during bootstrap, and verifies final
+container IDs. Dynamic-node removal binds both the token
+and the final remove command to the inspected Docker container ID, so a
+same-name replacement survives. Version upgrade never rewrites the profile config automatically.
+After independently verifying container images and restored data, update
+`profiles.<name>.image` manually; ordinary files, symlinks, and concurrent edits
+remain untouched by the tool.
+
+Treat the token as an ephemeral capability: do not log or persist it. It does
+not prove that a human approved the plan; the MCP host/client must enforce that
+approval. This gate does not replace operating-system sandboxing,
+authentication, authorization, branch protection, backups, or least-privilege
+credentials.
 
 ## Destructive workflows
 

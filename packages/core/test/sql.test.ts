@@ -7,6 +7,7 @@ import type {
 } from "../src/query-service.js";
 import type { ToolkitContext } from "../src/operations/types.js";
 import type { SqlResponse } from "../src/operations/sql.js";
+import { ProcessConfirmationStore } from "../src/confirmation.js";
 import { createContext } from "../src/operations/context.js";
 import { ConfigSchema } from "../src/validation.js";
 
@@ -45,6 +46,18 @@ function successfulResult(
 
 function testContext(): ToolkitContext {
   return createContext(undefined, undefined, ConfigSchema.parse({}));
+}
+
+function confirmationContext(): ToolkitContext {
+  const context = testContext();
+  return {
+    ...context,
+    confirmation: {
+      store: new ProcessConfirmationStore(),
+      toolName: "local_ydb_sql",
+      configSource: { kind: "provided", config: context.config },
+    },
+  };
 }
 
 describe("managed SQL operation", () => {
@@ -369,6 +382,51 @@ describe("managed SQL operation", () => {
       });
       expect(response).not.toHaveProperty("execution");
     }
+  });
+
+  it("retires a submitted token when the repeated execute preflight fails", async () => {
+    const sql = await loadSql();
+    const ctx = confirmationContext();
+    let explainCalls = 0;
+    let executionCalls = 0;
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      if (request.mode === "noTx") {
+        executionCalls += 1;
+        return successfulResult();
+      }
+      explainCalls += 1;
+      return explainCalls === 2
+        ? {
+            completion: "failed",
+            resultSets: [],
+            capturedBytes: 0,
+            truncationReasons: [],
+          }
+        : successfulResult();
+    };
+    const request = {
+      action: "execute" as const,
+      script: "DELETE FROM items WHERE id = 1;",
+    };
+
+    const planned = await sql(ctx, request, backend);
+    const confirmedRequest = {
+      ...request,
+      confirm: true as const,
+      confirmationToken: planned.confirmation?.token,
+    };
+    const blocked = await sql(ctx, confirmedRequest, backend);
+    const replay = await sql(ctx, confirmedRequest, backend);
+
+    expect(blocked).toMatchObject({
+      executed: false,
+      confirmation: { status: "not-required" },
+    });
+    expect(replay).toMatchObject({
+      executed: false,
+      confirmation: { status: "rejected", token: expect.any(String) },
+    });
+    expect(executionCalls).toBe(0);
   });
 
   it("blocks execution and hides error text when preflight throws", async () => {
@@ -1575,5 +1633,71 @@ describe("managed SQL operation", () => {
       },
     });
     expect(JSON.stringify(response)).not.toContain("transport detail");
+  });
+
+  it.each([
+    { change: "stable output", before: {}, after: {} },
+    {
+      change: "equivalent plan JSON",
+      before: { queryPlan: '{"Plan":{"Node Type":"Delete","PlanNodeId":1}}' },
+      after: { queryPlan: '{"Plan":{"PlanNodeId":1,"Node Type":"Delete"}}' },
+    },
+    { change: "AST whitespace", before: { queryAst: "(return 1)" }, after: { queryAst: "(return  1)" } },
+    { change: "diagnostics", before: { diagnostics: "explain A" }, after: { diagnostics: "explain B" } },
+    { change: "capture accounting", before: { capturedBytes: 128 }, after: { capturedBytes: 129 } },
+  ])("confirms the exact SQL request once despite $change", async ({ before, after }) => {
+    const sql = await loadSql();
+    const ctx = confirmationContext();
+    const calls: QueryServiceRequest[] = [];
+    let preflight = successfulResult({ capturedBytes: 128, ...before });
+    const backend: SqlBackendExecutor = async (_ctx, request) => {
+      calls.push(request);
+      return request.mode === "explain" ? preflight : successfulResult();
+    };
+    const request = {
+      action: "execute",
+      script: "DELETE FROM items WHERE id = $id;",
+      maxOutputBytes: 1_024,
+      parameters: {
+        id: {
+          type: { kind: "primitive", name: "Uint64" },
+          value: "1",
+        },
+      },
+    };
+
+    const planned = await sql(ctx, request, backend);
+    preflight = successfulResult({ capturedBytes: 128, ...after });
+    const confirmedRequest = {
+      ...request,
+      confirm: true,
+      confirmationToken: planned.confirmation?.token,
+    };
+    const accepted = await sql(ctx, confirmedRequest, backend);
+
+    expect(planned).toMatchObject({
+      executed: false,
+      confirmation: { status: "planned", token: expect.any(String) },
+    });
+    expect(accepted.confirmation?.status).toBe("accepted");
+    expect(accepted).toMatchObject({
+      executed: true,
+      confirmationConsumed: true,
+      preflight,
+    });
+    expect(calls.map((call) => call.mode)).toEqual([
+      "explain",
+      "explain",
+      "noTx",
+    ]);
+    expect(calls[2]).toMatchObject({
+      script: calls[0]?.script,
+      parameters: calls[0]?.parameters,
+      maxOutputBytes: request.maxOutputBytes - preflight.capturedBytes,
+    });
+    expect(accepted.outputBytes).toBe(preflight.capturedBytes);
+    const replay = await sql(ctx, confirmedRequest, backend);
+    expect(replay.confirmation?.status).toBe("rejected");
+    expect(calls.filter((call) => call.mode === "noTx")).toHaveLength(1);
   });
 });

@@ -24,7 +24,22 @@ function confirmProperty(action = "execute planned commands"): {
   return {
     type: "boolean",
     description:
-      `Must be true to ${action}. Omit or false for plan-only output.`,
+      `To ${action}, set confirm=true and set the confirmationToken request argument to confirmation.token from the current plan response. Omit or false for plan-only output.`,
+  };
+}
+
+function confirmationTokenProperty(): {
+  type: "string";
+  minLength: number;
+  maxLength: number;
+  description: string;
+} {
+  return {
+    type: "string",
+    minLength: 1,
+    maxLength: 256,
+    description:
+      "Ephemeral confirmationToken request argument. Set it to confirmation.token returned by the immediately preceding exact plan response; allowed only together with confirm=true. Do not log or persist it.",
   };
 }
 
@@ -179,8 +194,9 @@ export function applySchemaSchema(): Tool["inputSchema"] {
       confirm: {
         type: "boolean",
         description:
-          "Must be true to execute action=apply after SDK validation succeeds. Omit or false for validation plus plan-only output.",
+          "For action=apply after SDK validation succeeds, set confirm=true and set the confirmationToken request argument to confirmation.token from the current plan response. Omit or false for validation plus plan-only output.",
       },
+      confirmationToken: confirmationTokenProperty(),
       timeoutMs: {
         type: "integer",
         minimum: 1,
@@ -299,8 +315,9 @@ export function sqlSchema(): Tool["inputSchema"] {
       confirm: {
         type: "boolean",
         description:
-          "Considered only for action=execute. Must be true to send one NoTx execution after successful EXPLAIN; query remains SnapshotRO even when true.",
+          "Considered only for action=execute. To send one NoTx execution after successful EXPLAIN, set confirm=true and set the confirmationToken request argument to confirmation.token from the current plan response; query remains SnapshotRO even when true.",
       },
+      confirmationToken: confirmationTokenProperty(),
     },
     $defs: {
       sqlParameter: {
@@ -834,8 +851,9 @@ export function permissionsSchema(): Tool["inputSchema"] {
       confirm: {
         type: "boolean",
         description:
-          "Must be true to execute mutating actions. Omit or false for plan-only output. Not required for action=list.",
+          "To execute mutating actions, set confirm=true and set the confirmationToken request argument to confirmation.token from the current plan response. Omit or false for plan-only output. Not required for action=list.",
       },
+      confirmationToken: confirmationTokenProperty(),
     },
     additionalProperties: false,
   };
@@ -875,6 +893,7 @@ export function pullImageSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("start the background Docker pull"),
+      confirmationToken: confirmationTokenProperty(),
       image: {
         type: "string",
         description:
@@ -907,6 +926,7 @@ export function mutatingSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty(),
+      confirmationToken: confirmationTokenProperty(),
     },
     additionalProperties: false,
   };
@@ -919,6 +939,7 @@ export function addDynamicNodesSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty(),
+      confirmationToken: confirmationTokenProperty(),
       count: {
         type: "integer",
         minimum: 1,
@@ -965,6 +986,7 @@ export function addStorageGroupsSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty(),
+      confirmationToken: confirmationTokenProperty(),
       count: {
         type: "integer",
         minimum: 1,
@@ -988,6 +1010,7 @@ export function reduceStorageGroupsSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty(),
+      confirmationToken: confirmationTokenProperty(),
       count: {
         type: "integer",
         minimum: 1,
@@ -1017,6 +1040,7 @@ export function destroyStackSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty(),
+      confirmationToken: confirmationTokenProperty(),
       removeBindMountPath: {
         type: "boolean",
         description:
@@ -1044,6 +1068,7 @@ export function removeDynamicNodesSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty(),
+      confirmationToken: confirmationTokenProperty(),
       count: {
         type: "integer",
         minimum: 1,
@@ -1082,6 +1107,7 @@ export function dumpSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("dump the tenant"),
+      confirmationToken: confirmationTokenProperty(),
       dumpName: {
         type: "string",
         description: "Optional dump directory name under profile.dumpHostPath.",
@@ -1115,6 +1141,7 @@ export function upgradeVersionSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("execute the version upgrade plan"),
+      confirmationToken: confirmationTokenProperty(),
       version: {
         type: "string",
         description: "Target image tag returned by local_ydb_list_versions.",
@@ -1137,6 +1164,7 @@ export function restoreSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("restore the tenant from the selected dump"),
+      confirmationToken: confirmationTokenProperty(),
       dumpName: {
         type: "string",
         description: "Dump directory name under profile.dumpHostPath.",
@@ -1185,6 +1213,7 @@ export function authHardeningSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("apply the auth hardening config and restart local-ydb"),
+      confirmationToken: confirmationTokenProperty(),
       configHostPath: {
         type: "string",
         description:
@@ -1202,6 +1231,7 @@ export function prepareAuthConfigSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("write the hardened config file"),
+      confirmationToken: confirmationTokenProperty(),
       configHostPath: {
         type: "string",
         description:
@@ -1224,6 +1254,7 @@ export function dynamicAuthConfigSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("write the dynamic-node auth token file"),
+      confirmationToken: confirmationTokenProperty(),
       sid: {
         type: "string",
         description:
@@ -1247,6 +1278,7 @@ export function setRootPasswordSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("rotate and persist the root password"),
+      confirmationToken: confirmationTokenProperty(),
       password: {
         type: "string",
         minLength: 1,
@@ -1266,6 +1298,7 @@ export function cleanupSchema(): Tool["inputSchema"] {
       profile: profileProperty(),
       configPath: configPathProperty(),
       confirm: confirmProperty("remove the explicitly supplied storage paths or Docker volumes"),
+      confirmationToken: confirmationTokenProperty(),
       paths: {
         type: "array",
         items: { type: "string" },

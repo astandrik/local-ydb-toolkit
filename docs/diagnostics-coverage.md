@@ -43,7 +43,7 @@ Then route by healthcheck issue type:
 - `DATABASE` or scheme symptoms: run `local_ydb_database_status` and `local_ydb_scheme`.
 - Auth symptoms: run `local_ydb_auth_check`.
 
-Do not repair automatically from diagnostics. Mutating tools remain plan-first and require `confirm: true`.
+Do not repair automatically from diagnostics. Mutating tools remain plan-first: read the one-time token from the plan response's `confirmation.token`, then repeat the exact request with `confirm: true` and that value in the `confirmationToken` request argument.
 
 ## References
 

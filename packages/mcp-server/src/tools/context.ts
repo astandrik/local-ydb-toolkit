@@ -1,6 +1,9 @@
 import {
   createContext,
+  type ConfigSource,
   loadConfig,
+  loadConfigDocument,
+  type ProcessConfirmationStore,
   resolveConfigPath,
   type CommandExecutor,
   type LocalYdbConfig,
@@ -18,6 +21,8 @@ export type HandlerOptions = {
   sdkExecutor?: SchemaSdkExecutor;
   sqlExecutor?: SqlBackendExecutor;
   signal?: AbortSignal;
+  confirmationStore?: ProcessConfirmationStore;
+  confirmationToolName?: string;
 };
 
 export type ToolHandler = (
@@ -37,26 +42,61 @@ export function handlerConfig(
   return options.config ?? loadConfig(configPath);
 }
 
+function handlerConfigDocument(
+  configPath: string | undefined,
+  options: HandlerOptions,
+): {
+  config: LocalYdbConfig;
+  source: ConfigSource | { kind: "provided"; config: LocalYdbConfig };
+} {
+  if (options.config) {
+    return {
+      config: options.config,
+      source: { kind: "provided", config: options.config },
+    };
+  }
+  return loadConfigDocument(configPath);
+}
+
 export function createToolContext(
   parsed: ProfileToolArgs,
   options: HandlerOptions,
 ): ToolkitContext {
-  return createContext(
+  const loaded = handlerConfigDocument(parsed.configPath, options);
+  return withConfirmation(createContext(
     parsed.profile,
     options.executor,
-    handlerConfig(parsed.configPath, options),
-  );
+    loaded.config,
+  ), loaded.source, options);
 }
 
 export function createUpgradeToolContext(
   parsed: ProfileToolArgs,
   options: HandlerOptions,
 ): ToolkitContext {
-  const config = handlerConfig(parsed.configPath, options);
-  return createContext(
+  const loaded = handlerConfigDocument(parsed.configPath, options);
+  return withConfirmation(createContext(
     parsed.profile,
     options.executor,
-    config,
+    loaded.config,
     options.config ? undefined : resolveConfigPath(parsed.configPath),
-  );
+  ), loaded.source, options);
+}
+
+function withConfirmation(
+  context: ToolkitContext,
+  configSource: ConfigSource | { kind: "provided"; config: LocalYdbConfig },
+  options: HandlerOptions,
+): ToolkitContext {
+  if (!options.confirmationStore || !options.confirmationToolName) {
+    return context;
+  }
+  return {
+    ...context,
+    confirmation: {
+      store: options.confirmationStore,
+      toolName: options.confirmationToolName,
+      configSource,
+    },
+  };
 }
