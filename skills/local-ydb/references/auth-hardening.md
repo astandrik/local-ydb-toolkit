@@ -77,18 +77,37 @@ This can avoid mounting password files into dynamic-node containers when the SID
 To check what SID a username/password token represents without printing the token:
 
 ```bash
-sudo cat /path/to/root.password | docker exec -i ydb-local bash -lc '
+(
+set -euo pipefail
+umask 077
+password_input=$(mktemp)
+cleanup_input() { rm -f -- "$password_input"; }
+trap cleanup_input EXIT
+trap "exit 130" INT
+trap "exit 143" TERM
+sudo cat /path/to/root.password >"$password_input"
+test -s "$password_input"
+docker exec -i ydb-local bash -lc '
+  set -euo pipefail
   umask 077
-  cat >/tmp/root.password
+  credentials_dir=$(mktemp -d)
+  cleanup() {
+    rm -f -- "$credentials_dir/root.password" "$credentials_dir/root.token"
+    rmdir -- "$credentials_dir"
+  }
+  trap cleanup EXIT
+  trap "exit 130" INT
+  trap "exit 143" TERM
+  cat >"$credentials_dir/root.password"
+  test -s "$credentials_dir/root.password"
   /ydb -e grpc://localhost:2136 -d /local \
     --user root \
-    --password-file /tmp/root.password \
-    auth get-token -f >/tmp/root.token
-  /ydbd --server localhost:2136 --token-file /tmp/root.token whoami
-  rc=$?
-  rm -f /tmp/root.password /tmp/root.token
-  exit $rc
-'
+    --password-file "$credentials_dir/root.password" \
+    auth get-token -f >"$credentials_dir/root.token"
+  test -s "$credentials_dir/root.token"
+  /ydbd --server localhost:2136 --token-file "$credentials_dir/root.token" whoami
+' <"$password_input"
+)
 ```
 
 ## Rollout Sequence

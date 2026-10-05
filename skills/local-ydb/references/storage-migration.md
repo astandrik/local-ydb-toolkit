@@ -33,24 +33,44 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 -l <user> <host> \
 Tenant and BSC checks:
 
 ```bash
-sudo cat /path/to/root.password | docker exec -i ydb-local bash -lc '
+(
+set -euo pipefail
+umask 077
+password_input=$(mktemp)
+cleanup_input() { rm -f -- "$password_input"; }
+trap cleanup_input EXIT
+trap "exit 130" INT
+trap "exit 143" TERM
+sudo cat /path/to/root.password >"$password_input"
+test -s "$password_input"
+docker exec -i ydb-local bash -lc '
+  set -euo pipefail
   umask 077
-  cat >/tmp/root.password
+  credentials_dir=$(mktemp -d)
+  cleanup() {
+    rm -f -- "$credentials_dir/root.password"
+    rmdir -- "$credentials_dir"
+  }
+  trap cleanup EXIT
+  trap "exit 130" INT
+  trap "exit 143" TERM
+  cat >"$credentials_dir/root.password"
+  test -s "$credentials_dir/root.password"
   /ydb -e grpc://localhost:2136 -d /local/<tenant> \
     --user root \
-    --password-file /tmp/root.password \
+    --password-file "$credentials_dir/root.password" \
     scheme ls /local/<tenant>
   /ydbd --server localhost:2136 \
     --user root \
-    --password-file /tmp/root.password \
+    --password-file "$credentials_dir/root.password" \
     admin blobstorage config invoke --proto "Command { ReadStoragePool { BoxId: 1 } }"
   /ydbd --server localhost:2136 \
     --user root \
-    --password-file /tmp/root.password \
+    --password-file "$credentials_dir/root.password" \
     admin blobstorage config invoke \
       --proto "Command { QueryBaseConfig { RetrieveDevices: true SuppressNodes: true } }"
-  rm -f /tmp/root.password
-'
+' <"$password_input"
+)
 ```
 
 Treat monitoring/UI `StorageGroups` as advisory only. Use `ReadStoragePool` for pool config and `NumGroups`; use `QueryBaseConfig { RetrieveDevices: true SuppressNodes: true }` for actual `Group -> PDisk` placement.
@@ -71,13 +91,23 @@ Target topology should use placeholders in reusable docs:
 Stop clients before taking consistency-sensitive dumps. Keep secrets in temp files and remove them on exit.
 
 ```bash
+(
+set -euo pipefail
+umask 077
+password_input=$(mktemp)
+cleanup_input() { rm -f -- "$password_input"; }
+trap cleanup_input EXIT
+trap "exit 130" INT
+trap "exit 143" TERM
+sudo cat /path/to/root.password >"$password_input"
+test -s "$password_input"
 TS=$(date +%Y%m%d-%H%M%S)
 BASE=/path/to/ydb-dump/<tenant>-$TS
 sudo install -d -o <user> -g <user> "$BASE"
 
 docker inspect ydb-local ydb-dyn-example >"$BASE/docker-inspect-before.json" 2>/dev/null || true
 
-sudo cat /path/to/root.password | docker run --rm -i \
+docker run --rm -i \
   --network container:ydb-local \
   -v /path/to/ydb-dump:/dump \
   --entrypoint /bin/bash \
@@ -85,11 +115,20 @@ sudo cat /path/to/root.password | docker run --rm -i \
   -lc '
     set -euo pipefail
     umask 077
-    cat >/tmp/root.password
-    trap "rm -f /tmp/root.password" EXIT
-    /ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file /tmp/root.password \
+    credentials_dir=$(mktemp -d)
+    cleanup() {
+      rm -f -- "$credentials_dir/root.password"
+      rmdir -- "$credentials_dir"
+    }
+    trap cleanup EXIT
+    trap "exit 130" INT
+    trap "exit 143" TERM
+    cat >"$credentials_dir/root.password"
+    test -s "$credentials_dir/root.password"
+    /ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file "$credentials_dir/root.password" \
       tools dump -p . -o /dump/<tenant>-<timestamp>/tenant
-  '
+  ' <"$password_input"
+)
 ```
 
 Adjust endpoint, database, and dump path to the live topology. Whole-tenant dump can be unreliable for some layouts; use table-level dumps when whole-tenant dump is unsupported, too broad, or fails on a rehearsed copy.
@@ -97,6 +136,8 @@ Adjust endpoint, database, and dump path to the live topology. Whole-tenant dump
 ## Fresh Rebuild
 
 Create a new static/root data directory or Docker volume, then start a fresh static node with one target data mount:
+
+This bootstrap example temporarily enables anonymous access without TLS. Use it only in a trusted local environment: loopback bindings do not isolate the database from other local users or processes. Restore authentication and the intended network restrictions before reconnecting clients.
 
 ```bash
 docker rm -f ydb-local ydb-dyn-example 2>/dev/null || true
@@ -125,7 +166,17 @@ Create the replacement tenant through CMS, start its dynamic node, and wait for 
 When using the `local-ydb` image as a helper container, override the image entrypoint to `/bin/bash`:
 
 ```bash
-sudo cat /path/to/root.password | docker run --rm -i \
+(
+set -euo pipefail
+umask 077
+password_input=$(mktemp)
+cleanup_input() { rm -f -- "$password_input"; }
+trap cleanup_input EXIT
+trap "exit 130" INT
+trap "exit 143" TERM
+sudo cat /path/to/root.password >"$password_input"
+test -s "$password_input"
+docker run --rm -i \
   --network container:ydb-local \
   -v /path/to/ydb-dump:/dump \
   --entrypoint /bin/bash \
@@ -133,30 +184,39 @@ sudo cat /path/to/root.password | docker run --rm -i \
   -lc '
     set -euo pipefail
     umask 077
-    cat >/tmp/root.password
-    trap "rm -f /tmp/root.password" EXIT
-    /ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file /tmp/root.password \
+    credentials_dir=$(mktemp -d)
+    cleanup() {
+      rm -f -- "$credentials_dir/root.password"
+      rmdir -- "$credentials_dir"
+    }
+    trap cleanup EXIT
+    trap "exit 130" INT
+    trap "exit 143" TERM
+    cat >"$credentials_dir/root.password"
+    test -s "$credentials_dir/root.password"
+    /ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file "$credentials_dir/root.password" \
       tools restore -p . -i /dump/<tenant>-<timestamp>/tenant
-  '
+  ' <"$password_input"
+)
 ```
 
 After restore, recreate users/grants and auth config if the fresh cluster started without mandatory auth.
 
 ## Verification Before Cleanup
 
-Do not delete old storage until all checks pass:
+Do not delete old storage until all checks pass. Replace `/path/to/root.password` with an existing protected credential file accessible to the CLI; the temporary files used by the previous commands have already been removed.
 
 ```bash
-/ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file /tmp/root.password \
+/ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file /path/to/root.password \
   scheme ls /local/<tenant>
 
-/ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file /tmp/root.password \
+/ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file /path/to/root.password \
   scheme describe /local/<tenant>/<known-table>
 
-/ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file /tmp/root.password \
+/ydb -e grpc://localhost:2137 -d /local/<tenant> --user root --password-file /path/to/root.password \
   sql -s "SELECT COUNT(*) AS c FROM <known-table>;"
 
-/ydbd --server localhost:2136 --user root --password-file /tmp/root.password \
+/ydbd --server localhost:2136 --user root --password-file /path/to/root.password \
   admin blobstorage config invoke \
     --proto 'Command { QueryBaseConfig { RetrieveDevices: true SuppressNodes: true } }'
 ```
