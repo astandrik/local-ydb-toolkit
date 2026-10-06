@@ -30,6 +30,7 @@ Keep password files, tokens, CA private keys, and host-specific secret paths out
 Field-proven default-root behavior on `local-ydb` images:
 
 - generated `security_config.default_users` can contain `root` with password `1234`
+- Never retain the known default root password outside an isolated test. Rotate it to a unique non-default password and verify rotation before admitting clients or exposing monitoring to other users.
 - a token minted from that username/password can identify as `User SID: root`
 - dynamic-node auth token files can still use `root@builtin`
 
@@ -112,7 +113,7 @@ docker exec -i ydb-local bash -lc '
 
 ## Rollout Sequence
 
-For production-like changes, use a copied volume first when possible.
+For production-like changes, use a copied volume first when possible. Keep application clients stopped and public monitoring inaccessible until all acceptance checks pass; loopback alone does not isolate the stack from other local users and processes.
 
 1. Save current container definitions and current YDB config.
 2. Back up the Docker volume or bind-mounted data directory before patching config.
@@ -120,16 +121,19 @@ For production-like changes, use a copied volume first when possible.
 4. Grant application users only the tenant access they need, commonly `ydb.generic.use` on `/local/<tenant>`.
 5. Patch YDB config to enforce native auth and tighten viewer, monitoring, admin, bootstrap, and dynamic-node registration SIDs.
 6. Stop containers in dependency order: clients, dynamic nodes, static node.
-7. Start containers in dependency order: static node, dynamic nodes, clients.
-8. Verify tenant state, GraphShard, anonymous denial, and authenticated behavior before declaring success.
+7. Start only the static node, then the dynamic nodes; keep clients stopped and public monitoring inaccessible.
+8. Rotate the root password using Scenario 10A below: review the plan, then confirm execution on the isolated auth-enabled stack.
+9. Verify rotation using the complete success criteria below, including fresh new-password success and old-password rejection.
+10. Verify tenant state, GraphShard, anonymous denial, and authenticated behavior with the new credentials.
+11. Admit clients or enable the reviewed public monitoring route only after steps 9-10 pass.
 
 Before step 6 mutates config or container state, require the full check-only static compatibility preflight to pass for the profile image, network, data mount, environment, restart policy, healthcheck, and exact configured loopback bindings. An immutable mismatch leaves the stack untouched and requires destroy followed by bootstrap.
 
-When `dynamicNodeCount > 1`, steps 6-8 apply to every configured dynamic node. Stop all configured nodes before restarting the static node, then recreate nodes `1..N` in index order, with the auth-token mount when one is configured and without it otherwise. This recreate path also restores a missing configured node. After each launch, the exact container must be stably running and authenticated or anonymous `viewer/json/nodelist`, as appropriate for the profile, must contain its configured IC port before the next node starts. One-off suffixes above `dynamicNodeCount` keep their existing standalone hardening policy; this declarative rollout does not broaden it. If rollback restores the prior static config, use `local_ydb_restart_stack` or `local_ydb_bootstrap` to recreate configured nodes; `docker start` cannot recover definitions removed by hardening.
+When `dynamicNodeCount > 1`, steps 6-7 and 10 apply to every configured dynamic node. Stop all configured nodes before restarting the static node, then recreate nodes `1..N` in index order, with the auth-token mount when one is configured and without it otherwise. This recreate path also restores a missing configured node. After each launch, the exact container must be stably running and authenticated or anonymous `viewer/json/nodelist`, as appropriate for the profile, must contain its configured IC port before the next node starts. One-off suffixes above `dynamicNodeCount` keep their existing standalone hardening policy; this declarative rollout does not broaden it. If rollback restores the prior static config, use `local_ydb_restart_stack` or `local_ydb_bootstrap` to recreate configured nodes; `docker start` cannot recover definitions removed by hardening.
 
 Before mutating live config or volumes, provide a rollback plan: previous run commands, previous image tag, volume backup, and config restore point.
 
-Field-proven MCP sequence for a fresh stable `26.1.1.6` GHCR stack:
+Recommended MCP sequence for a fresh stable `26.1.1.6` GHCR stack:
 
 1. `local_ydb_dump_tenant(confirm=true, dumpName="pre-auth-...")`
 2. bootstrap a fresh clean stack on separate container names, network, volume, and ports with exact image `ghcr.io/ydb-platform/local-ydb:26.1.1.6`
@@ -137,7 +141,15 @@ Field-proven MCP sequence for a fresh stable `26.1.1.6` GHCR stack:
 4. `local_ydb_prepare_auth_config(confirm=true)` to extract current config and root password file
 5. `local_ydb_write_dynamic_auth_config(confirm=true)` for the dynamic auth text-proto
 6. `local_ydb_apply_auth_hardening(confirm=true)` on the same stack
-7. verify: `viewer whoami = 401`, authenticated `scheme ls /local/<tenant>` works, authenticated `nodelist` works, authenticated GraphShard capability works
+7. `local_ydb_set_root_password(confirm=false, password="<new-password>")` to review the rotation plan
+8. `local_ydb_set_root_password(confirm=true, password="<new-password>")` only after approving that plan
+9. verify rotation using Scenario 10A, then run Scenario 10 with the new credentials; keep clients and public monitoring isolated until both pass
+
+For rotation, the selected profile must have `authConfigPath` and `rootPasswordFile`; prepare them before enforcing auth. Follow [Scenario 10A](mcp-tool-scenarios.md#scenario-10a-root-password-rotation), then [Scenario 10](mcp-tool-scenarios.md#scenario-10-post-auth-verification). Rotation runs after auth is enabled because the tool also verifies anonymous denial.
+
+Rotation acceptance requires all four execution results to be successful, the host auth config and password file to match the new credential, a fresh login with the new password to succeed, a fresh login with the old password to be rejected, and anonymous viewer access to remain `401`. `executed: true` alone is not success. Keep passwords in protected files for checks, never argv or logs. Use new sessions without cached cookies or tokens; check lockout policy before the single negative login attempt. A timeout, transport failure or unavailable endpoint does not prove old-password rejection. Password-login rejection does not prove revocation of previously issued tokens; see [YDB authentication](https://ydb.tech/docs/en/security/authentication).
+
+Keep the stack isolated if rotation partially fails or its outcome is unknown. The runtime password can change before host artifacts are synchronized. Establish which credential currently authenticates and whether host config/password files match before recovery. Do not retry blindly or automatically restore the weak default password.
 
 ## Monitoring Exposure
 

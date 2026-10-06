@@ -594,7 +594,7 @@ Avoid:
 
 ## Scenario 9: Auth Rollout
 
-Goal: turn a healthy clean stack into a working auth-enabled stack.
+Goal: turn a healthy clean stack into an auth-enabled stack while keeping clients stopped and public monitoring inaccessible. Run Scenario 10A next, then Scenario 10 before admitting clients.
 
 Profile:
 `ghcr261-auth`
@@ -624,9 +624,67 @@ Avoid:
 - restarting a stale dynamic auth container without recreation
 - using a hardcoded login URL on `8765` when the profile runs on another monitoring port
 
+## Scenario 10A: Root Password Rotation
+
+Goal: replace the known default root password before shared or exposed use, without exposing it in plan output.
+
+Profile:
+`ghcr261-auth`
+
+Prerequisites:
+
+- Scenario 9 has enabled auth; clients remain stopped and public monitoring remains inaccessible.
+- The selected profile has prepared `authConfigPath` and `rootPasswordFile`.
+- Choose a unique non-default password accepted by the configured password policy; the example uses only a placeholder.
+- Retain the old credential only in a protected password file for the negative login check; never print it or put it in process arguments.
+
+Calls:
+
+```json
+{ "tool": "local_ydb_set_root_password", "arguments": { "profile": "ghcr261-auth", "password": "<new-password>", "confirm": false } }
+{ "tool": "local_ydb_set_root_password", "arguments": { "profile": "ghcr261-auth", "password": "<new-password>", "confirm": true } }
+```
+
+Review the plan before issuing the confirmed call. A plan-only response does not rotate credentials.
+
+Expected:
+
+- plan-only output does not print the raw password
+- the confirmed tool rotates the runtime password with `ALTER USER`, synchronizes the host auth config and `root.password`, and checks authenticated tenant access and anonymous denial
+- every execution stage must succeed; `executed: true` alone only records that execution was attempted
+
+Check the confirmed response as `rotation`:
+
+```js
+const rotationSucceeded =
+  rotation.executed === true &&
+  rotation.results?.length === 4 &&
+  rotation.results.every(({ ok }) => ok === true);
+```
+
+- The host auth config and password file must match the new password; verify without printing either credential.
+- The new password must authenticate successfully through a fresh login.
+- The old password must be rejected by a fresh login because of invalid credentials. Use separate sessions without existing cookies or tokens; transport, timeout and endpoint failures do not establish rejection.
+- Check the lockout policy before making at most one negative login attempt. Do not loop on rejected credentials; password-login rejection is not a claim that existing tokens were revoked.
+- Anonymous `viewer/json/whoami` must still return `401`; run Scenario 10 using the new root password before admitting clients.
+- Empty passwords are an upstream YDB capability, but this MCP tool requires a non-empty `password` argument.
+- If `auth_config.password_complexity` is configured, the new value must satisfy it.
+
+Failure handling:
+
+Keep the stack isolated if any execution stage fails or the outcome is unknown. The runtime password may have changed even if host credential/config synchronization failed. Establish which credential currently authenticates and whether the host artifacts match before recovery. Do not retry blindly or automatically restore the weak default password.
+
+Avoid:
+
+- storing the password directly in committed config
+- changing the password on a profile that lacks `authConfigPath` or `rootPasswordFile`
+- assuming every punctuation mark is portable across builds; prefer letters, digits, and documented YDB special characters `!@#$%^&*()_+{}|<>?=` unless the target image has already been rehearsed with a broader set
+
 ## Scenario 10: Post-Auth Verification
 
-Goal: prove the auth rollout actually worked.
+Goal: prove the auth rollout and mandatory password rotation worked before admitting clients or exposing monitoring.
+
+Prerequisite: Scenario 10A must pass, including all execution stages, synchronized host artifacts, fresh new-password success and old-password rejection.
 
 Profile:
 `ghcr261-auth`
@@ -644,7 +702,7 @@ Calls:
 Expected:
 
 - `auth_check.viewerWhoamiStatus == 401`
-- authenticated tenant metadata still works
+- authenticated tenant metadata works with the new root password
 - `status_report` returns `tenant=ok`, `nodes=ok`
 - `nodes_check` returns the dynamic node
 - `graphshard_check` reports `GraphShardExists=true`
@@ -653,35 +711,6 @@ Expected:
 Avoid:
 
 - treating a `401` on `/viewer/json/whoami` as an error after auth; it is the expected anonymous result
-
-## Scenario 10A: Root Password Rotation
-
-Goal: change the root password through one MCP tool without exposing it in plan output.
-
-Profile:
-`ghcr261-auth`
-
-Calls:
-
-```json
-{ "tool": "local_ydb_set_root_password", "arguments": { "profile": "ghcr261-auth", "password": "<new-password>", "confirm": false } }
-```
-
-Expected:
-
-- plan-only output does not print the raw password
-- the tool rotates the runtime password with `ALTER USER`
-- the generated host auth config and `root.password` file are updated after the runtime password change
-- post-change anonymous `viewer/json/whoami` should still return `401`
-- authenticated tenant checks should work with the new password
-- empty passwords are an upstream YDB capability, but this MCP tool requires a non-empty `password` argument
-- if the cluster config defines `auth_config.password_complexity`, password rotation can fail until the supplied value matches that policy
-
-Avoid:
-
-- storing the password directly in committed config
-- changing the password on a profile that lacks `authConfigPath` or `rootPasswordFile`
-- assuming every punctuation mark is portable across builds; prefer letters, digits, and documented YDB special characters `!@#$%^&*()_+{}|<>?=` unless the target image has already been rehearsed with a broader set
 
 ## Scenario 11: Add Extra Dynamic Nodes
 
