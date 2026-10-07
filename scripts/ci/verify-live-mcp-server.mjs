@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { redactCommand } from "@local-ydb-toolkit/core";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
   assertLiveToolRegistry,
@@ -11,6 +12,7 @@ import {
 } from "./managed-sql-live.mjs";
 import { contiguousPortCandidates } from "./live-port-allocation.mjs";
 import { waitForRestartingContainer } from "./restarting-container.mjs";
+import { assertSuccessfulMutation, createDiagnosticRedactor } from "./mutation-diagnostics.mjs";
 
 const profileName = "ci-action";
 const expectedPromptNames = [
@@ -45,6 +47,18 @@ if (dynamicNodeAuthTokenFile) {
     throw new Error("The dynamic-node auth token path is not a regular file.");
   }
 }
+
+const diagnosticRedactions = [];
+if (rootPasswordFile) {
+  try {
+    const password = (await readFile(rootPasswordFile, "utf8")).trim();
+    diagnosticRedactions.push(password, rootPasswordFile, dynamicNodeAuthTokenFile);
+  } catch {
+    throw new Error("Unable to load credentials for CI diagnostic redaction.");
+  }
+}
+
+const redactDiagnosticStderr = createDiagnosticRedactor(redactCommand, diagnosticRedactions);
 
 const tempDir = await mkdtemp(join(tmpdir(), "local-ydb-mcp-integration-"));
 const configPath = join(tempDir, "local-ydb.config.json");
@@ -684,7 +698,7 @@ async function verifyStoppedStaticRestart(client) {
         profile: lifecycleProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(initialBootstrap, "initial disposable root bootstrap");
+      assertSuccessfulMutation(initialBootstrap, "initial disposable root bootstrap", redactDiagnosticStderr);
 
       const stopResult = await runCommand("docker", ["stop", lifecycleStaticContainer]);
       assert(
@@ -734,7 +748,7 @@ async function verifyStoppedStaticRestart(client) {
         profile: lifecycleProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(repeatedBootstrap, "repeated disposable root bootstrap");
+      assertSuccessfulMutation(repeatedBootstrap, "repeated disposable root bootstrap", redactDiagnosticStderr);
       const restartCommand = repeatedBootstrap.results?.find(
         (result) => typeof result.command === "string" && result.command.includes("docker start"),
       );
@@ -775,7 +789,7 @@ async function verifyStoppedStaticRestart(client) {
         profile: lifecycleProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(cleanup, "disposable lifecycle cleanup");
+      assertSuccessfulMutation(cleanup, "disposable lifecycle cleanup", redactDiagnosticStderr);
     } catch (error) {
       failures.push(error);
     }
@@ -850,7 +864,7 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(initialBootstrapResult, "one-node declarative bootstrap");
+      assertSuccessfulMutation(initialBootstrapResult, "one-node declarative bootstrap", redactDiagnosticStderr);
       await assertConfiguredTopology(client, [topologyDynamicContainer], [topologyDynamicIcPort]);
       const initialInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
       const initialStatic = findContainer(initialInventory, topologyStaticContainer);
@@ -927,13 +941,13 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(rebuild, "one-node topology destroy before three-node rebuild");
+      assertSuccessfulMutation(rebuild, "one-node topology destroy before three-node rebuild", redactDiagnosticStderr);
 
       const bootstrapResult = await callTool(client, "local_ydb_bootstrap", {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(bootstrapResult, "fresh three-node declarative bootstrap");
+      assertSuccessfulMutation(bootstrapResult, "fresh three-node declarative bootstrap", redactDiagnosticStderr);
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
       await assertConfiguredGrpcBindingsAndEndpoints();
       const recreatedInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
@@ -1061,7 +1075,7 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(addResult, "default one-off node add");
+      assertSuccessfulMutation(addResult, "default one-off node add", redactDiagnosticStderr);
       const afterAdd = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
       const oneOffBefore = findContainer(afterAdd, oneOffContainer);
       assert(oneOffBefore?.id, "one-off container ID was not available after add.");
@@ -1119,7 +1133,7 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(restartResult, "drift-aware declarative restart");
+      assertSuccessfulMutation(restartResult, "drift-aware declarative restart", redactDiagnosticStderr);
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
       const afterRestart = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
       assert(findContainer(afterRestart, configuredNodeTwo)?.id !== restartingNode.id, "restart preserved the restarting fixture identity instead of recreating it.");
@@ -1155,7 +1169,7 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(finalRestart, "post-recovery declarative restart");
+      assertSuccessfulMutation(finalRestart, "post-recovery declarative restart", redactDiagnosticStderr);
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
       const afterFinalRestart = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
       assert(findContainer(afterFinalRestart, oneOffContainer)?.id === oneOffBefore.id, "successful restart changed the one-off container identity.");
@@ -1178,13 +1192,13 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         containers: [`${topologyDynamicContainer}-2`],
         confirm: true,
       });
-      assertSuccessfulMutation(removeConfigured, "configured node drift fixture removal");
+      assertSuccessfulMutation(removeConfigured, "configured node drift fixture removal", redactDiagnosticStderr);
 
       const restoreConfigured = await callTool(client, "local_ydb_restart_stack", {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(restoreConfigured, "configured node rollback through restart");
+      assertSuccessfulMutation(restoreConfigured, "configured node rollback through restart", redactDiagnosticStderr);
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
       const afterConfiguredRollback = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
       assert(findContainer(afterConfiguredRollback, oneOffContainer)?.id === oneOffBefore.id, "configured-node rollback changed the one-off identity.");
@@ -1206,20 +1220,20 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         containers: [oneOffContainer],
         confirm: true,
       });
-      assertSuccessfulMutation(removeOneOff, "one-off node removal");
+      assertSuccessfulMutation(removeOneOff, "one-off node removal", redactDiagnosticStderr);
       await assertConfiguredTopology(client, configuredContainers, configuredIcPorts);
 
       const destroyResult = await callTool(client, "local_ydb_destroy_stack", {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(destroyResult, "declarative topology destroy");
+      assertSuccessfulMutation(destroyResult, "declarative topology destroy", redactDiagnosticStderr);
 
       const rebootstrapResult = await callTool(client, "local_ydb_bootstrap", {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(rebootstrapResult, "declarative topology rebootstrap");
+      assertSuccessfulMutation(rebootstrapResult, "declarative topology rebootstrap", redactDiagnosticStderr);
       const afterRebootstrap = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
       const dynamicNames = afterRebootstrap.containers
         ?.map((container) => container.names)
@@ -1239,7 +1253,7 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         profile: topologyProfileName,
         confirm: true,
       });
-      assertSuccessfulMutation(cleanup, "declarative topology cleanup");
+      assertSuccessfulMutation(cleanup, "declarative topology cleanup", redactDiagnosticStderr);
     } catch (error) {
       failures.push(error);
     }
@@ -1358,18 +1372,6 @@ async function assertTopologyArtifactsAbsent() {
     const result = await runCommand("docker", args);
     assert(result.exitCode !== 0, `Disposable declarative topology ${kind} still exists after cleanup.`);
   }
-}
-
-function assertSuccessfulMutation(result, description) {
-  assert(result.executed === true, `${description} did not execute.`);
-  assert(
-    Array.isArray(result.results) && result.results.length > 0,
-    `${description} returned no command results.`,
-  );
-  assert(
-    result.results.every((commandResult) => commandResult.ok === true),
-    `${description} returned a failed command result.`,
-  );
 }
 
 async function cleanupLifecycleArtifacts() {
