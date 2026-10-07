@@ -746,6 +746,7 @@ const rotationSucceeded =
 - The old password must be rejected by a fresh login because of invalid credentials. Use separate sessions without existing cookies or tokens; transport, timeout and endpoint failures do not establish rejection.
 - Check the lockout policy before making at most one negative login attempt. Do not loop on rejected credentials; password-login rejection is not a claim that existing tokens were revoked.
 - Anonymous `viewer/json/whoami` must still return `401`; run Scenario 10 using the new root password before admitting clients.
+- The tool leaves `${authConfigPath}.before-local-ydb-toolkit-password-rotate` and `${rootPasswordFile}.before-local-ydb-toolkit-password-rotate`. After post-auth verification, close the explicit rollback hold and retire these obsolete credential backups and the old-password verification file under the Obsolete Credential Backups policy in `auth-hardening.md`.
 - Empty passwords are an upstream YDB capability, but this MCP tool requires a non-empty `password` argument.
 - If `auth_config.password_complexity` is configured, the new value must satisfy it.
 
@@ -780,6 +781,7 @@ Calls:
 
 Expected:
 
+- client admission remains blocked until the explicit rollback hold is closed and obsolete credential backups have been retired and verified under the `auth-hardening.md` policy
 - `auth_check.viewerWhoamiStatus == 401`
 - authenticated tenant metadata works with the new root password
 - `status_report` returns `tenant=ok`, `nodes=ok`

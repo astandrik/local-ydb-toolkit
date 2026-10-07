@@ -50,7 +50,7 @@ try:
     base_url = monitoring_base_url.rstrip("/")
     with opener.open(
         urllib.request.Request(
-            base_url + "/login",
+            urllib.parse.urljoin(base_url, "/login"),
             data=json.dumps({"user": "root", "password": password}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -81,7 +81,7 @@ print(json.dumps(summary, separators=(",", ":")))
 PY
 ```
 
-The login field is `user`. The cookie handler also supports the viewer's post-login redirects, including `307`; a generic Bearer-token check is not equivalent to this UI session flow.
+Resolve `/login` from the monitoring origin, even when `monitoring_base_url` contains a path prefix; keep that prefix for the viewer URLs. The login field is `user`. The cookie handler also supports the viewer's post-login redirects, including `307`; a generic Bearer-token check is not equivalent to this UI session flow.
 
 Container/log checks for dynamic-node additions:
 

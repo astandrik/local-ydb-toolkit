@@ -48,6 +48,10 @@ function checkScenario(source) {
   assert.match(prerequisites, /Scenario 9/);
   assert.match(verify.split("Calls:")[0], /Scenario 10A.*must pass/);
   assert.match(rotation, /old password must be rejected by a fresh login/);
+  assert.ok(rotation.includes("${authConfigPath}.before-local-ydb-toolkit-password-rotate"));
+  assert.ok(rotation.includes("${rootPasswordFile}.before-local-ydb-toolkit-password-rotate"));
+  assert.match(rotation, /close the explicit rollback hold and retire these obsolete credential backups/);
+  assert.match(verify, /client admission remains blocked until.*obsolete credential backups have been retired and verified/);
   assert.match(rotation, /without existing cookies or tokens/);
   assert.match(rotation, /one negative login attempt/);
   assert.match(rotation, /lockout policy/);
@@ -71,14 +75,23 @@ function checkScenario(source) {
 
 function checkRollout(source) {
   const credentials = section(source, "User Credentials");
-  assert.match(credentials, /Never retain the known default root password outside an isolated test/);
+  assert.match(credentials, /Never use the known default root password outside an isolated test/);
+  const retirement = section(source, "Obsolete Credential Backups");
+  assert.ok(retirement.includes("${authConfigPath}.before-local-ydb-toolkit-password-rotate"));
+  assert.ok(retirement.includes("${rootPasswordFile}.before-local-ydb-toolkit-password-rotate"));
+  assert.match(retirement, /old-password verification file/);
+  assert.match(retirement, /explicit rollback hold/);
+  assert.match(retirement, /approved secret-retention policy/);
+  assert.match(retirement, /retention deadline/);
+  assert.match(retirement, /absent from the operational locations/);
   const rollout = section(source, "Rollout Sequence");
   const steps = [...rollout.matchAll(/^\d+\. (.+)$/gm)].map(([, step]) => step);
   const start = steps.findIndex((step) => step.startsWith("Start only the static node"));
   const rotate = steps.findIndex((step) => step.startsWith("Rotate the root password"));
   const verify = steps.findIndex((step) => step.startsWith("Verify rotation"));
+  const retire = steps.findIndex((step) => step.startsWith("Retire obsolete credential backups"));
   const admit = steps.findIndex((step) => step.startsWith("Admit clients"));
-  assert.ok(start >= 0 && start < rotate && rotate < verify && verify < admit, "start → rotate → verify → admit");
+  assert.ok(start >= 0 && start < rotate && rotate < verify && verify < retire && retire < admit, "start → rotate → verify → retire backups → admit");
   assert.ok(!steps.slice(0, verify).some((step) => /(?:start|admit|enable).*(?:clients|public monitoring)/i.test(step) && !step.includes("keep clients stopped")));
   const mcpSteps = steps.slice(steps.findIndex((step) => step.includes("local_ydb_dump_tenant")));
   const harden = mcpSteps.findIndex((step) => step.includes("local_ydb_apply_auth_hardening"));
@@ -99,6 +112,9 @@ test("both copies keep the auth rollout, rotation and acceptance contract synchr
 });
 
 const scenarioMutations = [
+  ["missing config-backup retirement", (source) => source.replaceAll("${authConfigPath}.before-local-ydb-toolkit-password-rotate", "an unspecified backup")],
+  ["missing password-backup retirement", (source) => source.replaceAll("${rootPasswordFile}.before-local-ydb-toolkit-password-rotate", "an unspecified backup")],
+  ["admission without retirement", (source) => source.replace("client admission remains blocked until the explicit rollback hold is closed and obsolete credential backups have been retired and verified", "client admission may proceed with old backups")],
   ["removed rotation", (source) => source.replace("## Scenario 10A: Root Password Rotation", "## Removed rotation")],
   ["plan-only rotation", (source) => source.replace(/^\{ "tool": "local_ydb_set_root_password".*"confirm": true.*\}\n/m, "")],
   ["no old-password rejection", (source) => source.replace("old password must be rejected by a fresh login", "old password need not be checked")],
@@ -121,6 +137,21 @@ for (const [name, mutate] of scenarioMutations) {
 test("negative control: clients started before credential verification", () => {
   checkRollout(auth);
   const mutant = auth.replace("Start only the static node, then the dynamic nodes; keep clients stopped", "Start static and dynamic nodes and clients");
+  assert.notEqual(mutant, auth);
+  assert.throws(() => checkRollout(mutant));
+});
+
+test("negative control: backup retirement only mentioned outside the rollout", () => {
+  checkRollout(auth);
+  const mutant = auth.replace(/^11\. Retire obsolete credential backups.*\n/m, "");
+  assert.notEqual(mutant, auth);
+  assert.throws(() => checkRollout(mutant));
+});
+
+test("negative control: backup retirement before rotation verification", () => {
+  checkRollout(auth);
+  const retirement = auth.match(/^11\. Retire obsolete credential backups.*\n/m)[0];
+  const mutant = auth.replace(retirement, "").replace("9. Verify rotation", retirement + "9. Verify rotation");
   assert.notEqual(mutant, auth);
   assert.throws(() => checkRollout(mutant));
 });

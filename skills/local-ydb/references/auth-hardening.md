@@ -30,7 +30,7 @@ Keep password files, tokens, CA private keys, and host-specific secret paths out
 Field-proven default-root behavior on `local-ydb` images:
 
 - generated `security_config.default_users` can contain `root` with password `1234`
-- Never retain the known default root password outside an isolated test. Rotate it to a unique non-default password and verify rotation before admitting clients or exposing monitoring to other users.
+- Never use the known default root password outside an isolated test. Rotate it to a unique non-default password, verify rotation, and retire obsolete credential copies before admitting clients or exposing monitoring to other users. Restricted retention archives follow the policy below.
 - a token minted from that username/password can identify as `User SID: root`
 - dynamic-node auth token files can still use `root@builtin`
 
@@ -125,7 +125,8 @@ For production-like changes, use a copied volume first when possible. Keep appli
 8. Rotate the root password using Scenario 10A below: review the plan, then confirm execution on the isolated auth-enabled stack.
 9. Verify rotation using the complete success criteria below, including fresh new-password success and old-password rejection.
 10. Verify tenant state, GraphShard, anonymous denial, and authenticated behavior with the new credentials.
-11. Admit clients or enable the reviewed public monitoring route only after steps 9-10 pass.
+11. Retire obsolete credential backups after the explicit rollback hold is closed, using the policy below.
+12. Admit clients or enable the reviewed public monitoring route only after steps 9-11 pass.
 
 Before step 6 mutates config or container state, require the full check-only static compatibility preflight to pass for the profile image, network, data mount, environment, restart policy, healthcheck, and exact configured loopback bindings. An immutable mismatch leaves the stack untouched and requires destroy followed by bootstrap.
 
@@ -143,13 +144,26 @@ Recommended MCP sequence for a fresh stable `26.1.1.6` GHCR stack:
 6. `local_ydb_apply_auth_hardening(confirm=true)` on the same stack
 7. `local_ydb_set_root_password(confirm=false, password="<new-password>")` to review the rotation plan
 8. `local_ydb_set_root_password(confirm=true, password="<new-password>")` only after approving that plan
-9. verify rotation using Scenario 10A, then run Scenario 10 with the new credentials; keep clients and public monitoring isolated until both pass
+9. verify rotation using Scenario 10A, then run Scenario 10 with the new credentials; close the rollback hold and retire obsolete credential backups before admitting clients or exposing monitoring
 
 For rotation, the selected profile must have `authConfigPath` and `rootPasswordFile`; prepare them before enforcing auth. Follow [Scenario 10A](mcp-tool-scenarios.md#scenario-10a-root-password-rotation), then [Scenario 10](mcp-tool-scenarios.md#scenario-10-post-auth-verification). Rotation runs after auth is enabled because the tool also verifies anonymous denial.
 
 Rotation acceptance requires all four execution results to be successful, the host auth config and password file to match the new credential, a fresh login with the new password to succeed, a fresh login with the old password to be rejected, and anonymous viewer access to remain `401`. `executed: true` alone is not success. Keep passwords in protected files for checks, never argv or logs. Use new sessions without cached cookies or tokens; check lockout policy before the single negative login attempt. A timeout, transport failure or unavailable endpoint does not prove old-password rejection. Password-login rejection does not prove revocation of previously issued tokens; see [YDB authentication](https://ydb.tech/docs/en/security/authentication).
 
 Keep the stack isolated if rotation partially fails or its outcome is unknown. The runtime password can change before host artifacts are synchronized. Establish which credential currently authenticates and whether host config/password files match before recovery. Do not retry blindly or automatically restore the weak default password.
+
+## Obsolete Credential Backups
+
+Successful `local_ydb_set_root_password` leaves `${authConfigPath}.before-local-ydb-toolkit-password-rotate` and `${rootPasswordFile}.before-local-ydb-toolkit-password-rotate` when the corresponding original files existed. The tool does not retire these backups. Its rollback suggestions can copy them back into active use.
+
+After fresh new-password success, old-password rejection and post-auth verification, complete this step before client admission:
+
+1. Inventory those two exact profile-derived paths, the protected old-password verification file, and any earlier config copies containing the old credential. Do not print their contents or select files with wildcard cleanup.
+2. Assign an owner and deadline to an explicit rollback hold. Keep the stack isolated while that hold is open; the owner must close it after verified recovery readiness, not just because a timer expired.
+3. Under an approved secret-retention policy, delete the obsolete files using the storage-appropriate deletion procedure or move them to an encrypted, access-restricted archive outside the active config directories. An archive record must identify its owner, retention deadline, and approved deletion procedure. Replace ordinary rollback pointers so they cannot select these obsolete files automatically.
+4. Verify that the obsolete paths are absent from the operational locations and record their retirement without recording credentials. Restoring any retained archive requires a separately approved isolated recovery and a new non-default password before admission; never automatically restore the known default. If retirement or verification fails, keep clients stopped and monitoring isolated.
+
+This policy applies to the retained backup copies as well as the temporary negative-login credential. Filesystem deletion alone does not prove erasure from snapshots or storage media; include those copies in the chosen retention procedure. See [OWASP secrets backup and restore guidance](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html#29-downtime-break-glass-backup-and-restore).
 
 ## Monitoring Exposure
 

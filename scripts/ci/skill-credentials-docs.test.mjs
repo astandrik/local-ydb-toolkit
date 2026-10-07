@@ -72,7 +72,7 @@ test("the old printf JSON contract fails for quotes and backslashes", async () =
   assert.notEqual(JSON.parse(slash.stdout).password, "fixture\\test");
 });
 
-async function runViewer(t, { failure, secret = password } = {}) {
+async function runViewer(t, { failure, secret = password, basePath = "/" } = {}) {
   const root = await fixture(t);
   await writeFile(join(root, "password"), secret + "\n", { mode: 0o600 });
   await writeFile(join(root, "sudo"), `#!/usr/bin/env python3
@@ -85,6 +85,7 @@ if os.environ.get("FIXTURE_FAILURE") == "read":
 sys.stdout.buffer.write((root / "password").read_bytes())
 `, { mode: 0o700 });
   const requests = [];
+  const viewerPrefix = basePath.replace(/\/+$/, "");
   const server = createServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += chunk;
@@ -100,14 +101,17 @@ sys.stdout.buffer.write((root / "password").read_bytes())
       }
     } else if (failure === "json") {
       response.end("not JSON: " + password);
-    } else if (request.url.startsWith("/viewer/json/capabilities?")) {
+    } else if (request.url.startsWith(`${viewerPrefix}/viewer/json/capabilities?`)) {
       response.writeHead(307, { Location: "/node/1/viewer/json/capabilities" });
       response.end();
-    } else {
+    } else if (request.url === "/node/1/viewer/json/capabilities" || request.url.startsWith(`${viewerPrefix}/viewer/json/nodelist?`)) {
       response.setHeader("Content-Type", "application/json");
       response.end(JSON.stringify(request.url.includes("capabilities")
         ? { Settings: { Database: { GraphShardExists: true } } }
         : [{ Id: 1, Address: "localhost", Port: 19002 }]));
+    } else {
+      response.writeHead(404);
+      response.end("Unknown fixture route");
     }
   });
   server.listen(0, "127.0.0.1");
@@ -116,7 +120,7 @@ sys.stdout.buffer.write((root / "password").read_bytes())
   const block = bashBlocks(await reference("verification.md")).find((body) => body.startsWith("python3 - <<'PY'"));
   assert.ok(block, "documented Python viewer example exists");
   const source = block.slice("python3 - <<'PY'\n".length, -3)
-    .replace('"http://127.0.0.1:8765"', JSON.stringify(`http://127.0.0.1:${server.address().port}/`))
+    .replace('"http://127.0.0.1:8765"', JSON.stringify(`http://127.0.0.1:${server.address().port}${basePath}`))
     .replace('"/local/example"', '"/local/space & Юникод"');
   const guard = `import os, sys
 def forbid_writes(event, args):
@@ -152,6 +156,22 @@ test("viewer sends encoded credentials, keeps cookies in memory and follows redi
     });
   }
 });
+
+for (const basePath of ["/proxy/ydb", "/proxy/ydb/"]) {
+  test(`viewer resolves login from origin and keeps prefix ${basePath}`, async (t) => {
+    const { result, requests } = await runViewer(t, { basePath });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(requests.map(({ url }) => new URL(url, "http://localhost").pathname), [
+      "/login", "/proxy/ydb/viewer/json/capabilities", "/node/1/viewer/json/capabilities", "/proxy/ydb/viewer/json/nodelist",
+    ]);
+    assert.deepEqual(JSON.parse(requests[0].body), { user: "root", password });
+    for (const request of requests.slice(1)) assert.equal(request.cookie, `ydb_session_id=${cookie}`);
+    assert.equal(JSON.parse(result.stdout).graphShardExists, true);
+    for (const request of [requests[1], requests[3]]) {
+      assert.equal(new URL(request.url, "http://localhost").searchParams.get("database"), "/local/space & Юникод");
+    }
+  });
+}
 
 for (const [failure, requestCount] of [["read", 0], ["login", 1], ["json", 2], ["timeout", 1]]) {
   test(`viewer stops without exposing credentials on ${failure} failure`, async (t) => {
@@ -352,4 +372,12 @@ test("the isolation check rejects a shared-directory negative control", async (t
     directories.push((await records(fixture.root, report))[0].directory);
   }
   assert.throws(() => assert.notEqual(directories[0], directories[1]));
+});
+
+test("skill entrypoint uses the origin login contract from the verification reference", async () => {
+  const skill = await readFile(new URL("../SKILL.md", references), "utf8");
+  assert.doesNotMatch(skill, /<monitoringBaseUrl>\/login/);
+  assert.match(skill, /resolve `\/login` from the origin/);
+  assert.match(skill, /preserve any configured path prefix for viewer requests/);
+  assert.match(skill, /references\/verification\.md/);
 });
