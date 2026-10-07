@@ -10,6 +10,7 @@ import {
   verifyManagedSqlLive,
 } from "./managed-sql-live.mjs";
 import { contiguousPortCandidates } from "./live-port-allocation.mjs";
+import { waitForRestartingContainer } from "./restarting-container.mjs";
 
 const profileName = "ci-action";
 const expectedPromptNames = [
@@ -1085,11 +1086,10 @@ async function verifyDeclarativeTopologyLifecycle(client) {
         "exit 1",
       ]);
       assert(restartingFixture.exitCode === 0, restartingFixture.stderr || "failed to create restarting configured-node fixture.");
-      await waitForRestartingContainer(configuredNodeTwo);
-      const restartingInventory = await callTool(client, "local_ydb_inventory", { profile: topologyProfileName });
-      const restartingNode = findContainer(restartingInventory, configuredNodeTwo);
-      assert(restartingNode?.id, "restarting configured-node fixture ID was not available.");
-      assert(restartingNode.state === "restarting", "configured-node fixture did not enter restarting state.");
+      const restartingNode = await waitForRestartingContainer({
+        readInventory: () => callTool(client, "local_ydb_inventory", { profile: topologyProfileName }),
+        container: configuredNodeTwo,
+      });
 
       const restartPlan = await callTool(client, "local_ydb_restart_stack", {
         profile: topologyProfileName,
@@ -1304,24 +1304,6 @@ async function inspectTopologyStaticBindings() {
   ]);
   assert(inspect.exitCode === 0, inspect.stderr || "failed to inspect configured gRPC bindings.");
   return inspect.stdout;
-}
-
-async function waitForRestartingContainer(container) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const inspect = await runCommand("docker", [
-      "inspect",
-      "--type",
-      "container",
-      "--format",
-      "{{.State.Restarting}}",
-      container,
-    ]);
-    if (inspect.exitCode === 0 && inspect.stdout.trim() === "true") {
-      return;
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
-  }
-  throw new Error(`Container ${container} did not enter Docker's restarting state.`);
 }
 
 async function assertConfiguredTopology(client, configuredContainers, configuredIcPorts) {
