@@ -14,6 +14,26 @@ Use `@astandrik/local-ydb-mcp` when an agent needs to operate Docker-based `loca
 
 This package requires Node.js 20.19 or newer.
 
+Inspect the installed CLI without starting the MCP server:
+
+```bash
+local-ydb-mcp --version
+local-ydb-mcp --help
+```
+
+Or run the same commands through npm:
+
+```bash
+npx --yes @astandrik/local-ydb-mcp@latest --version
+npx --yes @astandrik/local-ydb-mcp@latest --help
+```
+
+Each flag prints to stdout and exits with code `0`, without loading the toolkit config.
+Unknown arguments, repeated flags, and combinations of flags print a usage error to stderr
+and exit with code `2`. Only the long `--version` and `--help` flags are supported.
+Start without arguments for normal MCP stdio operation; do not add these diagnostic flags
+to the MCP client launch configuration.
+
 Use `npx` so clients can run the server without a manual checkout:
 
 ```json
