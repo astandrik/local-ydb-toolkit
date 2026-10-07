@@ -47,6 +47,36 @@ This document covers all public `local_ydb_*` tools currently registered by the 
 - `local_ydb_set_root_password`
 - `local_ydb_cleanup_storage`
 
+## CLI Diagnostics (No Docker/YDB Required)
+
+After building the checkout or installing the npm package:
+
+```bash
+local-ydb-mcp --version
+local-ydb-mcp --help
+npx --yes @astandrik/local-ydb-mcp@latest --version
+npx --yes @astandrik/local-ydb-mcp@latest --help
+```
+
+For the checkout, use `node packages/mcp-server/dist/index.js` in place of
+`local-ydb-mcp`. Use the installed binary or an absolute entry-point path when
+repeating the checks from another working directory.
+
+Expected:
+
+- `--version` prints the installed package's version followed by a newline.
+- `--help` describes stdio startup, both flags, the two configuration environment variables,
+  and absolute `configPath` selection for individual tool calls.
+- Both commands exit with code `0` and empty stderr, even with stdin open and
+  `LOCAL_YDB_TOOLKIT_CONFIG` pointing to a nonexistent absolute path.
+- Neither command echoes configuration paths, file contents, or environment values.
+- `--verison`, a positional argument, `--help --version`, repeated flags, and short
+  aliases (`-h`, `-v`) produce empty stdout, a usage error on stderr, and exit code `2`.
+- Starting without arguments still completes MCP initialization and exposes 39 tools
+  and 8 prompts without banners or other non-JSON-RPC stdout.
+- Importing the package does not print output or start a server, including when the
+  importing process has a `--help` argument.
+
 ## Profiles
 
 Use these profiles from `examples/local-ydb.config.example.json`:

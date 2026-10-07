@@ -44,7 +44,7 @@ codex plugin marketplace add astandrik/local-ydb-toolkit --ref main
 codex plugin add local-ydb-toolkit@local-ydb-toolkit
 ```
 
-Start a new Codex session after installation so the bundled skill and MCP server are loaded. The MCP launcher requires Node.js 20.19 or newer plus `npx`; its first start can access the npm registry to install the pinned `@astandrik/local-ydb-mcp@0.18.2` package.
+Start a new Codex session after installation so the bundled skill and MCP server are loaded. The MCP launcher requires Node.js 20.19 or newer plus `npx`; its first start can access the npm registry to install the pinned `@astandrik/local-ydb-mcp@0.19.0` package.
 
 Agent Plugins start a stdio server with the installed plugin root as its working directory. Use an absolute `configPath` on profile-based tool calls, or set `LOCAL_YDB_TOOLKIT_CONFIG` to an absolute path in the MCP client environment. An explicit path must name a readable regular JSON file no larger than 1 MiB; missing or invalid explicit files fail closed instead of selecting the default profile. Do not rely on a project-local `local-ydb.config.json` being discovered from the caller's repository.
 
@@ -241,6 +241,26 @@ The server exposes 39 tools. This index is generated from the runtime tool regis
 <!-- END GENERATED MCP TOOLS -->
 
 The npm package requires Node.js 20.19 or newer.
+
+Inspect the installed CLI without starting the MCP server:
+
+```bash
+local-ydb-mcp --version
+local-ydb-mcp --help
+```
+
+Or run the same commands through npm:
+
+```bash
+npx --yes @astandrik/local-ydb-mcp@latest --version
+npx --yes @astandrik/local-ydb-mcp@latest --help
+```
+
+Each flag prints to stdout and exits with code `0`, without loading the toolkit config.
+Unknown arguments, repeated flags, and combinations of flags print a usage error to stderr
+and exit with code `2`. Only the long `--version` and `--help` flags are supported.
+Start without arguments for normal MCP stdio operation; do not add these diagnostic flags
+to the MCP client launch configuration.
 
 Use the npm package directly from an MCP client:
 
@@ -447,7 +467,7 @@ The repo marketplace loads the full Agent Plugin from the repository root. `plug
 
 The launcher uses `--prefix=./.codex-plugin` to resolve the published npm package outside the repository workspace while preserving the server working directory and npm registry settings. Keep this metadata directory present and free of `package.json`, lockfiles, and `node_modules`; otherwise npm could select an unbuilt workspace or another executable from `PATH`.
 
-The plugin version is independent from the MCP npm package version. Plugin `0.1.7` pins `@astandrik/local-ydb-mcp@0.18.2`. Update that pin only in a follow-up change after the exact npm version has been published and read back successfully; do not make release-please point the plugin at an unpublished version.
+The plugin version is independent from the MCP npm package version. Plugin `0.1.8` pins `@astandrik/local-ydb-mcp@0.19.0`. Update that pin only in a follow-up change after the exact npm version has been published and read back successfully; do not make release-please point the plugin at an unpublished version.
 
 Build the OpenAI skills-only review artifact with:
 
@@ -455,7 +475,7 @@ Build the OpenAI skills-only review artifact with:
 npm run plugin:package
 ```
 
-This writes `dist/local-ydb-toolkit-0.1.7-skills.zip`. The generated compatibility manifest omits `mcpServers`, and the ZIP excludes both MCP config files. Submission copy, reviewer cases, and external approval gates are recorded in [`docs/openai-plugin-submission.md`](docs/openai-plugin-submission.md). Building the artifact does not authorize uploading or publishing it.
+This writes `dist/local-ydb-toolkit-0.1.8-skills.zip`. The generated compatibility manifest omits `mcpServers`, and the ZIP excludes both MCP config files. Submission copy, reviewer cases, and external approval gates are recorded in [`docs/openai-plugin-submission.md`](docs/openai-plugin-submission.md). Building the artifact does not authorize uploading or publishing it.
 
 ### MCP npm package
 
