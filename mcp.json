@@ -7,7 +7,7 @@
       "args": [
         "--yes",
         "--prefix=./.codex-plugin",
-        "@astandrik/local-ydb-mcp@0.18.2"
+        "@astandrik/local-ydb-mcp@0.19.0"
       ]
     }
   }
