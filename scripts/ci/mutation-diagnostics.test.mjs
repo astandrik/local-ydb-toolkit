@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertSuccessfulMutation } from "./mutation-diagnostics.mjs";
+import { assertSuccessfulMutation, createDiagnosticRedactor } from "./mutation-diagnostics.mjs";
 
 const description = "fresh three-node declarative bootstrap";
 const success = { ok: true, exitCode: 0, timedOut: false, stderr: "" };
@@ -131,4 +131,18 @@ test("does not serialize malformed diagnostic fields", () => {
   assert.equal(diagnostic.timedOut, null);
   assert.equal(diagnostic.stderr, "");
   assert.doesNotMatch(message, /must-not-appear/);
+});
+
+test("redacts full credential paths before an overlapping password", () => {
+  const redactions = ["root", "/fixture/root.password", "/fixture/root-token.pb", ""];
+  const redactStderr = createDiagnosticRedactor((text, values) => (
+    values.reduce((output, value) => output.replaceAll(value, "<redacted>"), text)
+  ), redactions);
+  const { diagnostic } = failureDiagnostic([{
+    ...failure,
+    stderr: "failed /fixture/root.password /fixture/root-token.pb for root",
+  }], redactStderr);
+
+  assert.equal(diagnostic.stderr, "failed <redacted> <redacted> for <redacted>");
+  assert.deepEqual(redactions, ["root", "/fixture/root.password", "/fixture/root-token.pb", ""]);
 });

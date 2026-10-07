@@ -12,7 +12,7 @@ import {
 } from "./managed-sql-live.mjs";
 import { contiguousPortCandidates } from "./live-port-allocation.mjs";
 import { waitForRestartingContainer } from "./restarting-container.mjs";
-import { assertSuccessfulMutation } from "./mutation-diagnostics.mjs";
+import { assertSuccessfulMutation, createDiagnosticRedactor } from "./mutation-diagnostics.mjs";
 
 const profileName = "ci-action";
 const expectedPromptNames = [
@@ -58,7 +58,7 @@ if (rootPasswordFile) {
   }
 }
 
-const redactDiagnosticStderr = (stderr) => redactCommand(stderr, diagnosticRedactions);
+const redactDiagnosticStderr = createDiagnosticRedactor(redactCommand, diagnosticRedactions);
 
 const tempDir = await mkdtemp(join(tmpdir(), "local-ydb-mcp-integration-"));
 const configPath = join(tempDir, "local-ydb.config.json");

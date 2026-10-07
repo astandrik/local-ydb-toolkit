@@ -3,6 +3,11 @@ import { stripVTControlCharacters } from "node:util";
 
 const MAX_STDERR_LENGTH = 2_048;
 
+export function createDiagnosticRedactor(redact, redactions) {
+  const orderedRedactions = redactions.filter(Boolean).sort((left, right) => right.length - left.length);
+  return (stderr) => redact(stderr, orderedRedactions);
+}
+
 export function assertSuccessfulMutation(result, description, redactStderr) {
   assert(result.executed === true, `${description} did not execute.`);
   assert(
