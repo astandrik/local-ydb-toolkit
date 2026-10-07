@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.18.2...mcp-server-v0.19.0) (2026-10-07)
+
+
+### Features
+
+* **mcp:** add CLI version and help flags ([#179](https://github.com/astandrik/local-ydb-toolkit/issues/179)) ([189d0f9](https://github.com/astandrik/local-ydb-toolkit/commit/189d0f96893da52d282757d1e49a336f54f02c16))
+
 ## [0.18.2](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.18.1...mcp-server-v0.18.2) (2026-08-26)
 
 
