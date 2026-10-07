@@ -23,6 +23,8 @@ Practical tag note:
 
 Local development static-node shape for host-side clients:
 
+This example enables anonymous access and disables TLS for a trusted local development environment. Loopback bindings do not isolate the database from other local users or processes. For shared or exposed deployments, follow `auth-hardening.md` before allowing clients to connect.
+
 ```bash
 docker run -d --name ydb-local \
   --no-healthcheck \

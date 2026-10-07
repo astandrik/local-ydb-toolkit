@@ -22,71 +22,66 @@ curl -sSL 'http://127.0.0.1:8765/viewer/json/nodelist?database=%2Flocal%2Fexampl
 
 In a hardened deployment, anonymous `viewer/json` should return `401`. Do not present these commands as post-auth verification unless an authenticated session or supported credential mechanism is included.
 
-Authenticated viewer flow that has worked on local-ydb builds:
+Authenticated capabilities and node-list checks for hardened hosts:
 
-```bash
-PASS=$(sudo cat /path/to/root.password)
-DATA=$(printf '{"user":"root","password":"%s"}' "$PASS")
-
-curl -sS -c /tmp/ydb-cookies.txt \
-  -H 'Content-Type: application/json' \
-  -X POST \
-  --data "$DATA" \
-  http://127.0.0.1:8765/login
-
-curl -fsSL -b /tmp/ydb-cookies.txt -L \
-  'http://127.0.0.1:8765/viewer/json/capabilities?database=%2Flocal%2Fexample'
-```
-
-Observed details:
-
-- the working login field may be `user`
-- protected viewer endpoints may return `307` after login; use `curl -L`
-- cookie-based UI flow can work when generic Bearer-token testing does not
-- use the actual monitoring port from the selected profile; do not hardcode `8765` when the stack runs on a different port
-
-Authenticated node-list helper for hardened hosts:
+Set `monitoring_base_url`, `password_file`, and `database` from the selected profile. Use a trusted loopback endpoint or the deployment's verified HTTPS URL. The password is passed in the HTTP body, never in process arguments, and the session cookie stays in memory. Do not enable HTTP debug logging or print the login request or cookie jar.
 
 ```bash
 python3 - <<'PY'
 import http.cookiejar
 import json
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
 
+monitoring_base_url = "http://127.0.0.1:8765"
 password_file = "/path/to/root.password"
 database = "/local/example"
 
-password = subprocess.check_output(["sudo", "cat", password_file], text=True).rstrip("\n")
-cookies = http.cookiejar.CookieJar()
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
-opener.open(
-    urllib.request.Request(
-        "http://127.0.0.1:8765/login",
-        data=json.dumps({"user": "root", "password": password}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    ),
-    timeout=10,
-)
+try:
+    password = subprocess.check_output(
+        ["sudo", "cat", password_file], text=True, stderr=subprocess.DEVNULL
+    ).rstrip("\n")
+    if not password:
+        raise ValueError("Empty password file")
+    cookies = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+    base_url = monitoring_base_url.rstrip("/")
+    with opener.open(
+        urllib.request.Request(
+            urllib.parse.urljoin(base_url, "/login"),
+            data=json.dumps({"user": "root", "password": password}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        ),
+        timeout=10,
+    ):
+        pass
 
-url = (
-    "http://127.0.0.1:8765/viewer/json/nodelist?database="
-    + urllib.parse.quote(database, safe="")
-    + "&enums=true&type=any"
-)
-response = opener.open(url, timeout=10)
-nodes = json.loads(response.read().decode())
-print(json.dumps({
-    "count": len(nodes),
-    "nodes": [
-        {"id": node.get("Id"), "address": node.get("Address"), "port": node.get("Port")}
-        for node in nodes
-    ],
-}, separators=(",", ":")))
+    query = urllib.parse.urlencode({"database": database})
+    with opener.open(base_url + "/viewer/json/capabilities?" + query, timeout=10) as response:
+        capabilities = json.load(response)
+    with opener.open(
+        base_url + "/viewer/json/nodelist?" + query + "&enums=true&type=any", timeout=10
+    ) as response:
+        nodes = json.load(response)
+    summary = {
+        "graphShardExists": capabilities.get("Settings", {}).get("Database", {}).get("GraphShardExists"),
+        "count": len(nodes),
+        "nodes": [
+            {"id": node.get("Id"), "address": node.get("Address"), "port": node.get("Port")}
+            for node in nodes
+        ],
+    }
+except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError):
+    sys.exit("Authenticated viewer verification failed; check credentials, endpoint, and response format.")
+
+print(json.dumps(summary, separators=(",", ":")))
 PY
 ```
+
+Resolve `/login` from the monitoring origin, even when `monitoring_base_url` contains a path prefix; keep that prefix for the viewer URLs. The login field is `user`. The cookie handler also supports the viewer's post-login redirects, including `307`; a generic Bearer-token check is not equivalent to this UI session flow.
 
 Container/log checks for dynamic-node additions:
 
@@ -140,22 +135,22 @@ Interpretation:
 
 ## Metadata Path
 
-After any storage move, tenant recovery, or replacement-tenant cutover, verify metadata explicitly:
+After any storage move, tenant recovery, or replacement-tenant cutover, verify metadata explicitly. Replace `/path/to/root.password` with an existing protected credential file accessible to the CLI; temporary files from earlier examples have already been removed.
 
 ```bash
 /ydb -e grpc://localhost:2137 -d /local/<tenant> \
   --user root \
-  --password-file /tmp/root.password \
+  --password-file /path/to/root.password \
   scheme ls /local/<tenant>
 
 /ydb -e grpc://localhost:2137 -d /local/<tenant> \
   --user root \
-  --password-file /tmp/root.password \
+  --password-file /path/to/root.password \
   scheme describe /local/<tenant>/<known-table>
 
 /ydb -e grpc://localhost:2137 -d /local/<tenant> \
   --user root \
-  --password-file /tmp/root.password \
+  --password-file /path/to/root.password \
   sql -s "SELECT COUNT(*) AS rows FROM <known-table>;"
 ```
 

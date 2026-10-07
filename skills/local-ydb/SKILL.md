@@ -77,7 +77,7 @@ Use this skill to inspect, document, run, harden, troubleshoot, or generate and 
 - Before restoring from an existing toolkit dump, use `local_ydb_list_dumps` to choose a valid `dumpName`; for path-level restore, remember that `path` is the destination directory passed to `ydb tools restore -p`.
 - When using `ghcr.io/ydb-platform/local-ydb` as a helper container for `ydb tools restore`, override the image entrypoint to `/bin/bash`. The default `local_ydb` entrypoint does not execute arbitrary shell restore scripts.
 - For auth-hardened viewer access, do not assume the authenticated SID is always `root@builtin`. A stock `root` username/password token can resolve to SID `root`; viewer/monitoring/admin ACLs should include both `root` and `root@builtin` unless you have stronger evidence for the deployed build.
-- For authenticated viewer JSON checks, do not hardcode `http://127.0.0.1:8765/login`. Use the selected profile's monitoring base URL and post to `<monitoringBaseUrl>/login`.
+- For authenticated viewer JSON checks, resolve `/login` from the origin of the selected profile's monitoring URL; preserve any configured path prefix for viewer requests. Follow the Python example in `references/verification.md`.
 - Do not commit secret material, live password-file paths, private backup paths, or one-off remote-host cutover logs into reusable docs.
 
 ## Output Style
