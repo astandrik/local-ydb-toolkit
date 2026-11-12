@@ -42,7 +42,7 @@ export const PortsSchema = z.object({
   dynamicGrpc: z.number().int().positive().default(2137),
   dynamicMonitoring: z.number().int().positive().default(8766),
   dynamicIc: z.number().int().positive().default(19002)
-}).strict().default({});
+}).strict().prefault({});
 
 export const SshProfileSchema = z.object({
   host: z.string().min(1),
@@ -86,7 +86,7 @@ export const ProfileSchema = z.object({
 
 export const ConfigSchema = z.object({
   defaultProfile: z.string().min(1).default("default"),
-  profiles: z.record(ProfileSchema).default({
+  profiles: z.record(z.string(), ProfileSchema).prefault({
     default: {
       mode: "local"
     }

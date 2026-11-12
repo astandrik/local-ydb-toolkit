@@ -28,7 +28,33 @@ describe("config validation", () => {
     expect(profile.tenantPath).toBe("/local/example");
     expect(profile.dynamicContainer).toBe("ydb-dyn-example");
     expect(profile.dynamicNodeCount).toBe(1);
+    expect(profile.ports).toEqual({
+      staticGrpc: 2136,
+      monitoring: 8765,
+      dynamicGrpc: 2137,
+      dynamicMonitoring: 8766,
+      dynamicIc: 19002,
+    });
+    expect(profile.monitoringBaseUrl).toBe("http://127.0.0.1:8765");
   });
+
+  it.each([undefined, {}, { monitoring: 9876 }])(
+    "fills missing port defaults for an explicit profile with ports=%j",
+    (ports) => {
+      const profile = resolveProfile(ConfigSchema.parse({
+        profiles: { default: { ports } },
+      }));
+      expect(profile.ports).toEqual({
+        staticGrpc: 2136,
+        monitoring: 8765,
+        dynamicGrpc: 2137,
+        dynamicMonitoring: 8766,
+        dynamicIc: 19002,
+        ...ports,
+      });
+      expect(profile.monitoringBaseUrl).toBe(`http://127.0.0.1:${ports?.monitoring ?? 8765}`);
+    },
+  );
 
   it("requires the default profile to be an own configured profile", () => {
     expect(() => ConfigSchema.parse({
