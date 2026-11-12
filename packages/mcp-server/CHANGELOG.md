@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.1](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.19.0...mcp-server-v0.19.1) (2026-11-12)
+
+
+### Dependencies
+
+* **deps:** bump @modelcontextprotocol/sdk from 1.31.0 to 1.32.0 ([#183](https://github.com/astandrik/local-ydb-toolkit/issues/183)) ([d9f7e6e](https://github.com/astandrik/local-ydb-toolkit/commit/d9f7e6e2096f3fc95f394db0af25abf115205443))
+* **deps:** bump zod from 3.25.76 to 4.6.7 ([#189](https://github.com/astandrik/local-ydb-toolkit/issues/189)) ([ce239f4](https://github.com/astandrik/local-ydb-toolkit/commit/ce239f40da266eac48286bef20fa3092bf6e2238))
+
 ## [0.19.0](https://github.com/astandrik/local-ydb-toolkit/compare/mcp-server-v0.18.2...mcp-server-v0.19.0) (2026-10-07)
 
 
