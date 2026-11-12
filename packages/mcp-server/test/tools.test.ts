@@ -45,6 +45,13 @@ type ToolResultForTest = {
 
 type SqlExecutionFixture = Awaited<ReturnType<SqlBackendExecutor>>;
 
+function nonEmptyValidationError(path: Array<string | number>, origin: "string" | "array") {
+  return {
+    name: "ZodError",
+    issues: [{ code: "too_small", minimum: 1, inclusive: true, origin, path }],
+  };
+}
+
 const responseFixture = {
   summary: "Example local-ydb response.",
   executed: false,
@@ -1335,7 +1342,7 @@ describe("mcp tools", () => {
           [field]: value,
         }, {
           config: ConfigSchema.parse({})
-        })).rejects.toThrow("String must contain at least 1 character");
+        })).rejects.toMatchObject(nonEmptyValidationError([field], "string"));
       }
     }
   });
@@ -1374,7 +1381,7 @@ describe("mcp tools", () => {
         dumpName,
       }, {
         config: ConfigSchema.parse({})
-      })).rejects.toThrow("String must contain at least 1 character");
+      })).rejects.toMatchObject(nonEmptyValidationError(["dumpName"], "string"));
     }
   });
 
@@ -1384,7 +1391,7 @@ describe("mcp tools", () => {
       countQueries: [{ query: "   " }]
     }, {
       config: ConfigSchema.parse({})
-    })).rejects.toThrow("String must contain at least 1 character");
+    })).rejects.toMatchObject(nonEmptyValidationError(["countQueries", 0, "query"], "string"));
   });
 
   it("rejects blank restore paths at the MCP argument layer", async () => {
@@ -1393,7 +1400,7 @@ describe("mcp tools", () => {
       path: "   "
     }, {
       config: ConfigSchema.parse({})
-    })).rejects.toThrow("String must contain at least 1 character");
+    })).rejects.toMatchObject(nonEmptyValidationError(["path"], "string"));
   });
 
   it("rejects blank restore describe paths at the MCP argument layer", async () => {
@@ -1402,7 +1409,7 @@ describe("mcp tools", () => {
       describePaths: ["   "]
     }, {
       config: ConfigSchema.parse({})
-    })).rejects.toThrow("String must contain at least 1 character");
+    })).rejects.toMatchObject(nonEmptyValidationError(["describePaths", 0], "string"));
   });
 
   it("rejects blank restore count query labels at the MCP argument layer", async () => {
@@ -1411,7 +1418,7 @@ describe("mcp tools", () => {
       countQueries: [{ label: "   ", query: "SELECT COUNT(*) FROM `restore-root/table`;" }]
     }, {
       config: ConfigSchema.parse({})
-    })).rejects.toThrow("String must contain at least 1 character");
+    })).rejects.toMatchObject(nonEmptyValidationError(["countQueries", 0, "label"], "string"));
   });
 
   it("exposes a root-only bootstrap tool", async () => {
@@ -2489,25 +2496,26 @@ describe("mcp tools", () => {
         indexes: [{
           name: "items_by_embedding",
           columns: ["embedding"],
+          global: true,
           cover: []
         }]
       }]
     }, {
       config: ConfigSchema.parse({})
-    })).rejects.toThrow(/Array must contain at least 1 element/);
+    })).rejects.toMatchObject(nonEmptyValidationError(["statements", 0, "indexes", 0, "cover"], "array"));
 
     await expect(callLocalYdbToolForTest("local_ydb_generate_schema", {
       statements: [{
         kind: "createTable",
         tableName: "metrics",
-        columns: [{ name: "id", type: "Uint64" }],
+        columns: [{ name: "id", type: "Uint64", notNull: true }],
         primaryKey: ["id"],
         store: "column",
         partitionByHash: []
       }]
     }, {
       config: ConfigSchema.parse({})
-    })).rejects.toThrow(/Array must contain at least 1 element/);
+    })).rejects.toMatchObject(nonEmptyValidationError(["statements", 0, "partitionByHash"], "array"));
   });
 
   it("advertises schema apply as a mutating destructive tool", () => {

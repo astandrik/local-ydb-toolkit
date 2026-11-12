@@ -164,7 +164,7 @@ const SchemaIndexArgs = z.object({
   unique: z.boolean().optional(),
   sync: z.enum(["sync", "async"]).optional(),
   using: z.enum(["secondary", "vector_kmeans_tree"]).optional(),
-  with: z.record(SchemaSettingValue).optional(),
+  with: z.record(z.string(), SchemaSettingValue).optional(),
 }).strict();
 
 const CreateTableStatementArgs = z.object({
@@ -176,7 +176,7 @@ const CreateTableStatementArgs = z.object({
   indexes: z.array(SchemaIndexArgs).optional(),
   partitionByHash: z.array(z.string().min(1)).nonempty().optional(),
   store: z.enum(["row", "column"]).optional(),
-  with: z.record(SchemaSettingValue).optional(),
+  with: z.record(z.string(), SchemaSettingValue).optional(),
 }).strict();
 
 const AlterTableActionArgs = z.discriminatedUnion("kind", [
